@@ -24,20 +24,16 @@ class VisionService:
 
     PROMPT = """Analyze this image for alcoholic drinks.
 
-IMPORTANT: Focus on the LIQUID/BEVERAGE itself, not just the glass shape. People often use unconventional glasses.
+Identify drink type by GLASS/CONTAINER TYPE (not the liquid inside):
+- "wine": wine glass, champagne flute, stemmed glass
+- "beer": pint glass, beer mug, beer can, beer bottle
+- "cocktail": cocktail glass, rocks glass, highball, martini glass, drink with garnish
+- "claw": hard seltzer can (White Claw, Truly, etc.)
 
-Identify the drink type by these characteristics:
-- beer: golden/amber liquid, foamy white head, carbonation bubbles, could be in any glass
-- wine: red, white, or rosé colored, clear liquid, no foam
-- cocktail: mixed/layered colors, garnishes (fruit, umbrella), typically with ice
-- claw: hard seltzer in a branded can (White Claw, Truly, etc.)
+If no alcoholic drink container visible, return null.
+If glass type is ambiguous, return null.
 
-If unsure between beer and wine, look for:
-- Foam/head = likely beer
-- No foam + wine color (red/white/rosé) = likely wine
-- Amber/golden with carbonation = likely beer even in unusual glass
-
-Split the G: Only true if there is a GUINNESS pint glass with beer level at the G.
+Split the G: true ONLY if there is a GUINNESS pint glass with beer level at the G.
 
 Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
 
