@@ -2,12 +2,16 @@
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from .models import GroupMeAttachment, GroupMeMessage, GroupStats, UserStats
-from .repositories import beer_repo, user_repo
+from .repositories import beer_repo, debt_repo, user_repo
 
 logger = logging.getLogger(__name__)
+
+# Use Eastern time for all date calculations
+EASTERN = ZoneInfo("America/New_York")
 
 
 def extract_mentioned_user_ids(attachments: list[GroupMeAttachment]) -> list[str]:
@@ -82,6 +86,8 @@ class MessageParser:
         "million": re.compile(r"^(!million|!countdown|!goal|time to million)\b", re.IGNORECASE),
         "splitg": re.compile(r"^(!splitg|!split|split the g)\b", re.IGNORECASE),
         "unsplit": re.compile(r"^(!unsplit(\s+\d+)?)\b", re.IGNORECASE),
+        "owe": re.compile(r"^(!owe\s+\d+\s*@)", re.IGNORECASE),
+        "debts": re.compile(r"^(!debts?|debt leaderboard|who owes)\b", re.IGNORECASE),
         "help": re.compile(r"^(!help|beerbot help)\b", re.IGNORECASE),
     }
 
@@ -170,6 +176,13 @@ class MessageParser:
             return False
         return bool(self.NUMERIC_PATTERN.search(text))
 
+    def parse_debt_amount(self, text: str | None) -> int:
+        """Extract the number of beers from a debt command (!owe N, !payoff N)."""
+        if not text:
+            return 0
+        match = re.search(r"(\d+)", text)
+        return int(match.group(1)) if match else 0
+
 
 class StatsService:
     """Service for generating statistics responses."""
@@ -221,6 +234,16 @@ class StatsService:
         # Get new total
         total = await beer_repo.get_user_total(user.id, message.group_id)
 
+        # Auto-reduce debt when drinking
+        debt_reduced = await debt_repo.reduce_debt(user.id, message.group_id, quantity)
+        debt_msg = ""
+        if debt_reduced > 0:
+            remaining_debt = await debt_repo.get_debt(user.id, message.group_id)
+            if remaining_debt > 0:
+                debt_msg = f" (-{debt_reduced} debt, {remaining_debt} left)"
+            else:
+                debt_msg = f" (-{debt_reduced} debt, all paid!)"
+
         # Build response with split-the-G celebration if applicable
         split_msg = ""
         if split_the_g > 0:
@@ -228,9 +251,9 @@ class StatsService:
             split_msg = f" 🍀 You split the G! ({split_total} total)"
 
         if quantity == 1:
-            return f"Cheers, {message.name}!{split_msg} You've now had {total} beer{'s' if total != 1 else ''} total."
+            return f"Cheers, {message.name}!{split_msg}{debt_msg} You've now had {total} beer{'s' if total != 1 else ''} total."
         else:
-            return f"Cheers, {message.name}!{split_msg} +{quantity} beers logged. You've now had {total} total."
+            return f"Cheers, {message.name}!{split_msg}{debt_msg} +{quantity} beers logged. You've now had {total} total."
 
     async def log_beers_for_users(
         self,
@@ -299,9 +322,16 @@ class StatsService:
         results = await beer_repo.create_batch(entries)
 
         # Collect names of users that were actually logged (not duplicates)
-        logged_names = [
-            name for (_, name), beer in zip(users, results) if beer is not None
-        ]
+        # Also reduce debt for each logged user
+        logged_names = []
+        debt_reductions = []
+        for (user_id, name), beer in zip(users, results):
+            if beer is not None:
+                logged_names.append(name)
+                # Auto-reduce debt when drinking
+                reduced = await debt_repo.reduce_debt(user_id, message.group_id, quantity)
+                if reduced > 0:
+                    debt_reductions.append((name, reduced))
 
         # If all were duplicates, don't send a message
         if not logged_names:
@@ -313,14 +343,20 @@ class StatsService:
         if split_the_g > 0:
             split_msg = " 🍀 Split the G!"
 
+        # Add debt reduction info
+        debt_msg = ""
+        if debt_reductions:
+            debt_parts = [f"{name} -{reduced}" for name, reduced in debt_reductions]
+            debt_msg = f" (debt: {', '.join(debt_parts)})"
+
         if len(logged_names) == 1:
-            return f"Cheers, {logged_names[0]}!{split_msg} +{quantity} {beer_word} logged."
+            return f"Cheers, {logged_names[0]}!{split_msg}{debt_msg} +{quantity} {beer_word} logged."
         elif len(logged_names) == 2:
             names_str = f"{logged_names[0]} and {logged_names[1]}"
         else:
             names_str = ", ".join(logged_names[:-1]) + f", and {logged_names[-1]}"
 
-        return f"Cheers!{split_msg} +{quantity} {beer_word} logged for {names_str}."
+        return f"Cheers!{split_msg}{debt_msg} +{quantity} {beer_word} logged for {names_str}."
 
     async def get_group_stats(self, group_id: str) -> str:
         """Get formatted group statistics."""
@@ -328,15 +364,15 @@ class StatsService:
         return self._format_group_stats(stats)
 
     async def get_today_stats(self, group_id: str) -> str:
-        """Get formatted stats for today."""
-        now = datetime.now(timezone.utc)
+        """Get formatted stats for today (Eastern time)."""
+        now = datetime.now(EASTERN)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         stats = await beer_repo.get_group_stats(group_id, since=start_of_day)
         return self._format_group_stats(stats)
 
     async def get_week_stats(self, group_id: str) -> str:
-        """Get formatted stats for this week."""
-        now = datetime.now(timezone.utc)
+        """Get formatted stats for this week (Eastern time)."""
+        now = datetime.now(EASTERN)
         start_of_week = now - timedelta(days=now.weekday())
         start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
         stats = await beer_repo.get_group_stats(group_id, since=start_of_week)
@@ -355,8 +391,8 @@ class StatsService:
         if not stats or stats.total_beers == 0:
             return f"{message.name}, you haven't logged any beers yet! Send a message with a beer emoji to get started."
 
-        # Get today's count
-        now = datetime.now(timezone.utc)
+        # Get today's count (Eastern time)
+        now = datetime.now(EASTERN)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_stats = await beer_repo.get_group_stats(message.group_id, since=start_of_day)
         today_count = next(
@@ -364,7 +400,7 @@ class StatsService:
             0,
         )
 
-        # Get this week's count
+        # Get this week's count (Eastern time)
         start_of_week = now - timedelta(days=now.weekday())
         start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
         week_stats = await beer_repo.get_group_stats(message.group_id, since=start_of_week)
@@ -381,7 +417,7 @@ class StatsService:
         ]
 
         if stats.last_beer_at:
-            diff = now - stats.last_beer_at
+            diff = now - stats.last_beer_at.astimezone(EASTERN)
             if diff < timedelta(hours=1):
                 time_ago = f"{int(diff.total_seconds() // 60)} minutes ago"
             elif diff < timedelta(days=1):
@@ -566,8 +602,8 @@ class StatsService:
             lines.append(f"30-day pace: {rate_30d:.1f} beers/day")
             lines.append(f"At this pace: {projection_30d}")
 
-            # Add estimated date
-            target_date = datetime.now(timezone.utc) + timedelta(days=days_to_goal_30d)
+            # Add estimated date (Eastern time)
+            target_date = datetime.now(EASTERN) + timedelta(days=days_to_goal_30d)
             lines.append(f"Target date: {target_date.strftime('%B %d, %Y')}")
         else:
             lines.append("30-day pace: Not enough data")
@@ -614,6 +650,40 @@ class StatsService:
         lines.append(f"\nTotal splits: {stats.total_splits}")
         return "\n".join(lines)
 
+    async def add_debt(
+        self,
+        message: GroupMeMessage,
+        amount: int,
+        debtor_user_id: str,
+        debtor_name: str,
+    ) -> str:
+        """Add debt to a user (they owe the group beers)."""
+        # Get or create the debtor
+        debtor = await user_repo.get_or_create(
+            groupme_user_id=debtor_user_id,
+            name=debtor_name,
+            avatar_url=None,
+        )
+
+        # Add to their debt
+        new_total = await debt_repo.add_debt(debtor.id, message.group_id, amount)
+
+        beer_word = "beer" if amount == 1 else "beers"
+        return f"{debtor.name} now owes {amount} {beer_word}. Total debt: {new_total} beers."
+
+    async def get_debt_leaderboard(self, group_id: str) -> str:
+        """Get the debt leaderboard (who owes the most)."""
+        leaderboard = await debt_repo.get_debt_leaderboard(group_id)
+
+        if not leaderboard:
+            return "No one owes any beers! 🎉"
+
+        lines = ["🍺 Beer Debt Leaderboard (who owes the most):"]
+        for i, entry in enumerate(leaderboard):
+            lines.append(f"{i + 1}. {entry.name} - {entry.amount} beers")
+
+        return "\n".join(lines)
+
     def get_help(self) -> str:
         """Get help message."""
         return """Beerbot Commands:
@@ -634,6 +704,10 @@ Split the G:
 - Post a Guinness at the G level - auto-detected! 🍀
 - !splitg - Split the G leaderboard
 - !unsplit [N] [@user] - Remove N splits (default 1)
+
+Beer Debts:
+- !owe N @user - They owe N beers (drink to pay off!)
+- !debts - Who owes the most beers
 
 Other:
 - !undo [@user] - Remove last beer entry

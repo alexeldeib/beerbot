@@ -87,3 +87,20 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_beers_split_the_g
             ON beers(split_the_g) WHERE split_the_g > 0
         """)
+
+        # Simple debt tracking per user per group (no creditor - just total owed)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_debts (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                group_id TEXT NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(user_id, group_id)
+            )
+        """)
+
+        # Index for debt queries
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_debts_group ON user_debts(group_id)
+        """)

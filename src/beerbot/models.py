@@ -13,6 +13,7 @@ class VisionResult:
 
     beer_count: int = 0
     split_the_g_count: int = 0
+    analyzed: bool = False  # True if analysis was actually performed
 
 
 class GroupMeAttachment(BaseModel):
@@ -96,3 +97,20 @@ class SplitGGroupStats(BaseModel):
     total_splits: int
     unique_splitters: int
     user_stats: list[SplitGUserStats]
+
+
+class UserDebt(BaseModel):
+    """Simple debt tracking for a user (how many beers they owe the group)."""
+
+    id: int
+    user_id: int
+    group_id: str
+    amount: int
+    updated_at: datetime
+
+
+class DebtLeaderboardEntry(BaseModel):
+    """Entry in the debt leaderboard."""
+
+    name: str
+    amount: int

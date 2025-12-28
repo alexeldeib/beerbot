@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import random
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -84,6 +85,20 @@ async def groupme_callback(request: Request):
     beer_count = max(text_beer_count, vision_result.beer_count)
     split_the_g = vision_result.split_the_g_count  # Only from images
 
+    # Check if images were analyzed but no beers found
+    has_images = any(a.type == "image" for a in message.attachments)
+    if has_images and beer_count == 0 and vision_result.analyzed:
+        quip = random.choice([
+            "Nice pic, but I don't see any beers!",
+            "Where's the beer? I only count drinks that count.",
+            "That's a great photo, but no beers detected.",
+            "I spy with my little eye... no beers!",
+            "Beautiful, but beerless.",
+            "Picture perfect, but beer-free!",
+        ])
+        await groupme_client.send_message(quip)
+        return {"status": "ok", "action": "quip", "reason": "no_beers_in_image"}
+
     if beer_count > 0:
         # Extract mentioned users with their names
         mentioned_users = extract_mentioned_users(message.text, message.attachments)
@@ -110,6 +125,18 @@ async def groupme_callback(request: Request):
 
 async def handle_command(command: str, message: GroupMeMessage) -> str | None:
     """Handle a command and return response text."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        return await _handle_command_inner(command, message)
+    except Exception:
+        logger.exception("Error handling command: %s", command)
+        return "Oops! Something went wrong processing that command."
+
+
+async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | None:
+    """Inner command handler (separated for error handling)."""
     match command:
         case "stats":
             return await stats_service.get_group_stats(message.group_id)
@@ -153,6 +180,18 @@ async def handle_command(command: str, message: GroupMeMessage) -> str | None:
                     target_user_id = attachment.user_ids[0]
                     break
             return await stats_service.unsplit(message, quantity, target_user_id)
+        case "owe":
+            # Parse the amount and get mentioned user with name
+            amount = message_parser.parse_debt_amount(message.text)
+            if amount <= 0:
+                return "Please specify how many beers: !owe N @user"
+            mentioned = extract_mentioned_users(message.text, message.attachments)
+            if not mentioned:
+                return "Please mention who owes beers: !owe N @user"
+            debtor_user_id, debtor_name = mentioned[0]
+            return await stats_service.add_debt(message, amount, debtor_user_id, debtor_name)
+        case "debts":
+            return await stats_service.get_debt_leaderboard(message.group_id)
         case "help":
             return stats_service.get_help()
         case _:

@@ -1,11 +1,15 @@
 """Data access layer for users and beers."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from .database import get_pool
-from .models import Beer, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserStats
+from .models import Beer, DebtLeaderboardEntry, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
+
+# Use Eastern time for all date calculations
+EASTERN = ZoneInfo("America/New_York")
 
 
 class UserRepository:
@@ -171,7 +175,7 @@ class BeerRepository:
             if since is None:
                 period = "all time"
             else:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(EASTERN)
                 diff = now - since
                 if diff <= timedelta(days=1):
                     period = "today"
@@ -245,32 +249,45 @@ class BeerRepository:
     async def remove_beers(self, user_id: int, group_id: str, quantity: int) -> int:
         """Remove a specific number of beers from a user in a group.
 
-        Deletes most recent entries first until the requested quantity is removed.
+        Decrements quantity on most recent entries first. Only deletes entries
+        when their quantity reaches 0.
         Returns the actual number of beers removed (may be less if user has fewer).
         """
         pool = await get_pool()
         removed = 0
 
         async with pool.acquire() as conn:
-            # Get entries ordered by most recent, delete until we've removed enough
             while removed < quantity:
+                # Find most recent entry
                 row = await conn.fetchrow(
                     """
-                    DELETE FROM beers
-                    WHERE id = (
-                        SELECT id FROM beers
-                        WHERE user_id = $1 AND group_id = $2
-                        ORDER BY logged_at DESC
-                        LIMIT 1
-                    )
-                    RETURNING quantity
+                    SELECT id, quantity FROM beers
+                    WHERE user_id = $1 AND group_id = $2
+                    ORDER BY logged_at DESC
+                    LIMIT 1
                     """,
                     user_id,
                     group_id,
                 )
                 if not row:
-                    break  # No more entries to delete
-                removed += row["quantity"]
+                    break  # No more entries
+
+                entry_id = row["id"]
+                entry_qty = row["quantity"]
+                needed = quantity - removed
+
+                if entry_qty > needed:
+                    # Decrement quantity on this entry
+                    await conn.execute(
+                        "UPDATE beers SET quantity = quantity - $1 WHERE id = $2",
+                        needed,
+                        entry_id,
+                    )
+                    removed += needed
+                else:
+                    # Delete entire entry and continue
+                    await conn.execute("DELETE FROM beers WHERE id = $1", entry_id)
+                    removed += entry_qty
 
         return removed
 
@@ -333,8 +350,8 @@ class BeerRepository:
                 group_id,
             )
 
-            # Get beers and date range for period
-            since = datetime.now(timezone.utc) - timedelta(days=days)
+            # Get beers and date range for period (Eastern time)
+            since = datetime.now(EASTERN) - timedelta(days=days)
             row = await conn.fetchrow(
                 """
                 SELECT
@@ -466,6 +483,94 @@ class BeerRepository:
         return removed
 
 
+class DebtRepository:
+    """Repository for simple debt tracking (beers owed to the group)."""
+
+    async def add_debt(self, user_id: int, group_id: str, amount: int) -> int:
+        """Add to a user's debt. Returns new total."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO user_debts (user_id, group_id, amount)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, group_id) DO UPDATE
+                SET amount = user_debts.amount + $3, updated_at = NOW()
+                RETURNING amount
+                """,
+                user_id,
+                group_id,
+                amount,
+            )
+            return row["amount"]
+
+    async def reduce_debt(self, user_id: int, group_id: str, amount: int) -> int:
+        """Reduce a user's debt (when they drink). Returns amount reduced."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            # Get current debt
+            current = await conn.fetchval(
+                "SELECT amount FROM user_debts WHERE user_id = $1 AND group_id = $2",
+                user_id,
+                group_id,
+            )
+
+            if not current or current <= 0:
+                return 0
+
+            # Reduce by min(amount, current) - can't go below 0
+            reduction = min(amount, current)
+            await conn.execute(
+                """
+                UPDATE user_debts
+                SET amount = amount - $1, updated_at = NOW()
+                WHERE user_id = $2 AND group_id = $3
+                """,
+                reduction,
+                user_id,
+                group_id,
+            )
+            return reduction
+
+    async def get_debt(self, user_id: int, group_id: str) -> int:
+        """Get a user's current debt."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT COALESCE(amount, 0) FROM user_debts WHERE user_id = $1 AND group_id = $2",
+                user_id,
+                group_id,
+            )
+            return result or 0
+
+    async def get_debt_leaderboard(self, group_id: str, limit: int = 10) -> list[DebtLeaderboardEntry]:
+        """Get leaderboard of who owes the most beers."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT u.name, d.amount
+                FROM user_debts d
+                JOIN users u ON d.user_id = u.id
+                WHERE d.group_id = $1 AND d.amount > 0
+                ORDER BY d.amount DESC
+                LIMIT $2
+                """,
+                group_id,
+                limit,
+            )
+
+            return [
+                DebtLeaderboardEntry(name=row["name"], amount=row["amount"])
+                for row in rows
+            ]
+
+
 # Singleton instances
 user_repo = UserRepository()
 beer_repo = BeerRepository()
+debt_repo = DebtRepository()
