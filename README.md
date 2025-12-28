@@ -99,7 +99,7 @@ Track drinks with your friends, compete on leaderboards, and let AI detect what 
 
 ### Prerequisites
 
-- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
 - GroupMe bot token ([create one here](https://dev.groupme.com/bots))
 - PostgreSQL database (Neon recommended)
 - Google Gemini API key (optional, for image analysis)
@@ -110,16 +110,14 @@ Track drinks with your friends, compete on leaderboards, and let AI detect what 
 # Clone and install
 git clone https://github.com/yourusername/beerbot.git
 cd beerbot
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync
 
 # Configure
 cp .env.example .env
 # Edit .env with your credentials
 
 # Run
-uvicorn src.beerbot.main:app --reload --port 8080
+uv run uvicorn src.beerbot.main:app --reload --port 8080
 
 # Expose for webhooks (use ngrok or similar)
 ngrok http 8080
@@ -128,7 +126,7 @@ ngrok http 8080
 ### Running Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ---
