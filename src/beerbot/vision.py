@@ -220,39 +220,41 @@ Just return the quip text, nothing else. No quotes."""
 
     def _generate_toast(self) -> str:
         """Generate toast synchronously."""
-        prompt = """Generate a short drinking toast (1-2 sentences). Pick ONE style at random:
+        import random
 
-1. CLASSIC TWIST: A traditional toast with a funny subversion
-2. FAKE QUOTE: Attribute something absurd to a historical figure
-3. PHILOSOPHICAL: Drunk wisdom that sounds deep but is silly
-4. FRIENDSHIP: Sincere but funny tribute to drinking buddies
-5. ABSURDIST: Completely unhinged non-sequitur that somehow works
-6. RHYMING: A quick clever rhyme
-7. CULTURAL: Reference a drinking tradition from any country
-8. SELF-DEPRECATING: Acknowledge we're all making questionable choices
+        # Pick a random style to force variety
+        styles = [
+            "A fake quote from a random historical figure (not Churchill or Franklin) saying something absurd about drinking",
+            "A toast in the style of a medieval knight or royalty",
+            "A scientific-sounding toast about the chemistry of alcohol",
+            "A toast that references a specific country's drinking tradition (not Ireland or Germany)",
+            "A pirate-themed toast",
+            "A toast that sounds like a sports commentator",
+            "A toast written like a haiku or short poem",
+            "A toast that's a fake proverb from a made-up culture",
+            "A toast in the style of a nature documentary narrator",
+            "A toast that references Greek/Roman gods",
+            "A toast written like a fortune cookie",
+            "A toast in the style of a dramatic movie trailer voiceover",
+        ]
+        chosen_style = random.choice(styles)
 
-DO NOT mention bots, apps, tracking, logging, data, or technology.
-DO NOT use phrases like "descent into chaos" or "delicious oblivion".
-Keep it under 200 characters. End with one emoji.
+        prompt = f"""Write a drinking toast in this specific style: {chosen_style}
 
-IMPORTANT: Output ONLY the toast text. Do NOT include "Style chosen:" or any prefix. Just the toast itself."""
+Rules:
+- 1-2 sentences max
+- DO NOT start with "Here's to" or "May our" or "May your"
+- DO NOT mention apps, bots, tracking, or technology
+- Use a creative emoji that matches the style (not just 🍻)
+- Be genuinely funny and original
+
+Output ONLY the toast text, nothing else."""
 
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=[prompt],
         )
-        text = response.text.strip().strip('"')
-        # Strip any "Style chosen:" prefix the model might add
-        for prefix in ["Style chosen:", "Style Chosen:", "STYLE:", "Style:"]:
-            if prefix.lower() in text.lower():
-                idx = text.lower().find(prefix.lower())
-                text = text[idx + len(prefix):].strip()
-                # Also strip any style name/number that follows
-                lines = text.split('\n')
-                if len(lines) > 1:
-                    text = '\n'.join(lines[1:]).strip()
-                break
-        return text
+        return response.text.strip().strip('"')
 
 
 # Singleton instance
