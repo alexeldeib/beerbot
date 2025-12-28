@@ -153,3 +153,12 @@ class DebtLeaderboardEntry(BaseModel):
 
     name: str
     amount: int
+
+
+class Group(BaseModel):
+    """Registered GroupMe group with bot mapping."""
+
+    group_id: str
+    bot_id: str
+    name: Optional[str] = None
+    created_at: datetime

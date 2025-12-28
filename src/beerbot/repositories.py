@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from .database import get_pool
-from .models import Beer, DebtLeaderboardEntry, DrinkType, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
+from .models import Beer, DebtLeaderboardEntry, DrinkType, Group, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
 
 # Use Eastern time for all date calculations
 EASTERN = ZoneInfo("America/New_York")
@@ -744,7 +744,80 @@ class DebtRepository:
             ]
 
 
+class GroupRepository:
+    """Repository for group-to-bot mapping operations."""
+
+    async def get_by_group_id(self, group_id: str) -> Group | None:
+        """Get a group by its GroupMe group ID."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM groups WHERE group_id = $1",
+                group_id,
+            )
+            return Group(**dict(row)) if row else None
+
+    async def get_bot_id(self, group_id: str) -> str | None:
+        """Get the bot_id for a group. Returns None if group not registered."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT bot_id FROM groups WHERE group_id = $1",
+                group_id,
+            )
+            return result
+
+    async def register(
+        self,
+        group_id: str,
+        bot_id: str,
+        name: str | None = None,
+    ) -> Group:
+        """Register a new group or update existing one."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO groups (group_id, bot_id, name)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (group_id) DO UPDATE
+                SET bot_id = EXCLUDED.bot_id,
+                    name = EXCLUDED.name
+                RETURNING *
+                """,
+                group_id,
+                bot_id,
+                name,
+            )
+            return Group(**dict(row))
+
+    async def list_all(self) -> list[Group]:
+        """List all registered groups."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM groups ORDER BY created_at DESC"
+            )
+            return [Group(**dict(row)) for row in rows]
+
+    async def delete(self, group_id: str) -> bool:
+        """Delete a group registration. Returns True if deleted."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM groups WHERE group_id = $1",
+                group_id,
+            )
+            return result == "DELETE 1"
+
+
 # Singleton instances
 user_repo = UserRepository()
 beer_repo = BeerRepository()
 debt_repo = DebtRepository()
+group_repo = GroupRepository()

@@ -3,8 +3,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from .config import settings
 
@@ -69,7 +70,7 @@ async def groupme_callback(request: Request):
     if command:
         response_text = await handle_command(command, message)
         if response_text:
-            await groupme_client.send_message(response_text)
+            await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "command", "command": command}
 
     # Check for drink removal (-N drinks syntax)
@@ -79,7 +80,7 @@ async def groupme_callback(request: Request):
         response_text = await stats_service.remove_drinks_by_type(
             message, removal_count, removal_type
         )
-        await groupme_client.send_message(response_text)
+        await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}
 
     # Check for drink logging (text triggers)
@@ -105,7 +106,7 @@ async def groupme_callback(request: Request):
     has_images = any(a.type == "image" for a in message.attachments)
     if has_images and drink_count == 0 and vision_result.analyzed:
         quip = await vision_service.generate_no_beer_quip()
-        await groupme_client.send_message(quip)
+        await groupme_client.send_message(quip, group_id=message.group_id)
         return {"status": "ok", "action": "quip", "reason": "no_drinks_in_image"}
 
     if drink_count > 0:
@@ -123,7 +124,7 @@ async def groupme_callback(request: Request):
             message, drink_count, mentioned_users, include_sender, split_the_g, drink_type
         )
         if response_text:
-            await groupme_client.send_message(response_text)
+            await groupme_client.send_message(response_text, group_id=message.group_id)
             return {"status": "ok", "action": "logged", "drinks": drink_count, "drink_type": drink_type.value, "split_the_g": split_the_g}
         else:
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
@@ -211,3 +212,92 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
             return await vision_service.generate_toast()
         case _:
             return None
+
+
+# --- Admin Endpoints ---
+
+class GroupRegistration(BaseModel):
+    """Request body for registering a group."""
+
+    group_id: str
+    bot_id: str
+    name: str | None = None
+
+
+async def verify_admin_token(authorization: str | None = Header(None)) -> None:
+    """Verify the admin token from Authorization header."""
+    if not settings.admin_token:
+        raise HTTPException(status_code=503, detail="Admin endpoints not configured")
+
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    # Expect "Bearer <token>" format
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+
+    if parts[1] != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+@app.post("/admin/groups", dependencies=[Depends(verify_admin_token)])
+async def register_group(registration: GroupRegistration):
+    """Register a new group with its bot_id mapping."""
+    from .repositories import group_repo
+
+    group = await group_repo.register(
+        group_id=registration.group_id,
+        bot_id=registration.bot_id,
+        name=registration.name,
+    )
+
+    # Clear cache so new bot_id is used immediately
+    groupme_client.clear_cache(registration.group_id)
+
+    return {
+        "status": "ok",
+        "group": {
+            "group_id": group.group_id,
+            "bot_id": group.bot_id,
+            "name": group.name,
+            "created_at": group.created_at.isoformat(),
+        },
+    }
+
+
+@app.get("/admin/groups", dependencies=[Depends(verify_admin_token)])
+async def list_groups():
+    """List all registered groups."""
+    from .repositories import group_repo
+
+    groups = await group_repo.list_all()
+
+    return {
+        "status": "ok",
+        "groups": [
+            {
+                "group_id": g.group_id,
+                "bot_id": g.bot_id,
+                "name": g.name,
+                "created_at": g.created_at.isoformat(),
+            }
+            for g in groups
+        ],
+    }
+
+
+@app.delete("/admin/groups/{group_id}", dependencies=[Depends(verify_admin_token)])
+async def delete_group(group_id: str):
+    """Delete a group registration."""
+    from .repositories import group_repo
+
+    deleted = await group_repo.delete(group_id)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    # Clear cache
+    groupme_client.clear_cache(group_id)
+
+    return {"status": "ok", "deleted": group_id}

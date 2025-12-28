@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     enable_image_analysis: bool = True
 
+    # Admin (optional - required for admin endpoints)
+    admin_token: str | None = None
+
     @property
     def is_development(self) -> bool:
         return self.environment == "development"

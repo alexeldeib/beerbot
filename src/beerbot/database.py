@@ -114,3 +114,13 @@ async def init_db() -> None:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_user_debts_group ON user_debts(group_id)
         """)
+
+        # Groups table for multi-group support (maps group_id to bot_id)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                group_id TEXT PRIMARY KEY,
+                bot_id TEXT NOT NULL,
+                name TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
