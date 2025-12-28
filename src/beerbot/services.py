@@ -87,6 +87,13 @@ class MessageParser:
     # Generic pattern for +N <word> (catches unknown drink types)
     GENERIC_DRINK_PATTERN = re.compile(r"^\+(\d+)\s*(\w+)", re.IGNORECASE)
 
+    # Negative patterns for removing drinks
+    NEGATIVE_BEER_PATTERN = re.compile(r"^-(\d+)\s*beers?", re.IGNORECASE)
+    NEGATIVE_WINE_PATTERN = re.compile(r"^-(\d+)\s*wines?", re.IGNORECASE)
+    NEGATIVE_COCKTAIL_PATTERN = re.compile(r"^-(\d+)\s*cocktails?", re.IGNORECASE)
+    NEGATIVE_CLAW_PATTERN = re.compile(r"^-(\d+)\s*(claws?|seltzers?)", re.IGNORECASE)
+    NEGATIVE_GENERIC_PATTERN = re.compile(r"^-(\d+)\s*(\w+)", re.IGNORECASE)
+
     # Alcoholic drink words that should count as cocktails when not matching specific types
     ALCOHOLIC_DRINK_WORDS = {
         # Cocktails/mixed drinks
@@ -230,6 +237,44 @@ class MessageParser:
         # Default: existing beer parsing
         beer_count = self.parse_beer_count(text)
         return beer_count, DrinkType.BEER
+
+    def parse_drink_removal(self, text: str | None) -> tuple[int, DrinkType] | None:
+        """Parse drink removal from message (-N drinks syntax).
+
+        Returns (count, drink_type) tuple if removal detected, None otherwise.
+        """
+        if not text:
+            return None
+
+        # Check for specific drink types first
+        match = self.NEGATIVE_WINE_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.WINE
+
+        match = self.NEGATIVE_COCKTAIL_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.COCKTAIL
+
+        match = self.NEGATIVE_CLAW_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.CLAW
+
+        match = self.NEGATIVE_BEER_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.BEER
+
+        # Check for generic alcoholic drinks
+        match = self.NEGATIVE_GENERIC_PATTERN.search(text)
+        if match:
+            count = int(match.group(1))
+            word = match.group(2).lower()
+            # Skip known types already checked
+            known_types = {"beer", "beers", "wine", "wines", "cocktail", "cocktails",
+                           "claw", "claws", "seltzer", "seltzers"}
+            if word not in known_types and word in self.ALCOHOLIC_DRINK_WORDS:
+                return count, DrinkType.COCKTAIL
+
+        return None
 
     def parse_command(self, text: str | None) -> str | None:
         """Check if message is a command. Returns command name or None."""
@@ -667,6 +712,45 @@ class StatsService:
             return f"Removed all {quantity_removed} {beer_word} from {target_name} (only had {quantity_removed}). New total: {total}."
 
         return f"Removed {quantity_removed} {beer_word} from {target_name}. New total: {total}."
+
+    async def remove_drinks_by_type(
+        self,
+        message: GroupMeMessage,
+        quantity: int,
+        drink_type: DrinkType,
+    ) -> str:
+        """Remove a specific number of drinks of a specific type from the sender."""
+        user = await user_repo.get_or_create(
+            groupme_user_id=message.user_id,
+            name=message.name,
+            avatar_url=message.avatar_url,
+        )
+
+        # Remove drinks of this type
+        quantity_removed = await beer_repo.remove_beers_by_type(
+            user.id, message.group_id, quantity, drink_type
+        )
+
+        # Drink type naming
+        drink_names = {
+            DrinkType.BEER: ("beer", "beers"),
+            DrinkType.WINE: ("wine", "wines"),
+            DrinkType.COCKTAIL: ("cocktail", "cocktails"),
+            DrinkType.CLAW: ("claw", "claws"),
+        }
+        singular, plural = drink_names.get(drink_type, ("drink", "drinks"))
+        drink_word = singular if quantity_removed == 1 else plural
+
+        if quantity_removed == 0:
+            return f"{message.name} has no {plural} to remove!"
+
+        # Get new total for this drink type
+        new_total = await beer_repo.get_user_total_by_type(user.id, message.group_id, drink_type)
+
+        if quantity_removed < quantity:
+            return f"Removed all {quantity_removed} {drink_word} from {message.name} (only had {quantity_removed}). {singular.title()} total: {new_total}."
+
+        return f"Removed {quantity_removed} {drink_word} from {message.name}. {singular.title()} total: {new_total}."
 
     async def unsplit(
         self,

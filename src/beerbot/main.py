@@ -72,6 +72,16 @@ async def groupme_callback(request: Request):
             await groupme_client.send_message(response_text)
         return {"status": "ok", "action": "command", "command": command}
 
+    # Check for drink removal (-N drinks syntax)
+    removal = message_parser.parse_drink_removal(message.text)
+    if removal:
+        removal_count, removal_type = removal
+        response_text = await stats_service.remove_drinks_by_type(
+            message, removal_count, removal_type
+        )
+        await groupme_client.send_message(response_text)
+        return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}
+
     # Check for drink logging (text triggers)
     text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
 

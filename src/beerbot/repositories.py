@@ -311,6 +311,53 @@ class BeerRepository:
 
         return removed
 
+    async def remove_beers_by_type(
+        self, user_id: int, group_id: str, quantity: int, drink_type: DrinkType
+    ) -> int:
+        """Remove a specific number of drinks of a specific type from a user.
+
+        Decrements quantity on most recent entries of that type first.
+        Returns the actual number removed (may be less if user has fewer).
+        """
+        pool = await get_pool()
+        removed = 0
+
+        async with pool.acquire() as conn:
+            while removed < quantity:
+                # Find most recent entry of this drink type
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, quantity FROM beers
+                    WHERE user_id = $1 AND group_id = $2 AND drink_type = $3
+                    ORDER BY logged_at DESC
+                    LIMIT 1
+                    """,
+                    user_id,
+                    group_id,
+                    drink_type.value,
+                )
+                if not row:
+                    break  # No more entries of this type
+
+                entry_id = row["id"]
+                entry_qty = row["quantity"]
+                needed = quantity - removed
+
+                if entry_qty > needed:
+                    # Decrement quantity on this entry
+                    await conn.execute(
+                        "UPDATE beers SET quantity = quantity - $1 WHERE id = $2",
+                        needed,
+                        entry_id,
+                    )
+                    removed += needed
+                else:
+                    # Delete entire entry and continue
+                    await conn.execute("DELETE FROM beers WHERE id = $1", entry_id)
+                    removed += entry_qty
+
+        return removed
+
     async def create_batch(
         self,
         entries: list[tuple[int, str, int, str | None, int, DrinkType]],
