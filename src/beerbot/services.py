@@ -279,14 +279,15 @@ class StatsService:
         message: GroupMeMessage,
         quantity: int,
         split_the_g: int = 0,
+        drink_type: DrinkType = DrinkType.BEER,
     ) -> str | None:
-        """Log beers for a user and return confirmation message.
+        """Log drinks for a user and return confirmation message.
 
         Returns None if this was a duplicate message (idempotency).
         """
         logger.info(
-            "log_beers called: user=%s qty=%d split_g=%d msg_id=%s",
-            message.name, quantity, split_the_g, message.id
+            "log_beers called: user=%s qty=%d split_g=%d drink_type=%s msg_id=%s",
+            message.name, quantity, split_the_g, drink_type.value, message.id
         )
 
         # Get or create user
@@ -296,13 +297,14 @@ class StatsService:
             avatar_url=message.avatar_url,
         )
 
-        # Log the beers (returns None if duplicate)
+        # Log the drinks (returns None if duplicate)
         beer = await beer_repo.create(
             user_id=user.id,
             group_id=message.group_id,
             quantity=quantity,
             message_id=message.id,
             split_the_g=split_the_g,
+            drink_type=drink_type,
         )
 
         logger.info(
@@ -334,10 +336,19 @@ class StatsService:
             split_total = await beer_repo.get_user_split_g_total(user.id, message.group_id)
             split_msg = f" 🍀 You split the G! ({split_total} total)"
 
+        # Drink-type-specific wording
+        drink_names = {
+            DrinkType.BEER: ("beer", "beers", "Cheers"),
+            DrinkType.WINE: ("wine", "wines", "Salut"),
+            DrinkType.COCKTAIL: ("cocktail", "cocktails", "Cheers"),
+            DrinkType.CLAW: ("claw", "claws", "Cheers"),
+        }
+        singular, plural, greeting = drink_names.get(drink_type, ("drink", "drinks", "Cheers"))
+
         if quantity == 1:
-            return f"Cheers, {message.name}!{split_msg}{debt_msg} You've now had {total} beer{'s' if total != 1 else ''} total."
+            return f"{greeting}, {message.name}!{split_msg}{debt_msg} You've now had {total} {singular if total == 1 else plural} total."
         else:
-            return f"Cheers, {message.name}!{split_msg}{debt_msg} +{quantity} beers logged. You've now had {total} total."
+            return f"{greeting}, {message.name}!{split_msg}{debt_msg} +{quantity} {plural} logged. You've now had {total} total."
 
     async def log_beers_for_users(
         self,
@@ -380,7 +391,7 @@ class StatsService:
 
         # If only the sender and include_sender is True, use simpler method
         if len(users_to_log) == 1 and include_sender:
-            return await self.log_beers(message, quantity, split_the_g)
+            return await self.log_beers(message, quantity, split_the_g, drink_type)
 
         # First pass: get or create all users (each is atomic via ON CONFLICT)
         users: list[tuple[int, str]] = []  # (internal_user_id, name)
