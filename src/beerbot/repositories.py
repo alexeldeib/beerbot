@@ -656,6 +656,73 @@ class BeerRepository:
 
             return result
 
+    async def get_leaderboard_with_breakdown(
+        self,
+        group_id: str,
+        drink_type: DrinkType | None = None,
+        limit: int = 5,
+    ) -> list[tuple[str, int, dict[str, int]]]:
+        """Get leaderboard with per-user drink type breakdown.
+
+        Args:
+            group_id: The group to query
+            drink_type: Optional filter - if set, users are ranked by this type only
+            limit: Max number of users to return
+
+        Returns:
+            List of (name, total_for_ranking, {type: count}) tuples
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            if drink_type:
+                # When filtered, rank by specific type
+                query = """
+                    SELECT u.name,
+                           SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) as total,
+                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
+                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
+                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
+                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
+                    FROM beers b
+                    JOIN users u ON b.user_id = u.id
+                    WHERE b.group_id = $1
+                    GROUP BY u.id, u.name
+                    HAVING SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) > 0
+                    ORDER BY total DESC
+                    LIMIT $3
+                """
+                rows = await conn.fetch(query, group_id, drink_type.value, limit)
+            else:
+                # Unfiltered - rank by total of all types
+                query = """
+                    SELECT u.name,
+                           SUM(b.quantity) as total,
+                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
+                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
+                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
+                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
+                    FROM beers b
+                    JOIN users u ON b.user_id = u.id
+                    WHERE b.group_id = $1
+                    GROUP BY u.id, u.name
+                    ORDER BY total DESC
+                    LIMIT $2
+                """
+                rows = await conn.fetch(query, group_id, limit)
+
+            results = []
+            for row in rows:
+                breakdown = {
+                    "beer": int(row["beer_count"]),
+                    "wine": int(row["wine_count"]),
+                    "cocktail": int(row["cocktail_count"]),
+                    "claw": int(row["claw_count"]),
+                }
+                results.append((row["name"], int(row["total"]), breakdown))
+
+            return results
+
 
 class DebtRepository:
     """Repository for simple debt tracking (beers owed to the group)."""

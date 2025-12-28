@@ -645,19 +645,48 @@ class StatsService:
 
         return "\n".join(lines)
 
-    async def get_leaderboard(self, group_id: str, limit: int = 5) -> str:
-        """Get formatted leaderboard."""
-        stats = await beer_repo.get_group_stats(group_id)
+    async def get_leaderboard(
+        self, group_id: str, drink_type: DrinkType | None = None, limit: int = 5
+    ) -> str:
+        """Get formatted leaderboard, optionally filtered by drink type."""
+        leaderboard = await beer_repo.get_leaderboard_with_breakdown(
+            group_id, drink_type, limit
+        )
 
-        if not stats.user_stats:
-            return "No beers logged yet! Be the first to log one."
+        if not leaderboard:
+            if drink_type:
+                return f"No {drink_type.value}s logged yet! Be the first to log one."
+            return "No drinks logged yet! Be the first to log one."
 
-        lines = ["Beer Leaderboard:"]
+        # Determine title and format based on filter
+        if drink_type:
+            type_name = drink_type.value.title()
+            lines = [f"{type_name} Leaderboard:"]
+            plural = f"{drink_type.value}s"
+        else:
+            lines = ["Drink Leaderboard:"]
+
         medals = ["1.", "2.", "3."]
 
-        for i, user_stat in enumerate(stats.user_stats[:limit]):
+        for i, (name, total, breakdown) in enumerate(leaderboard[:limit]):
             prefix = medals[i] if i < len(medals) else f"{i + 1}."
-            lines.append(f"{prefix} {user_stat.name} - {user_stat.total_beers} beers")
+
+            if drink_type:
+                # Simple format when filtered
+                lines.append(f"{prefix} {name} - {total} {plural}")
+            else:
+                # Show breakdown when unfiltered
+                breakdown_parts = []
+                for dt, emoji in [("beer", "🍺"), ("wine", "🍷"), ("cocktail", "🍸"), ("claw", "🥤")]:
+                    count = breakdown.get(dt, 0)
+                    if count > 0:
+                        breakdown_parts.append(f"{emoji}{count}")
+
+                breakdown_str = " ".join(breakdown_parts) if breakdown_parts else ""
+                if breakdown_str:
+                    lines.append(f"{prefix} {name} - {total} | {breakdown_str}")
+                else:
+                    lines.append(f"{prefix} {name} - {total}")
 
         return "\n".join(lines)
 
@@ -971,7 +1000,7 @@ Log drinks:
 Stats:
 - !beers - Group drink count
 - !mystats - Your breakdown by type
-- !leaderboard
+- !leaderboard [beer|wine|cocktail|claw]
 - !today / !week [beer|wine|cocktail|claw]
 - !million [beer|wine|cocktail|claw] - Road to 1M
 

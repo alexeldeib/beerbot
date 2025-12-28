@@ -153,7 +153,9 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
         case "mystats":
             return await stats_service.get_user_stats(message)
         case "leaderboard":
-            return await stats_service.get_leaderboard(message.group_id)
+            # Parse optional drink type filter
+            drink_filter = message_parser.parse_stats_filter(message.text, "leaderboard")
+            return await stats_service.get_leaderboard(message.group_id, drink_filter)
         case "today":
             # Parse optional drink type filter
             drink_filter = message_parser.parse_stats_filter(message.text, "today")
