@@ -220,10 +220,22 @@ Just return the quip text, nothing else. No quotes."""
 
     def _generate_toast(self) -> str:
         """Generate toast synchronously."""
-        prompt = """Generate a single short, fun drinking toast (under 80 characters) for a drink-tracking bot.
-Be playful, sassy, and encourage drinking. Can be silly, irreverent, or a classic with a twist.
-Vary the style - sometimes rhyming, sometimes a quote, sometimes absurd.
-Just return the toast text with an emoji at the end, nothing else. No quotes."""
+        prompt = """Generate a drinking toast for a group chat's beer-tracking bot. The toast should be 2-4 sentences.
+
+Style guidelines:
+- Be genuinely funny, clever, or heartwarming - not generic
+- Can be a mini-story, a fake quote from a historical figure, absurdist humor, or sincere friendship vibes
+- Reference drinking culture, bad decisions, friendship, or the passage of time
+- Avoid clichés like "here's to..." unless you're subverting them
+- Can be slightly roast-y or self-deprecating
+- End with a toast phrase and a relevant emoji
+
+Examples of the VIBE (don't copy these, just get the energy):
+- "They say you can't buy happiness, but you can buy another round, and that's basically the same thing. To poor decisions and great stories! 🍺"
+- "Winston Churchill once said 'I have taken more out of alcohol than alcohol has taken out of me.' He was also wrong about a lot of things, but not this. Cheers! 🥃"
+- "Here's to the nights we'll never remember with the friends we'll never forget... and to whoever's buying the next round. 🍻"
+
+Generate ONE original toast. Just the toast text, nothing else."""
 
         response = self.client.models.generate_content(
             model=self.MODEL,
