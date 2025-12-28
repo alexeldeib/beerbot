@@ -123,6 +123,24 @@ class BeerRepository:
                 )
             return int(result)
 
+    async def get_user_total_by_type(
+        self, user_id: int, group_id: str, drink_type: DrinkType
+    ) -> int:
+        """Get total drinks of a specific type for a user in a group."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(quantity), 0)
+                FROM beers WHERE user_id = $1 AND group_id = $2 AND drink_type = $3
+                """,
+                user_id,
+                group_id,
+                drink_type.value,
+            )
+            return int(result)
+
     async def get_group_stats(
         self,
         group_id: str,
@@ -338,8 +356,14 @@ class BeerRepository:
         self,
         group_id: str,
         days: int = 30,
+        drink_type: DrinkType | None = None,
     ) -> tuple[int, int, float]:
         """Get rate statistics for a group over a period.
+
+        Args:
+            group_id: The group to get stats for
+            days: Number of days to look back
+            drink_type: Optional filter by drink type
 
         Returns:
             tuple: (total_beers_all_time, beers_in_period, days_with_activity)
@@ -347,26 +371,43 @@ class BeerRepository:
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Get total beers all time
+            # Build WHERE clause for drink type filter
+            type_filter = ""
+            type_param: list = []
+            if drink_type is not None:
+                type_filter = " AND drink_type = $2"
+                type_param = [drink_type.value]
+
+            # Get total all time (with optional type filter)
             total_all_time = await conn.fetchval(
-                "SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1",
+                f"SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1{type_filter}",
                 group_id,
+                *type_param,
             )
 
-            # Get beers and date range for period (Eastern time)
+            # Get drinks and date range for period (Eastern time)
             since = datetime.now(EASTERN) - timedelta(days=days)
-            row = await conn.fetchrow(
+            # Adjust parameter numbers for the period query
+            if drink_type is not None:
+                period_query = """
+                    SELECT
+                        COALESCE(SUM(quantity), 0) as period_total,
+                        MIN(logged_at) as first_beer,
+                        MAX(logged_at) as last_beer
+                    FROM beers
+                    WHERE group_id = $1 AND logged_at >= $2 AND drink_type = $3
                 """
-                SELECT
-                    COALESCE(SUM(quantity), 0) as period_total,
-                    MIN(logged_at) as first_beer,
-                    MAX(logged_at) as last_beer
-                FROM beers
-                WHERE group_id = $1 AND logged_at >= $2
-                """,
-                group_id,
-                since,
-            )
+                row = await conn.fetchrow(period_query, group_id, since, drink_type.value)
+            else:
+                period_query = """
+                    SELECT
+                        COALESCE(SUM(quantity), 0) as period_total,
+                        MIN(logged_at) as first_beer,
+                        MAX(logged_at) as last_beer
+                    FROM beers
+                    WHERE group_id = $1 AND logged_at >= $2
+                """
+                row = await conn.fetchrow(period_query, group_id, since)
 
             period_total = int(row["period_total"])
             first_beer = row["first_beer"]

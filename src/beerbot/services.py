@@ -317,8 +317,8 @@ class StatsService:
             logger.info("Duplicate message, returning None")
             return None
 
-        # Get new total
-        total = await beer_repo.get_user_total(user.id, message.group_id)
+        # Get new total for this drink type
+        total = await beer_repo.get_user_total_by_type(user.id, message.group_id, drink_type)
 
         # Auto-reduce debt when drinking
         debt_reduced = await debt_repo.reduce_debt(user.id, message.group_id, quantity)
@@ -687,9 +687,9 @@ class StatsService:
         # Get total for the filtered type (or all)
         total = await beer_repo.get_group_total_by_type(group_id, drink_type)
 
-        # Get rate data for projections (using all drinks for now)
-        _, beers_7d, days_7d = await beer_repo.get_rate_stats(group_id, days=7)
-        _, beers_30d, days_30d = await beer_repo.get_rate_stats(group_id, days=30)
+        # Get rate data for projections (filtered by drink type if specified)
+        _, beers_7d, days_7d = await beer_repo.get_rate_stats(group_id, days=7, drink_type=drink_type)
+        _, beers_30d, days_30d = await beer_repo.get_rate_stats(group_id, days=30, drink_type=drink_type)
 
         # Determine label based on filter
         if drink_type is None:
@@ -720,7 +720,7 @@ class StatsService:
             rate_7d = beers_7d / days_7d
             days_to_goal_7d = remaining / rate_7d
             projection_7d = self._format_duration(days_to_goal_7d)
-            lines.append(f"7-day pace: {rate_7d:.1f} beers/day")
+            lines.append(f"7-day pace: {rate_7d:.1f} {drink_label}/day")
             lines.append(f"At this pace: {projection_7d}")
         else:
             lines.append("7-day pace: Not enough recent data")
@@ -731,7 +731,7 @@ class StatsService:
             rate_30d = beers_30d / days_30d
             days_to_goal_30d = remaining / rate_30d
             projection_30d = self._format_duration(days_to_goal_30d)
-            lines.append(f"30-day pace: {rate_30d:.1f} beers/day")
+            lines.append(f"30-day pace: {rate_30d:.1f} {drink_label}/day")
             lines.append(f"At this pace: {projection_30d}")
 
             # Add estimated date (Eastern time)
