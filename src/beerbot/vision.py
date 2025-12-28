@@ -22,22 +22,17 @@ logger = logging.getLogger(__name__)
 class VisionService:
     """Service for analyzing images using Gemini Vision API."""
 
-    PROMPT = """Analyze this image for BEERS ONLY and Guinness "Split the G" achievements.
+    PROMPT = """Analyze this image for beer presence and Guinness "Split the G" achievements.
 
-TASK 1 - Count beers: Count ONLY actual beers (beer glasses, beer cans, beer bottles, pints, mugs with beer).
-DO NOT count: wine glasses, champagne flutes, cocktails, spirits, water, soda, or any non-beer drinks.
-Wine glasses are tall and thin with a stem - these are NOT beers.
+TASK 1 - Is there a beer? Answer true/false. A beer is: a beer glass, beer can, beer bottle, pint, or mug with beer.
+DO NOT count wine glasses, champagne flutes, cocktails, spirits, water, or soda as beer.
 
 TASK 2 - Detect "Split the G": For any Guinness pint glass, check if the beer level
-(where the liquid meets the glass) crosses through or touches the "G" letter in
-"GUINNESS" printed on the glass. If the liquid line is at, near, or through the G,
-count it as a split.
+crosses through or touches the "G" in "GUINNESS" on the glass.
 
-Return JSON: {"beer_count": <int>, "split_the_g_count": <int>}
+Return JSON: {"has_beer": <bool>, "split_the_g": <bool>}
 
-IMPORTANT: Only count BEERS. Wine, champagne, and cocktails do NOT count.
-If the beer level is anywhere near the word GUINNESS (especially touching or crossing the G),
-that counts as split_the_g_count = 1. If no beers visible, return {"beer_count": 0, "split_the_g_count": 0}"""
+Example: {"has_beer": true, "split_the_g": false}"""
 
     MODEL = "gemini-2.0-flash"
 
@@ -100,13 +95,16 @@ that counts as split_the_g_count = 1. If no beers visible, return {"beer_count":
 
             try:
                 data = json.loads(json_text)
-                beer_count = int(data.get("beer_count", 0))
-                split_count = int(data.get("split_the_g_count", 0))
+                has_beer = bool(data.get("has_beer", False))
+                split_the_g = bool(data.get("split_the_g", False))
+                # Default to 1 beer per image if beer detected
+                beer_count = 1 if has_beer else 0
+                split_count = 1 if split_the_g else 0
                 result = VisionResult(beer_count=beer_count, split_the_g_count=split_count, analyzed=True)
             except (json.JSONDecodeError, KeyError, TypeError):
-                # Fallback: extract first integer for beer count (backward compat)
-                match = re.search(r"\d+", raw_text)
-                beer_count = int(match.group()) if match else 0
+                # Fallback: check for "true" in response to detect beer
+                has_beer = "true" in raw_text.lower()
+                beer_count = 1 if has_beer else 0
                 result = VisionResult(beer_count=beer_count, split_the_g_count=0, analyzed=True)
 
             logger.info(
