@@ -145,42 +145,46 @@ class BeerRepository:
         self,
         group_id: str,
         since: datetime | None = None,
+        drink_type: DrinkType | None = None,
     ) -> GroupStats:
-        """Get statistics for a group."""
+        """Get statistics for a group, optionally filtered by drink type."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Build query based on time filter
+            # Build WHERE clauses
+            params: list = [group_id]
+            where_parts = ["b.group_id = $1"]
+            param_idx = 2
+
             if since:
-                total_query = """
-                    SELECT COALESCE(SUM(quantity), 0)
-                    FROM beers WHERE group_id = $1 AND logged_at >= $2
-                """
-                user_stats_query = """
-                    SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1 AND b.logged_at >= $2
-                    GROUP BY u.id, u.name
-                    ORDER BY total DESC
-                """
-                total = await conn.fetchval(total_query, group_id, since)
-                rows = await conn.fetch(user_stats_query, group_id, since)
-            else:
-                total_query = """
-                    SELECT COALESCE(SUM(quantity), 0)
-                    FROM beers WHERE group_id = $1
-                """
-                user_stats_query = """
-                    SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1
-                    GROUP BY u.id, u.name
-                    ORDER BY total DESC
-                """
-                total = await conn.fetchval(total_query, group_id)
-                rows = await conn.fetch(user_stats_query, group_id)
+                where_parts.append(f"b.logged_at >= ${param_idx}")
+                params.append(since)
+                param_idx += 1
+
+            if drink_type:
+                where_parts.append(f"b.drink_type = ${param_idx}")
+                params.append(drink_type.value)
+                param_idx += 1
+
+            where_clause = " AND ".join(where_parts)
+
+            # Total query
+            total_query = f"""
+                SELECT COALESCE(SUM(b.quantity), 0)
+                FROM beers b WHERE {where_clause}
+            """
+            total = await conn.fetchval(total_query, *params)
+
+            # User stats query
+            user_stats_query = f"""
+                SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
+                FROM beers b
+                JOIN users u ON b.user_id = u.id
+                WHERE {where_clause}
+                GROUP BY u.id, u.name
+                ORDER BY total DESC
+            """
+            rows = await conn.fetch(user_stats_query, *params)
 
             user_stats = [
                 UserStats(
@@ -190,6 +194,22 @@ class BeerRepository:
                 )
                 for row in rows
             ]
+
+            # Get drink type breakdown (always unfiltered by type to show full breakdown)
+            breakdown_params: list = [group_id]
+            breakdown_where = "group_id = $1"
+            if since:
+                breakdown_where += " AND logged_at >= $2"
+                breakdown_params.append(since)
+
+            type_query = f"""
+                SELECT drink_type, COALESCE(SUM(quantity), 0) as count
+                FROM beers WHERE {breakdown_where}
+                GROUP BY drink_type
+            """
+            type_rows = await conn.fetch(type_query, *breakdown_params)
+
+            drink_type_counts = {row["drink_type"]: int(row["count"]) for row in type_rows}
 
             # Determine period description
             if since is None:
@@ -209,6 +229,7 @@ class BeerRepository:
                 unique_drinkers=len(user_stats),
                 user_stats=user_stats,
                 period_description=period,
+                drink_type_counts=drink_type_counts,
             )
 
     async def get_user_stats_in_group(

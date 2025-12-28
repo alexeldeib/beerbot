@@ -119,6 +119,7 @@ class GroupStats(BaseModel):
     unique_drinkers: int
     user_stats: list[UserStats]
     period_description: str  # "all time", "today", "this week"
+    drink_type_counts: dict[str, int] = {}  # {"beer": 10, "wine": 5, ...}
 
 
 class SplitGUserStats(BaseModel):

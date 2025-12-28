@@ -154,9 +154,13 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
         case "leaderboard":
             return await stats_service.get_leaderboard(message.group_id)
         case "today":
-            return await stats_service.get_today_stats(message.group_id)
+            # Parse optional drink type filter
+            drink_filter = message_parser.parse_stats_filter(message.text, "today")
+            return await stats_service.get_today_stats(message.group_id, drink_filter)
         case "week":
-            return await stats_service.get_week_stats(message.group_id)
+            # Parse optional drink type filter
+            drink_filter = message_parser.parse_stats_filter(message.text, "week")
+            return await stats_service.get_week_stats(message.group_id, drink_filter)
         case "undo":
             # Check for mentioned user in attachments
             target_user_id = None

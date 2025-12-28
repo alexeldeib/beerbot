@@ -347,6 +347,23 @@ class MessageParser:
             return DrinkType.from_string(filter_type)
         return None  # Default: count all drinks
 
+    def parse_stats_filter(self, text: str | None, command: str) -> DrinkType | None:
+        """Parse drink type filter from stats commands (!today, !week, !beers).
+
+        Returns None for 'all' or no filter (counts all drinks).
+        Returns specific DrinkType for filtered view.
+        """
+        if not text:
+            return None
+        pattern = rf"!{command}\s+(beer|wine|cocktail|claw|all)"
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            filter_type = match.group(1).lower()
+            if filter_type == "all":
+                return None
+            return DrinkType.from_string(filter_type)
+        return None  # Default: count all drinks
+
 
 class StatsService:
     """Service for generating statistics responses."""
@@ -548,20 +565,24 @@ class StatsService:
         stats = await beer_repo.get_group_stats(group_id)
         return self._format_group_stats(stats)
 
-    async def get_today_stats(self, group_id: str) -> str:
-        """Get formatted stats for today (Eastern time)."""
+    async def get_today_stats(
+        self, group_id: str, drink_type: DrinkType | None = None
+    ) -> str:
+        """Get formatted stats for today (Eastern time), optionally filtered by drink type."""
         now = datetime.now(EASTERN)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        stats = await beer_repo.get_group_stats(group_id, since=start_of_day)
-        return self._format_group_stats(stats)
+        stats = await beer_repo.get_group_stats(group_id, since=start_of_day, drink_type=drink_type)
+        return self._format_group_stats(stats, drink_type)
 
-    async def get_week_stats(self, group_id: str) -> str:
-        """Get formatted stats for this week (Eastern time)."""
+    async def get_week_stats(
+        self, group_id: str, drink_type: DrinkType | None = None
+    ) -> str:
+        """Get formatted stats for this week (Eastern time), optionally filtered by drink type."""
         now = datetime.now(EASTERN)
         start_of_week = now - timedelta(days=now.weekday())
         start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
-        stats = await beer_repo.get_group_stats(group_id, since=start_of_week)
-        return self._format_group_stats(stats)
+        stats = await beer_repo.get_group_stats(group_id, since=start_of_week, drink_type=drink_type)
+        return self._format_group_stats(stats, drink_type)
 
     async def get_user_stats(self, message: GroupMeMessage) -> str:
         """Get formatted stats for the requesting user."""
@@ -950,7 +971,8 @@ Log drinks:
 Stats:
 - !beers - Group drink count
 - !mystats - Your breakdown by type
-- !leaderboard / !today / !week
+- !leaderboard
+- !today / !week [beer|wine|cocktail|claw]
 - !million [beer|wine|cocktail|claw] - Road to 1M
 
 Split the G:
@@ -966,14 +988,30 @@ Other:
 - !undo / !unbeer N [@user]
 - !toast - Get a fun drinking toast"""
 
-    def _format_group_stats(self, stats: GroupStats) -> str:
+    def _format_group_stats(
+        self, stats: GroupStats, drink_type: DrinkType | None = None
+    ) -> str:
         """Format GroupStats into a message."""
+        # Determine title based on filter
+        if drink_type:
+            type_name = drink_type.value.title()
+            type_label = f"{type_name}s"
+        else:
+            type_label = "Drinks"
+
         if stats.total_beers == 0:
-            return f"No beers logged {stats.period_description}. Time to change that!"
+            return f"No {type_label.lower()} logged {stats.period_description}. Time to change that!"
+
+        # Build drink type breakdown with emojis
+        type_counts = stats.drink_type_counts
+        breakdown_parts = []
+        for dt, emoji in [("beer", "🍺"), ("wine", "🍷"), ("cocktail", "🍸"), ("claw", "🥤")]:
+            count = type_counts.get(dt, 0)
+            breakdown_parts.append(f"{emoji}{count}")
 
         lines = [
-            f"Beer Count ({stats.period_description}):",
-            f"Total: {stats.total_beers} beers",
+            f"{type_label} ({stats.period_description}):",
+            f"Total: {stats.total_beers} | " + " ".join(breakdown_parts),
             f"Drinkers: {stats.unique_drinkers}",
         ]
 
