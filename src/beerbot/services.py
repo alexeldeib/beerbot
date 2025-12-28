@@ -84,6 +84,30 @@ class MessageParser:
     CLAW_NUMERIC_PATTERN = re.compile(r"^\+(\d+)\s*(claws?|seltzers?)", re.IGNORECASE)
     CLAW_ME_PATTERN = re.compile(r"^(claw me|seltzer me)\b", re.IGNORECASE)
 
+    # Generic pattern for +N <word> (catches unknown drink types)
+    GENERIC_DRINK_PATTERN = re.compile(r"^\+(\d+)\s*(\w+)", re.IGNORECASE)
+
+    # Alcoholic drink words that should count as cocktails when not matching specific types
+    ALCOHOLIC_DRINK_WORDS = {
+        # Cocktails/mixed drinks
+        "mimosa", "mimosas", "margarita", "margaritas", "martini", "martinis",
+        "mojito", "mojitos", "daiquiri", "daiquiris", "cosmopolitan", "cosmopolitans",
+        "manhattan", "manhattans", "negroni", "negronis", "maitai", "maitais",
+        "pinacolada", "pinacoladas", "bloodymary", "bloodymaries", "oldfashioned",
+        "whiskeysour", "whiskeysours", "ginandtonic", "sangria", "sangrias",
+        "bellini", "bellinis", "spritz", "spritzes", "aperol", "aperols",
+        "highball", "highballs", "shot", "shots", "shooter", "shooters",
+        "paloma", "palomas", "caipirinha", "caipirinhas", "mule", "mules",
+        # Spirits (drinking neat)
+        "whiskey", "whiskeys", "bourbon", "bourbons", "scotch", "scotches",
+        "vodka", "vodkas", "rum", "rums", "tequila", "tequilas",
+        "gin", "gins", "brandy", "brandies", "cognac", "cognacs",
+        "mezcal", "mezcals", "sake", "sakes",
+        # Generic terms
+        "drink", "drinks", "beverage", "beverages", "booze",
+        "round", "rounds", "pour", "pours", "dram", "drams",
+    }
+
     # Max message length for emoji-only beer counting (prevents counting in long docs)
     MAX_EMOJI_MESSAGE_LENGTH = 100
 
@@ -191,6 +215,17 @@ class MessageParser:
 
         if self.CLAW_ME_PATTERN.search(text):
             return 1, DrinkType.CLAW
+
+        # Check for generic alcoholic drinks (+N <word> where word is alcoholic)
+        match = self.GENERIC_DRINK_PATTERN.search(text)
+        if match:
+            count = int(match.group(1))
+            word = match.group(2).lower()
+            # Skip known types that were already checked above
+            known_types = {"beer", "beers", "wine", "wines", "cocktail", "cocktails",
+                           "claw", "claws", "seltzer", "seltzers"}
+            if word not in known_types and word in self.ALCOHOLIC_DRINK_WORDS:
+                return count, DrinkType.COCKTAIL
 
         # Default: existing beer parsing
         beer_count = self.parse_beer_count(text)
@@ -824,14 +859,15 @@ Log drinks:
 - 🍷 wine me / +N wines
 - 🍸 cocktail me / mix me / +N cocktails
 - 🥤 claw me / seltzer me / +N claws
-- Post a photo - Auto-detects drinks!
+- +N mimosas/shots/etc → counts as cocktails
+- Post a photo - Auto-detects by glass type!
 - @mention users - Log for tagged friends too
 
 Stats:
 - !beers - Group drink count
 - !mystats - Your breakdown by type
 - !leaderboard / !today / !week
-- !million [beer|wine|all] - Road to 1M
+- !million [beer|wine|cocktail|claw] - Road to 1M
 
 Split the G:
 - Post a Guinness at the G level 🍀
