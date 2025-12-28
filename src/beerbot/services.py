@@ -517,19 +517,17 @@ class StatsService:
             0,
         )
 
+        # Build drink type breakdown (always show)
+        type_parts = []
+        for dt in [DrinkType.BEER, DrinkType.WINE, DrinkType.COCKTAIL, DrinkType.CLAW]:
+            count = by_type.get(dt, 0)
+            emoji = {"beer": "🍺", "wine": "🍷", "cocktail": "🍸", "claw": "🥤"}[dt.value]
+            type_parts.append(f"{emoji}{count}")
+
         lines = [
             f"Your Stats, {message.name}:",
-            f"Total drinks: {stats.total_beers}",
+            f"Total: {stats.total_beers} | " + " ".join(type_parts),
         ]
-
-        # Show breakdown by type if there's variety
-        if len(by_type) > 1 or (len(by_type) == 1 and DrinkType.BEER not in by_type):
-            type_parts = []
-            for dt in [DrinkType.BEER, DrinkType.WINE, DrinkType.COCKTAIL, DrinkType.CLAW]:
-                if dt in by_type:
-                    emoji = {"beer": "🍺", "wine": "🍷", "cocktail": "🍸", "claw": "🥤"}[dt.value]
-                    type_parts.append(f"{emoji}{by_type[dt]}")
-            lines.append(" ".join(type_parts))
 
         lines.append(f"Today: {today_count}")
         lines.append(f"This week: {week_count}")
