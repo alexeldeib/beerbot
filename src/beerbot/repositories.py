@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from .database import get_pool
-from .models import Beer, DebtLeaderboardEntry, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
+from .models import Beer, DebtLeaderboardEntry, DrinkType, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
 
 # Use Eastern time for all date calculations
 EASTERN = ZoneInfo("America/New_York")
@@ -75,10 +75,11 @@ class BeerRepository:
         quantity: int = 1,
         message_id: str | None = None,
         split_the_g: int = 0,
+        drink_type: DrinkType = DrinkType.BEER,
     ) -> Beer | None:
-        """Log a beer entry.
+        """Log a drink entry.
 
-        Returns the created Beer, or None if this was a duplicate (same message_id + user_id).
+        Returns the created Beer/Drink, or None if this was a duplicate (same message_id + user_id).
         This provides idempotency - processing the same message twice won't double-count.
         """
         pool = await get_pool()
@@ -86,8 +87,8 @@ class BeerRepository:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (message_id, user_id) WHERE message_id IS NOT NULL
                 DO NOTHING
                 RETURNING *
@@ -97,6 +98,7 @@ class BeerRepository:
                 quantity,
                 message_id,
                 split_the_g,
+                drink_type.value,
             )
             return Beer(**dict(row)) if row else None
 
@@ -293,15 +295,15 @@ class BeerRepository:
 
     async def create_batch(
         self,
-        entries: list[tuple[int, str, int, str | None, int]],
+        entries: list[tuple[int, str, int, str | None, int, DrinkType]],
     ) -> list[Beer | None]:
-        """Log multiple beer entries in a single transaction.
+        """Log multiple drink entries in a single transaction.
 
         Args:
-            entries: List of (user_id, group_id, quantity, message_id, split_the_g) tuples
+            entries: List of (user_id, group_id, quantity, message_id, split_the_g, drink_type) tuples
 
         Returns:
-            List of Beer objects (or None for duplicates), in same order as input.
+            List of Beer/Drink objects (or None for duplicates), in same order as input.
             All entries are committed together or none are (atomic).
         """
         if not entries:
@@ -312,11 +314,11 @@ class BeerRepository:
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                for user_id, group_id, quantity, message_id, split_the_g in entries:
+                for user_id, group_id, quantity, message_id, split_the_g, drink_type in entries:
                     row = await conn.fetchrow(
                         """
-                        INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g)
-                        VALUES ($1, $2, $3, $4, $5)
+                        INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
+                        VALUES ($1, $2, $3, $4, $5, $6)
                         ON CONFLICT (message_id, user_id) WHERE message_id IS NOT NULL
                         DO NOTHING
                         RETURNING *
@@ -326,6 +328,7 @@ class BeerRepository:
                         quantity,
                         message_id,
                         split_the_g,
+                        drink_type.value,
                     )
                     results.append(Beer(**dict(row)) if row else None)
 
@@ -481,6 +484,68 @@ class BeerRepository:
                     removed += needed
 
         return removed
+
+    async def get_group_total_by_type(
+        self,
+        group_id: str,
+        drink_type: DrinkType | None = None,
+    ) -> int:
+        """Get total drinks for a group, optionally filtered by type.
+
+        Args:
+            group_id: The group to query
+            drink_type: Filter by drink type, or None for all drinks
+
+        Returns:
+            Total drink count
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            if drink_type is None:
+                result = await conn.fetchval(
+                    "SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1",
+                    group_id,
+                )
+            else:
+                result = await conn.fetchval(
+                    "SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1 AND drink_type = $2",
+                    group_id,
+                    drink_type.value,
+                )
+            return int(result)
+
+    async def get_user_stats_by_type(
+        self,
+        user_id: int,
+        group_id: str,
+    ) -> dict[DrinkType, int]:
+        """Get breakdown of drinks by type for a user in a group.
+
+        Returns:
+            Dict mapping DrinkType to count (only includes types with > 0)
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT drink_type, SUM(quantity) as total
+                FROM beers
+                WHERE user_id = $1 AND group_id = $2
+                GROUP BY drink_type
+                """,
+                user_id,
+                group_id,
+            )
+
+            result: dict[DrinkType, int] = {}
+            for row in rows:
+                drink_type_str = row["drink_type"] or "beer"
+                drink_type = DrinkType.from_string(drink_type_str)
+                result[drink_type] = int(row["total"])
+
+            return result
 
 
 class DebtRepository:

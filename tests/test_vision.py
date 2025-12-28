@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.beerbot.models import GroupMeAttachment, VisionResult
+from src.beerbot.models import DrinkType, GroupMeAttachment, VisionResult
 from src.beerbot.vision import VisionService
 
 
@@ -39,12 +39,12 @@ class TestVisionService:
 
     @pytest.mark.asyncio
     async def test_analyze_image_success(self):
-        """Test successful image analysis returns 1 beer when beer detected."""
+        """Test successful image analysis returns 1 drink when drink detected."""
         with patch("src.beerbot.vision.settings") as mock_settings:
             mock_settings.gemini_api_key = "test-key"
             with patch("src.beerbot.vision.genai") as mock_genai:
                 mock_response = MagicMock()
-                mock_response.text = '{"has_beer": true, "split_the_g": false}'
+                mock_response.text = '{"drink_type": "beer", "split_the_g": false}'
                 mock_client = MagicMock()
                 mock_client.models.generate_content.return_value = mock_response
                 mock_genai.Client.return_value = mock_client
@@ -64,8 +64,8 @@ class TestVisionService:
                         mock_http.return_value.__aenter__.return_value = mock_http_instance
 
                         result = await service.analyze_image("https://example.com/beer.jpg")
-                        # Now returns 1 beer per image (not counting individual beers)
-                        assert result == VisionResult(beer_count=1, split_the_g_count=0, analyzed=True)
+                        # Returns 1 drink per image with detected drink type
+                        assert result == VisionResult(drink_count=1, drink_type=DrinkType.BEER, split_the_g_count=0, analyzed=True)
 
     @pytest.mark.asyncio
     async def test_analyze_image_http_error(self):
@@ -105,16 +105,16 @@ class TestVisionService:
 
     @pytest.mark.asyncio
     async def test_analyze_attachments_with_images(self):
-        """Test analyze_attachments sums results from multiple images (1 beer per image)."""
+        """Test analyze_attachments sums results from multiple images (1 drink per image)."""
         with patch("src.beerbot.vision.settings") as mock_settings:
             mock_settings.gemini_api_key = "test-key"
             with patch("src.beerbot.vision.genai") as mock_genai:
                 mock_genai.Client.return_value = MagicMock()
                 service = VisionService()
-                # Each image with beer returns 1 beer
+                # Each image with drink returns 1 drink
                 service.analyze_image = AsyncMock(side_effect=[
-                    VisionResult(beer_count=1, split_the_g_count=0, analyzed=True),
-                    VisionResult(beer_count=1, split_the_g_count=1, analyzed=True),
+                    VisionResult(drink_count=1, drink_type=DrinkType.BEER, split_the_g_count=0, analyzed=True),
+                    VisionResult(drink_count=1, drink_type=DrinkType.BEER, split_the_g_count=1, analyzed=True),
                 ])
 
                 attachments = [
@@ -122,17 +122,17 @@ class TestVisionService:
                     GroupMeAttachment(type="image", url="https://example.com/beer2.jpg"),
                 ]
                 result = await service.analyze_attachments(attachments)
-                # 2 images with beer = 2 beers, 1 split
-                assert result == VisionResult(beer_count=2, split_the_g_count=1, analyzed=True)
+                # 2 images with drinks = 2 drinks, 1 split
+                assert result == VisionResult(drink_count=2, drink_type=DrinkType.BEER, split_the_g_count=1, analyzed=True)
 
     def test_call_gemini_parses_json(self):
-        """Test _call_gemini parses JSON response with has_beer boolean."""
+        """Test _call_gemini parses JSON response with drink_type."""
         with patch("src.beerbot.vision.settings") as mock_settings:
             mock_settings.gemini_api_key = "test-key"
             with patch("src.beerbot.vision.genai") as mock_genai:
                 with patch("src.beerbot.vision.types") as mock_types:
                     mock_response = MagicMock()
-                    mock_response.text = '{"has_beer": true, "split_the_g": true}'
+                    mock_response.text = '{"drink_type": "beer", "split_the_g": true}'
                     mock_client = MagicMock()
                     mock_client.models.generate_content.return_value = mock_response
                     mock_genai.Client.return_value = mock_client
@@ -140,17 +140,17 @@ class TestVisionService:
 
                     service = VisionService()
                     result = service._call_gemini("https://example.com/beer.jpg", b"fake-image", "image/jpeg")
-                    # Returns 1 beer when has_beer is true
-                    assert result == VisionResult(beer_count=1, split_the_g_count=1, analyzed=True)
+                    # Returns 1 drink when drink_type is present
+                    assert result == VisionResult(drink_count=1, drink_type=DrinkType.BEER, split_the_g_count=1, analyzed=True)
 
-    def test_call_gemini_fallback_detects_true(self):
-        """Test _call_gemini falls back to detecting 'true' in response."""
+    def test_call_gemini_fallback_detects_drink_type(self):
+        """Test _call_gemini falls back to detecting drink type in response."""
         with patch("src.beerbot.vision.settings") as mock_settings:
             mock_settings.gemini_api_key = "test-key"
             with patch("src.beerbot.vision.genai") as mock_genai:
                 with patch("src.beerbot.vision.types") as mock_types:
                     mock_response = MagicMock()
-                    mock_response.text = "Yes, there is a beer. has_beer: true"
+                    mock_response.text = "I see a beer in this image"
                     mock_client = MagicMock()
                     mock_client.models.generate_content.return_value = mock_response
                     mock_genai.Client.return_value = mock_client
@@ -158,8 +158,8 @@ class TestVisionService:
 
                     service = VisionService()
                     result = service._call_gemini("https://example.com/beer.jpg", b"fake-image", "image/jpeg")
-                    # Fallback detects "true" in response
-                    assert result == VisionResult(beer_count=1, split_the_g_count=0, analyzed=True)
+                    # Fallback detects "beer" in response
+                    assert result == VisionResult(drink_count=1, drink_type=DrinkType.BEER, split_the_g_count=0, analyzed=True)
 
     def test_call_gemini_handles_exception(self):
         """Test _call_gemini handles API exceptions."""

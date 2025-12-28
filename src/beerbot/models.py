@@ -1,19 +1,52 @@
 """Pydantic models for GroupMe messages and internal data."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+class DrinkType(str, Enum):
+    """Types of drinks we track."""
+
+    BEER = "beer"
+    WINE = "wine"
+    COCKTAIL = "cocktail"
+    CLAW = "claw"  # White Claw, Truly, alcoholic seltzers
+
+    @classmethod
+    def from_string(cls, s: str) -> "DrinkType":
+        """Parse drink type from string, defaulting to BEER."""
+        mapping = {
+            "beer": cls.BEER,
+            "beers": cls.BEER,
+            "wine": cls.WINE,
+            "wines": cls.WINE,
+            "cocktail": cls.COCKTAIL,
+            "cocktails": cls.COCKTAIL,
+            "claw": cls.CLAW,
+            "claws": cls.CLAW,
+            "seltzer": cls.CLAW,
+            "seltzers": cls.CLAW,
+        }
+        return mapping.get(s.lower(), cls.BEER)
 
 
 @dataclass
 class VisionResult:
     """Result from image analysis."""
 
-    beer_count: int = 0
+    drink_count: int = 0
+    drink_type: DrinkType = DrinkType.BEER
     split_the_g_count: int = 0
-    analyzed: bool = False  # True if analysis was actually performed
+    analyzed: bool = False
+
+    @property
+    def beer_count(self) -> int:
+        """Backward compatibility."""
+        return self.drink_count
 
 
 class GroupMeAttachment(BaseModel):
@@ -54,8 +87,8 @@ class User(BaseModel):
     updated_at: datetime
 
 
-class Beer(BaseModel):
-    """Individual beer log entry."""
+class Drink(BaseModel):
+    """Individual drink log entry."""
 
     id: int
     user_id: int
@@ -64,6 +97,11 @@ class Beer(BaseModel):
     logged_at: datetime
     message_id: Optional[str] = None
     split_the_g: int = 0
+    drink_type: DrinkType = DrinkType.BEER
+
+
+# Backward compatibility alias
+Beer = Drink
 
 
 class UserStats(BaseModel):

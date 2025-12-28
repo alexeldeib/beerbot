@@ -88,6 +88,16 @@ async def init_db() -> None:
             ON beers(split_the_g) WHERE split_the_g > 0
         """)
 
+        # Add drink_type column (migration for multi-drink support)
+        await conn.execute("""
+            ALTER TABLE beers ADD COLUMN IF NOT EXISTS drink_type TEXT DEFAULT 'beer'
+        """)
+
+        # Index for drink_type filtering
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_beers_drink_type ON beers(drink_type)
+        """)
+
         # Simple debt tracking per user per group (no creditor - just total owed)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_debts (

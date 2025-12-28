@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .models import GroupMeAttachment, GroupMeMessage, GroupStats, UserStats
+from .models import DrinkType, GroupMeAttachment, GroupMeMessage, GroupStats, UserStats
 from .repositories import beer_repo, debt_repo, user_repo
 
 logger = logging.getLogger(__name__)
@@ -61,15 +61,28 @@ def extract_mentioned_users(
 
 
 class MessageParser:
-    """Parse messages for beer triggers and commands."""
+    """Parse messages for drink triggers and commands."""
 
+    # Drink emojis
     BEER_EMOJI = "\U0001F37A"  # 🍺
+    WINE_EMOJI = "\U0001F377"  # 🍷
+    COCKTAIL_EMOJI = "\U0001F378"  # 🍸
+    TROPICAL_EMOJI = "\U0001F379"  # 🍹
+    TUMBLER_EMOJI = "\U0001F943"  # 🥃
 
     # Patterns for logging beers - all require start of message to avoid mid-text matches
     NUMERIC_PATTERN = re.compile(r"^\+(\d+)\s*beers?", re.IGNORECASE)
     BEER_ME_PATTERN = re.compile(r"^beer me\b", re.IGNORECASE)
     CHEERS_PATTERN = re.compile(r"^cheers\b", re.IGNORECASE)
     CRACKED_PATTERN = re.compile(r"^cracked (one|a beer|a cold one)\b", re.IGNORECASE)
+
+    # Patterns for other drink types
+    WINE_NUMERIC_PATTERN = re.compile(r"^\+(\d+)\s*wines?", re.IGNORECASE)
+    WINE_ME_PATTERN = re.compile(r"^wine me\b", re.IGNORECASE)
+    COCKTAIL_NUMERIC_PATTERN = re.compile(r"^\+(\d+)\s*cocktails?", re.IGNORECASE)
+    COCKTAIL_ME_PATTERN = re.compile(r"^(cocktail me|mix me)\b", re.IGNORECASE)
+    CLAW_NUMERIC_PATTERN = re.compile(r"^\+(\d+)\s*(claws?|seltzers?)", re.IGNORECASE)
+    CLAW_ME_PATTERN = re.compile(r"^(claw me|seltzer me)\b", re.IGNORECASE)
 
     # Max message length for emoji-only beer counting (prevents counting in long docs)
     MAX_EMOJI_MESSAGE_LENGTH = 100
@@ -86,9 +99,10 @@ class MessageParser:
         "million": re.compile(r"^(!million|!countdown|!goal|time to million)\b", re.IGNORECASE),
         "splitg": re.compile(r"^(!splitg|!split|split the g)\b", re.IGNORECASE),
         "unsplit": re.compile(r"^(!unsplit(\s+\d+)?)\b", re.IGNORECASE),
-        "owe": re.compile(r"^(!owe\s+\d+\s*@)", re.IGNORECASE),
+        "owe": re.compile(r"^(!owe(\s+\d+)?\s*@)", re.IGNORECASE),
         "debts": re.compile(r"^(!debts?|debt leaderboard|who owes)\b", re.IGNORECASE),
         "help": re.compile(r"^(!help|beerbot help)\b", re.IGNORECASE),
+        "toast": re.compile(r"^(!toast|make a toast|give us a toast)\b", re.IGNORECASE),
     }
 
     # Pattern to extract unbeer count
@@ -130,6 +144,57 @@ class MessageParser:
                 count = 1
 
         return count
+
+    def parse_drink(self, text: str | None) -> tuple[int, DrinkType]:
+        """Parse drink count and type from message.
+
+        Returns (count, drink_type) tuple. Checks non-beer types first,
+        falls back to beer parsing.
+        """
+        if not text:
+            return 0, DrinkType.BEER
+
+        # Check for wine first
+        if len(text) <= self.MAX_EMOJI_MESSAGE_LENGTH:
+            wine_count = text.count(self.WINE_EMOJI)
+            if wine_count > 0:
+                return wine_count, DrinkType.WINE
+
+        match = self.WINE_NUMERIC_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.WINE
+
+        if self.WINE_ME_PATTERN.search(text):
+            return 1, DrinkType.WINE
+
+        # Check for cocktails
+        if len(text) <= self.MAX_EMOJI_MESSAGE_LENGTH:
+            cocktail_count = (
+                text.count(self.COCKTAIL_EMOJI)
+                + text.count(self.TROPICAL_EMOJI)
+                + text.count(self.TUMBLER_EMOJI)
+            )
+            if cocktail_count > 0:
+                return cocktail_count, DrinkType.COCKTAIL
+
+        match = self.COCKTAIL_NUMERIC_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.COCKTAIL
+
+        if self.COCKTAIL_ME_PATTERN.search(text):
+            return 1, DrinkType.COCKTAIL
+
+        # Check for claws/seltzers
+        match = self.CLAW_NUMERIC_PATTERN.search(text)
+        if match:
+            return int(match.group(1)), DrinkType.CLAW
+
+        if self.CLAW_ME_PATTERN.search(text):
+            return 1, DrinkType.CLAW
+
+        # Default: existing beer parsing
+        beer_count = self.parse_beer_count(text)
+        return beer_count, DrinkType.BEER
 
     def parse_command(self, text: str | None) -> str | None:
         """Check if message is a command. Returns command name or None."""
@@ -177,11 +242,30 @@ class MessageParser:
         return bool(self.NUMERIC_PATTERN.search(text))
 
     def parse_debt_amount(self, text: str | None) -> int:
-        """Extract the number of beers from a debt command (!owe N, !payoff N)."""
+        """Extract the number of beers from a debt command (!owe N, !payoff N).
+
+        Defaults to 1 if no number specified.
+        """
         if not text:
-            return 0
+            return 1
         match = re.search(r"(\d+)", text)
-        return int(match.group(1)) if match else 0
+        return int(match.group(1)) if match else 1
+
+    def parse_million_filter(self, text: str | None) -> DrinkType | None:
+        """Parse drink type filter from !million command.
+
+        Returns None for 'all' or no filter (counts all drinks).
+        Returns specific DrinkType for filtered view.
+        """
+        if not text:
+            return None
+        match = re.search(r"!million\s+(beer|wine|cocktail|claw|all)", text, re.IGNORECASE)
+        if match:
+            filter_type = match.group(1).lower()
+            if filter_type == "all":
+                return None
+            return DrinkType.from_string(filter_type)
+        return None  # Default: count all drinks
 
 
 class StatsService:
@@ -262,18 +346,20 @@ class StatsService:
         mentioned_users: list[tuple[str, str]],
         include_sender: bool = True,
         split_the_g: int = 0,
+        drink_type: DrinkType = DrinkType.BEER,
     ) -> str | None:
-        """Log beers for users.
+        """Log drinks for users.
 
         Args:
             message: The GroupMe message
-            quantity: Number of beers to log
+            quantity: Number of drinks to log
             mentioned_users: List of (user_id, name) tuples for mentioned users
             include_sender: If True, include the sender; if False, only log for mentions
             split_the_g: Number of split-the-G achievements detected
+            drink_type: Type of drink to log
 
         Returns a formatted response message, or None if all were duplicates (idempotency).
-        Beer logging for all users is atomic (all succeed or none).
+        Drink logging for all users is atomic (all succeed or none).
         """
         # Build list of all users to log for
         users_to_log: list[tuple[str, str]] = []  # (groupme_user_id, name)
@@ -313,10 +399,10 @@ class StatsService:
                 )
             users.append((user.id, user.name))
 
-        # Second pass: log all beers in a single transaction (atomic)
+        # Second pass: log all drinks in a single transaction (atomic)
         # Split-the-G only applies to sender (the one who took the photo)
         entries = [
-            (user_id, message.group_id, quantity, message.id, split_the_g if i == 0 and include_sender else 0)
+            (user_id, message.group_id, quantity, message.id, split_the_g if i == 0 and include_sender else 0, drink_type)
             for i, (user_id, _) in enumerate(users)
         ]
         results = await beer_repo.create_batch(entries)
@@ -337,8 +423,16 @@ class StatsService:
         if not logged_names:
             return None
 
-        # Format response
-        beer_word = "beer" if quantity == 1 else "beers"
+        # Format response with drink-type-specific wording
+        drink_names = {
+            DrinkType.BEER: ("beer", "beers", "Cheers"),
+            DrinkType.WINE: ("wine", "wines", "Salut"),
+            DrinkType.COCKTAIL: ("cocktail", "cocktails", "Cheers"),
+            DrinkType.CLAW: ("claw", "claws", "Cheers"),
+        }
+        singular, plural, greeting = drink_names.get(drink_type, ("drink", "drinks", "Cheers"))
+        drink_word = singular if quantity == 1 else plural
+
         split_msg = ""
         if split_the_g > 0:
             split_msg = " 🍀 Split the G!"
@@ -350,13 +444,13 @@ class StatsService:
             debt_msg = f" (debt: {', '.join(debt_parts)})"
 
         if len(logged_names) == 1:
-            return f"Cheers, {logged_names[0]}!{split_msg}{debt_msg} +{quantity} {beer_word} logged."
+            return f"{greeting}, {logged_names[0]}!{split_msg}{debt_msg} +{quantity} {drink_word} logged."
         elif len(logged_names) == 2:
             names_str = f"{logged_names[0]} and {logged_names[1]}"
         else:
             names_str = ", ".join(logged_names[:-1]) + f", and {logged_names[-1]}"
 
-        return f"Cheers!{split_msg}{debt_msg} +{quantity} {beer_word} logged for {names_str}."
+        return f"{greeting}!{split_msg}{debt_msg} +{quantity} {drink_word} logged for {names_str}."
 
     async def get_group_stats(self, group_id: str) -> str:
         """Get formatted group statistics."""
@@ -389,7 +483,10 @@ class StatsService:
         stats = await beer_repo.get_user_stats_in_group(user.id, message.group_id)
 
         if not stats or stats.total_beers == 0:
-            return f"{message.name}, you haven't logged any beers yet! Send a message with a beer emoji to get started."
+            return f"{message.name}, you haven't logged any drinks yet! Send 🍺 or 🍷 to get started."
+
+        # Get drink type breakdown
+        by_type = await beer_repo.get_user_stats_by_type(user.id, message.group_id)
 
         # Get today's count (Eastern time)
         now = datetime.now(EASTERN)
@@ -411,10 +508,20 @@ class StatsService:
 
         lines = [
             f"Your Stats, {message.name}:",
-            f"Total beers: {stats.total_beers}",
-            f"Today: {today_count}",
-            f"This week: {week_count}",
+            f"Total drinks: {stats.total_beers}",
         ]
+
+        # Show breakdown by type if there's variety
+        if len(by_type) > 1 or (len(by_type) == 1 and DrinkType.BEER not in by_type):
+            type_parts = []
+            for dt in [DrinkType.BEER, DrinkType.WINE, DrinkType.COCKTAIL, DrinkType.CLAW]:
+                if dt in by_type:
+                    emoji = {"beer": "🍺", "wine": "🍷", "cocktail": "🍸", "claw": "🥤"}[dt.value]
+                    type_parts.append(f"{emoji}{by_type[dt]}")
+            lines.append(" ".join(type_parts))
+
+        lines.append(f"Today: {today_count}")
+        lines.append(f"This week: {week_count}")
 
         if stats.last_beer_at:
             diff = now - stats.last_beer_at.astimezone(EASTERN)
@@ -424,7 +531,7 @@ class StatsService:
                 time_ago = f"{int(diff.total_seconds() // 3600)} hours ago"
             else:
                 time_ago = f"{diff.days} days ago"
-            lines.append(f"Last beer: {time_ago}")
+            lines.append(f"Last drink: {time_ago}")
 
         return "\n".join(lines)
 
@@ -559,27 +666,43 @@ class StatsService:
 
         return f"Removed {quantity_removed} {split_word} from {target_name}. New total: {total}."
 
-    async def get_million_countdown(self, group_id: str) -> str:
-        """Get time-to-million-beers projection."""
+    async def get_million_countdown(self, group_id: str, drink_type: DrinkType | None = None) -> str:
+        """Get time-to-million-drinks projection.
+
+        Args:
+            group_id: The group to query
+            drink_type: Filter by drink type, or None for all drinks
+        """
         GOAL = 1_000_000
 
-        # Get rate data for 7-day and 30-day windows
-        total, beers_7d, days_7d = await beer_repo.get_rate_stats(group_id, days=7)
+        # Get total for the filtered type (or all)
+        total = await beer_repo.get_group_total_by_type(group_id, drink_type)
+
+        # Get rate data for projections (using all drinks for now)
+        _, beers_7d, days_7d = await beer_repo.get_rate_stats(group_id, days=7)
         _, beers_30d, days_30d = await beer_repo.get_rate_stats(group_id, days=30)
+
+        # Determine label based on filter
+        if drink_type is None:
+            drink_label = "drinks"
+            title = "Road to 1 Million Drinks:"
+        else:
+            drink_label = f"{drink_type.value}s"
+            title = f"Road to 1 Million {drink_type.value.title()}s:"
 
         # Handle no data case
         if total == 0:
-            return "No beers logged yet! Start drinking to see your countdown to 1 million."
+            return f"No {drink_label} logged yet! Start drinking to see your countdown to 1 million."
 
         remaining = GOAL - total
 
         if remaining <= 0:
-            return f"Congratulations! You've reached {total:,} beers - you've passed 1 million!"
+            return f"Congratulations! You've reached {total:,} {drink_label} - you've passed 1 million!"
 
         lines = [
-            "Road to 1 Million Beers:",
+            title,
             f"Current total: {total:,}",
-            f"Beers remaining: {remaining:,}",
+            f"Remaining: {remaining:,}",
             "",
         ]
 
@@ -687,32 +810,32 @@ class StatsService:
     def get_help(self) -> str:
         """Get help message."""
         return """Beerbot Commands:
-Log beers:
-- beer me / cheers / cracked one - Log 1 beer
-- +N beers - Log multiple beers
-- Post a photo - Auto-detects beers in images
-- @mention users - Log beers for tagged friends too
+Log drinks:
+- 🍺 beer me / cheers / +N beers
+- 🍷 wine me / +N wines
+- 🍸 cocktail me / mix me / +N cocktails
+- 🥤 claw me / seltzer me / +N claws
+- Post a photo - Auto-detects drinks!
+- @mention users - Log for tagged friends too
 
 Stats:
-- !beers - Group beer count
-- !mystats - Your personal stats
-- !leaderboard - Top drinkers
-- !today - Today's stats
-- !week - This week's stats
+- !beers - Group drink count
+- !mystats - Your breakdown by type
+- !leaderboard / !today / !week
+- !million [beer|wine|all] - Road to 1M
 
 Split the G:
-- Post a Guinness at the G level - auto-detected! 🍀
-- !splitg - Split the G leaderboard
-- !unsplit [N] [@user] - Remove N splits (default 1)
+- Post a Guinness at the G level 🍀
+- !splitg - Leaderboard
+- !unsplit [N] [@user]
 
-Beer Debts:
-- !owe N @user - They owe N beers (drink to pay off!)
-- !debts - Who owes the most beers
+Debts:
+- !owe [@user] or !owe N @user
+- !debts - Who owes
 
 Other:
-- !undo [@user] - Remove last beer entry
-- !unbeer N [@user] - Remove N beers
-- !million - Time to 1 million beers"""
+- !undo / !unbeer N [@user]
+- !toast - Get a fun drinking toast"""
 
     def _format_group_stats(self, stats: GroupStats) -> str:
         """Format GroupStats into a message."""

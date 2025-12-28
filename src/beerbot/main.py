@@ -17,7 +17,7 @@ logging.basicConfig(
 logging.getLogger("src.beerbot.vision").setLevel(logging.DEBUG)
 from .database import close_pool, init_db
 from .groupme_client import groupme_client
-from .models import GroupMeMessage, VisionResult
+from .models import DrinkType, GroupMeMessage, VisionResult
 from .services import (
     extract_mentioned_user_ids,
     extract_mentioned_users,
@@ -72,26 +72,33 @@ async def groupme_callback(request: Request):
             await groupme_client.send_message(response_text)
         return {"status": "ok", "action": "command", "command": command}
 
-    # Check for beer logging (text triggers)
-    text_beer_count = message_parser.parse_beer_count(message.text)
+    # Check for drink logging (text triggers)
+    text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
 
-    # Check for beer logging (image analysis)
+    # Check for drink logging (image analysis)
     vision_result = VisionResult()
     if settings.image_analysis_enabled:
         vision_result = await vision_service.analyze_attachments(message.attachments)
 
-    # Use the higher of text or image count (they represent the same beers)
-    beer_count = max(text_beer_count, vision_result.beer_count)
+    # Use the higher of text or image count (they represent the same drinks)
+    # Prefer image drink type if image detected a drink, otherwise use text
+    if vision_result.drink_count > 0:
+        drink_count = max(text_drink_count, vision_result.drink_count)
+        drink_type = vision_result.drink_type
+    else:
+        drink_count = text_drink_count
+        drink_type = text_drink_type
+
     split_the_g = vision_result.split_the_g_count  # Only from images
 
-    # Check if images were analyzed but no beers found
+    # Check if images were analyzed but no drinks found
     has_images = any(a.type == "image" for a in message.attachments)
-    if has_images and beer_count == 0 and vision_result.analyzed:
+    if has_images and drink_count == 0 and vision_result.analyzed:
         quip = await vision_service.generate_no_beer_quip()
         await groupme_client.send_message(quip)
-        return {"status": "ok", "action": "quip", "reason": "no_beers_in_image"}
+        return {"status": "ok", "action": "quip", "reason": "no_drinks_in_image"}
 
-    if beer_count > 0:
+    if drink_count > 0:
         # Extract mentioned users with their names
         mentioned_users = extract_mentioned_users(message.text, message.attachments)
 
@@ -101,13 +108,13 @@ async def groupme_callback(request: Request):
         is_assignment = message_parser.is_explicit_assignment(message.text)
         include_sender = not (is_assignment and mentioned_users)
 
-        # Log beers (returns None if duplicate message - idempotency)
+        # Log drinks (returns None if duplicate message - idempotency)
         response_text = await stats_service.log_beers_for_users(
-            message, beer_count, mentioned_users, include_sender, split_the_g
+            message, drink_count, mentioned_users, include_sender, split_the_g, drink_type
         )
         if response_text:
             await groupme_client.send_message(response_text)
-            return {"status": "ok", "action": "logged", "beers": beer_count, "split_the_g": split_the_g}
+            return {"status": "ok", "action": "logged", "drinks": drink_count, "drink_type": drink_type.value, "split_the_g": split_the_g}
         else:
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
 
@@ -159,7 +166,9 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
                     break
             return await stats_service.unbeer(message, quantity, target_user_id)
         case "million":
-            return await stats_service.get_million_countdown(message.group_id)
+            # Parse optional drink type filter
+            drink_filter = message_parser.parse_million_filter(message.text)
+            return await stats_service.get_million_countdown(message.group_id, drink_filter)
         case "splitg":
             return await stats_service.get_split_g_leaderboard(message.group_id)
         case "unsplit":
@@ -173,18 +182,18 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
                     break
             return await stats_service.unsplit(message, quantity, target_user_id)
         case "owe":
-            # Parse the amount and get mentioned user with name
+            # Parse the amount (defaults to 1) and get mentioned user with name
             amount = message_parser.parse_debt_amount(message.text)
-            if amount <= 0:
-                return "Please specify how many beers: !owe N @user"
             mentioned = extract_mentioned_users(message.text, message.attachments)
             if not mentioned:
-                return "Please mention who owes beers: !owe N @user"
+                return "Please mention who owes: !owe @user or !owe N @user"
             debtor_user_id, debtor_name = mentioned[0]
             return await stats_service.add_debt(message, amount, debtor_user_id, debtor_name)
         case "debts":
             return await stats_service.get_debt_leaderboard(message.group_id)
         case "help":
             return stats_service.get_help()
+        case "toast":
+            return await vision_service.generate_toast()
         case _:
             return None

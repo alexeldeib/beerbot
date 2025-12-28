@@ -11,7 +11,7 @@ from google.genai import types
 import httpx
 
 from .config import settings
-from .models import VisionResult
+from .models import DrinkType, VisionResult
 
 if TYPE_CHECKING:
     from .models import GroupMeAttachment
@@ -22,17 +22,24 @@ logger = logging.getLogger(__name__)
 class VisionService:
     """Service for analyzing images using Gemini Vision API."""
 
-    PROMPT = """Analyze this image for beer presence and Guinness "Split the G" achievements.
+    PROMPT = """Analyze this image for alcoholic drinks.
 
-TASK 1 - Is there a beer? Answer true/false. A beer is: a beer glass, beer can, beer bottle, pint, or mug with beer.
-DO NOT count wine glasses, champagne flutes, cocktails, spirits, water, or soda as beer.
+IMPORTANT: Focus on the LIQUID/BEVERAGE itself, not just the glass shape. People often use unconventional glasses.
 
-TASK 2 - Detect "Split the G": For any Guinness pint glass, check if the beer level
-crosses through or touches the "G" in "GUINNESS" on the glass.
+Identify the drink type by these characteristics:
+- beer: golden/amber liquid, foamy white head, carbonation bubbles, could be in any glass
+- wine: red, white, or rosé colored, clear liquid, no foam
+- cocktail: mixed/layered colors, garnishes (fruit, umbrella), typically with ice
+- claw: hard seltzer in a branded can (White Claw, Truly, etc.)
 
-Return JSON: {"has_beer": <bool>, "split_the_g": <bool>}
+If unsure between beer and wine, look for:
+- Foam/head = likely beer
+- No foam + wine color (red/white/rosé) = likely wine
+- Amber/golden with carbonation = likely beer even in unusual glass
 
-Example: {"has_beer": true, "split_the_g": false}"""
+Split the G: Only true if there is a GUINNESS pint glass with beer level at the G.
+
+Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
 
     MODEL = "gemini-2.0-flash"
 
@@ -95,17 +102,40 @@ Example: {"has_beer": true, "split_the_g": false}"""
 
             try:
                 data = json.loads(json_text)
-                has_beer = bool(data.get("has_beer", False))
+                drink_type_str = data.get("drink_type")
                 split_the_g = bool(data.get("split_the_g", False))
-                # Default to 1 beer per image if beer detected
-                beer_count = 1 if has_beer else 0
+
+                # Parse drink type
+                if drink_type_str:
+                    drink_type = DrinkType.from_string(drink_type_str)
+                    drink_count = 1
+                else:
+                    drink_type = DrinkType.BEER
+                    drink_count = 0
+
                 split_count = 1 if split_the_g else 0
-                result = VisionResult(beer_count=beer_count, split_the_g_count=split_count, analyzed=True)
+                result = VisionResult(
+                    drink_count=drink_count,
+                    drink_type=drink_type,
+                    split_the_g_count=split_count,
+                    analyzed=True,
+                )
             except (json.JSONDecodeError, KeyError, TypeError):
-                # Fallback: check for "true" in response to detect beer
-                has_beer = "true" in raw_text.lower()
-                beer_count = 1 if has_beer else 0
-                result = VisionResult(beer_count=beer_count, split_the_g_count=0, analyzed=True)
+                # Fallback: check for drink types in response
+                raw_lower = raw_text.lower()
+                drink_type = DrinkType.BEER
+                drink_count = 0
+                for dt in ["beer", "wine", "cocktail", "claw"]:
+                    if dt in raw_lower:
+                        drink_type = DrinkType.from_string(dt)
+                        drink_count = 1
+                        break
+                result = VisionResult(
+                    drink_count=drink_count,
+                    drink_type=drink_type,
+                    split_the_g_count=0,
+                    analyzed=True,
+                )
 
             logger.info(
                 "Gemini analysis: url=%s raw_response=%r beer_count=%d split_the_g=%d",
@@ -126,22 +156,34 @@ Example: {"has_beer": true, "split_the_g": false}"""
     async def analyze_attachments(
         self, attachments: list["GroupMeAttachment"]
     ) -> VisionResult:
-        """Analyze all image attachments and return aggregated results."""
+        """Analyze all image attachments and return aggregated results.
+
+        For drink type, returns the first detected drink type (most images have one drink).
+        """
         if not self.client:
             return VisionResult()
 
-        total_beers = 0
+        total_drinks = 0
         total_splits = 0
         any_analyzed = False
+        detected_type = DrinkType.BEER  # Default
         for attachment in attachments:
             if attachment.type == "image" and attachment.url:
                 result = await self.analyze_image(attachment.url)
-                total_beers += result.beer_count
+                total_drinks += result.drink_count
                 total_splits += result.split_the_g_count
                 if result.analyzed:
                     any_analyzed = True
+                    # Use first detected drink type
+                    if result.drink_count > 0 and detected_type == DrinkType.BEER:
+                        detected_type = result.drink_type
 
-        return VisionResult(beer_count=total_beers, split_the_g_count=total_splits, analyzed=any_analyzed)
+        return VisionResult(
+            drink_count=total_drinks,
+            drink_type=detected_type,
+            split_the_g_count=total_splits,
+            analyzed=any_analyzed,
+        )
 
 
     async def generate_no_beer_quip(self) -> str:
@@ -161,6 +203,31 @@ Example: {"has_beer": true, "split_the_g": false}"""
         prompt = """Generate a single short, witty quip (under 50 characters) for a beer-tracking bot
 to say when someone posts an image with no beers in it. Be playful and funny.
 Just return the quip text, nothing else. No quotes."""
+
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+        )
+        return response.text.strip().strip('"')
+
+    async def generate_toast(self) -> str:
+        """Generate a fun, sassy drinking toast."""
+        if not self.client:
+            return "Here's to good drinks and better friends! Cheers! 🍻"
+
+        try:
+            result = await asyncio.to_thread(self._generate_toast)
+            return result
+        except Exception:
+            logger.exception("Failed to generate toast")
+            return "Here's to good drinks and better friends! Cheers! 🍻"
+
+    def _generate_toast(self) -> str:
+        """Generate toast synchronously."""
+        prompt = """Generate a single short, fun drinking toast (under 80 characters) for a drink-tracking bot.
+Be playful, sassy, and encourage drinking. Can be silly, irreverent, or a classic with a twist.
+Vary the style - sometimes rhyming, sometimes a quote, sometimes absurd.
+Just return the toast text with an emoji at the end, nothing else. No quotes."""
 
         response = self.client.models.generate_content(
             model=self.MODEL,
