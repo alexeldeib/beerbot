@@ -144,5 +144,30 @@ Example: {"has_beer": true, "split_the_g": false}"""
         return VisionResult(beer_count=total_beers, split_the_g_count=total_splits, analyzed=any_analyzed)
 
 
+    async def generate_no_beer_quip(self) -> str:
+        """Generate a witty quip for when an image has no beers."""
+        if not self.client:
+            return "Nice pic, but I don't see any beers!"
+
+        try:
+            result = await asyncio.to_thread(self._generate_quip)
+            return result
+        except Exception:
+            logger.exception("Failed to generate quip")
+            return "Nice pic, but I don't see any beers!"
+
+    def _generate_quip(self) -> str:
+        """Generate quip synchronously."""
+        prompt = """Generate a single short, witty quip (under 50 characters) for a beer-tracking bot
+to say when someone posts an image with no beers in it. Be playful and funny.
+Just return the quip text, nothing else. No quotes."""
+
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+        )
+        return response.text.strip().strip('"')
+
+
 # Singleton instance
 vision_service = VisionService()

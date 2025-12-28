@@ -1,7 +1,6 @@
 """FastAPI application entry point."""
 
 import logging
-import random
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -88,14 +87,7 @@ async def groupme_callback(request: Request):
     # Check if images were analyzed but no beers found
     has_images = any(a.type == "image" for a in message.attachments)
     if has_images and beer_count == 0 and vision_result.analyzed:
-        quip = random.choice([
-            "Nice pic, but I don't see any beers!",
-            "Where's the beer? I only count drinks that count.",
-            "That's a great photo, but no beers detected.",
-            "I spy with my little eye... no beers!",
-            "Beautiful, but beerless.",
-            "Picture perfect, but beer-free!",
-        ])
+        quip = await vision_service.generate_no_beer_quip()
         await groupme_client.send_message(quip)
         return {"status": "ok", "action": "quip", "reason": "no_beers_in_image"}
 
