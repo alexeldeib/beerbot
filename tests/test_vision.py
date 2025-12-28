@@ -64,7 +64,7 @@ class TestVisionService:
                         mock_http.return_value.__aenter__.return_value = mock_http_instance
 
                         result = await service.analyze_image("https://example.com/beer.jpg")
-                        assert result == VisionResult(beer_count=3, split_the_g_count=0)
+                        assert result == VisionResult(beer_count=3, split_the_g_count=0, analyzed=True)
 
     @pytest.mark.asyncio
     async def test_analyze_image_http_error(self):
@@ -111,8 +111,8 @@ class TestVisionService:
                 mock_genai.Client.return_value = MagicMock()
                 service = VisionService()
                 service.analyze_image = AsyncMock(side_effect=[
-                    VisionResult(beer_count=2, split_the_g_count=0),
-                    VisionResult(beer_count=3, split_the_g_count=1),
+                    VisionResult(beer_count=2, split_the_g_count=0, analyzed=True),
+                    VisionResult(beer_count=3, split_the_g_count=1, analyzed=True),
                 ])
 
                 attachments = [
@@ -120,7 +120,7 @@ class TestVisionService:
                     GroupMeAttachment(type="image", url="https://example.com/beer2.jpg"),
                 ]
                 result = await service.analyze_attachments(attachments)
-                assert result == VisionResult(beer_count=5, split_the_g_count=1)
+                assert result == VisionResult(beer_count=5, split_the_g_count=1, analyzed=True)
 
     def test_call_gemini_parses_json(self):
         """Test _call_gemini parses JSON response."""
@@ -137,7 +137,7 @@ class TestVisionService:
 
                     service = VisionService()
                     result = service._call_gemini("https://example.com/beer.jpg", b"fake-image", "image/jpeg")
-                    assert result == VisionResult(beer_count=4, split_the_g_count=1)
+                    assert result == VisionResult(beer_count=4, split_the_g_count=1, analyzed=True)
 
     def test_call_gemini_fallback_parses_number(self):
         """Test _call_gemini falls back to number extraction when JSON fails."""
@@ -154,7 +154,7 @@ class TestVisionService:
 
                     service = VisionService()
                     result = service._call_gemini("https://example.com/beer.jpg", b"fake-image", "image/jpeg")
-                    assert result == VisionResult(beer_count=4, split_the_g_count=0)
+                    assert result == VisionResult(beer_count=4, split_the_g_count=0, analyzed=True)
 
     def test_call_gemini_handles_exception(self):
         """Test _call_gemini handles API exceptions."""
