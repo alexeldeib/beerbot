@@ -235,13 +235,24 @@ DO NOT mention bots, apps, tracking, logging, data, or technology.
 DO NOT use phrases like "descent into chaos" or "delicious oblivion".
 Keep it under 200 characters. End with one emoji.
 
-Just output the toast, nothing else."""
+IMPORTANT: Output ONLY the toast text. Do NOT include "Style chosen:" or any prefix. Just the toast itself."""
 
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=[prompt],
         )
-        return response.text.strip().strip('"')
+        text = response.text.strip().strip('"')
+        # Strip any "Style chosen:" prefix the model might add
+        for prefix in ["Style chosen:", "Style Chosen:", "STYLE:", "Style:"]:
+            if prefix.lower() in text.lower():
+                idx = text.lower().find(prefix.lower())
+                text = text[idx + len(prefix):].strip()
+                # Also strip any style name/number that follows
+                lines = text.split('\n')
+                if len(lines) > 1:
+                    text = '\n'.join(lines[1:]).strip()
+                break
+        return text
 
 
 # Singleton instance
