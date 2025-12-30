@@ -33,7 +33,10 @@ Identify drink type by GLASS/CONTAINER TYPE (not the liquid inside):
 If no alcoholic drink container visible, return null.
 If glass type is ambiguous, return null.
 
-Split the G: true ONLY if there is a GUINNESS pint glass with beer level at the G.
+SPLIT THE G DETECTION (Irish drinking tradition):
+"Split the G" means the beer level in a Guinness glass is positioned exactly at the middle of the letter "G" in the Guinness logo/harp printed on the glass, visually "splitting" the G in half.
+Set split_the_g: true if you see a Guinness pint glass where the beer line (top of the liquid) passes through the G in the logo.
+This is a celebrated achievement when drinking Guinness. Be generous - if the level is close to the G, count it!
 
 Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
 
