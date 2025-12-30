@@ -188,6 +188,13 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
             return await stats_service.get_million_countdown(message.group_id, drink_filter)
         case "splitg":
             return await stats_service.get_split_g_leaderboard(message.group_id)
+        case "split":
+            # Check for mentioned user
+            mentioned = extract_mentioned_users(message.text, message.attachments)
+            if mentioned:
+                target_user_id, target_name = mentioned[0]
+                return await stats_service.add_split(message, target_user_id, target_name)
+            return await stats_service.add_split(message)
         case "unsplit":
             # Parse the quantity to remove (defaults to 1)
             quantity = message_parser.parse_unsplit_count(message.text)
@@ -206,6 +213,15 @@ async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | 
                 return "Please mention who owes: !owe @user or !owe N @user"
             debtor_user_id, debtor_name = mentioned[0]
             return await stats_service.add_debt(message, amount, debtor_user_id, debtor_name)
+        case "forgive":
+            # Parse the amount (defaults to 1) and get mentioned user (defaults to sender)
+            amount = message_parser.parse_debt_amount(message.text)
+            mentioned = extract_mentioned_users(message.text, message.attachments)
+            if mentioned:
+                debtor_user_id, debtor_name = mentioned[0]
+            else:
+                debtor_user_id, debtor_name = message.user_id, message.name
+            return await stats_service.forgive_debt(message, amount, debtor_user_id, debtor_name)
         case "debts":
             return await stats_service.get_debt_leaderboard(message.group_id)
         case "help":

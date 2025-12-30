@@ -128,9 +128,11 @@ class MessageParser:
         "undo": re.compile(r"^(!undo|-1 beer)\b", re.IGNORECASE),
         "unbeer": re.compile(r"^(!unbeer(\s+\d+)?|minus\s+\d+\s*beers?|-\d+\s*beers?)\b", re.IGNORECASE),
         "million": re.compile(r"^(!million|!countdown|!goal|time to million)\b", re.IGNORECASE),
-        "splitg": re.compile(r"^(!splitg|!split|split the g)\b", re.IGNORECASE),
+        "splitg": re.compile(r"^(!splitg|split the g)\b", re.IGNORECASE),
+        "split": re.compile(r"^!split(\s|$)", re.IGNORECASE),
         "unsplit": re.compile(r"^(!unsplit(\s+\d+)?)\b", re.IGNORECASE),
         "owe": re.compile(r"^(!owe(\s+\d+)?\s*@)", re.IGNORECASE),
+        "forgive": re.compile(r"^!forgive\b", re.IGNORECASE),
         "debts": re.compile(r"^(!debts?|debt leaderboard|who owes)\b", re.IGNORECASE),
         "help": re.compile(r"^(!help|beerbot help)\b", re.IGNORECASE),
         "toast": re.compile(r"^(!toast|make a toast|give us a toast)\b", re.IGNORECASE),
@@ -802,6 +804,52 @@ class StatsService:
 
         return f"Removed {quantity_removed} {drink_word} from {message.name}. {singular.title()} total: {new_total}."
 
+    async def add_split(
+        self,
+        message: GroupMeMessage,
+        target_user_id: str | None = None,
+        target_name: str | None = None,
+    ) -> str:
+        """Manually add a split-the-G (also logs 1 beer).
+
+        If target_user_id is provided (from a mention), add for that user.
+        Otherwise, add for the sender.
+        """
+        # Determine which user to add for
+        if target_user_id:
+            user = await user_repo.get_or_create(
+                groupme_user_id=target_user_id,
+                name=target_name or f"User {target_user_id[-4:]}",
+                avatar_url=None,
+            )
+            display_name = user.name
+        else:
+            user = await user_repo.get_or_create(
+                groupme_user_id=message.user_id,
+                name=message.name,
+                avatar_url=message.avatar_url,
+            )
+            display_name = message.name
+
+        # Log 1 beer with split_the_g=1
+        beer = await beer_repo.create(
+            user_id=user.id,
+            group_id=message.group_id,
+            quantity=1,
+            message_id=message.id,
+            split_the_g=1,
+            drink_type=DrinkType.BEER,
+        )
+
+        if beer is None:
+            return "Already processed this message."
+
+        # Get totals
+        beer_total = await beer_repo.get_user_total(user.id, message.group_id)
+        split_total = await beer_repo.get_user_split_g_total(user.id, message.group_id)
+
+        return f"🍀 Split the G logged for {display_name}! +1 beer, {split_total} total splits, {beer_total} beers."
+
     async def unsplit(
         self,
         message: GroupMeMessage,
@@ -972,6 +1020,34 @@ class StatsService:
         beer_word = "beer" if amount == 1 else "beers"
         return f"{debtor.name} now owes {amount} {beer_word}. Total debt: {new_total} beers."
 
+    async def forgive_debt(
+        self,
+        message: GroupMeMessage,
+        amount: int,
+        debtor_user_id: str,
+        debtor_name: str,
+    ) -> str:
+        """Forgive (reduce) debt for a user without them drinking."""
+        # Get the debtor
+        debtor = await user_repo.get_by_groupme_id(debtor_user_id)
+        if not debtor:
+            return f"Could not find {debtor_name}. They may not have any debt."
+
+        # Get current debt
+        current_debt = await debt_repo.get_debt(debtor.id, message.group_id)
+        if current_debt <= 0:
+            return f"{debtor.name} doesn't owe any beers!"
+
+        # Reduce debt
+        reduced = await debt_repo.reduce_debt(debtor.id, message.group_id, amount)
+        remaining = await debt_repo.get_debt(debtor.id, message.group_id)
+
+        beer_word = "beer" if reduced == 1 else "beers"
+        if remaining > 0:
+            return f"Forgave {reduced} {beer_word} for {debtor.name}. They still owe {remaining}."
+        else:
+            return f"Forgave {reduced} {beer_word} for {debtor.name}. Debt cleared! 🎉"
+
     async def get_debt_leaderboard(self, group_id: str) -> str:
         """Get the debt leaderboard (who owes the most)."""
         leaderboard = await debt_repo.get_debt_leaderboard(group_id)
@@ -1006,11 +1082,13 @@ Stats:
 
 Split the G:
 - Post a Guinness at the G level 🍀
+- !split [@user] - Manually add a split
 - !splitg - Leaderboard
 - !unsplit [N] [@user]
 
 Debts:
 - !owe [@user] or !owe N @user
+- !forgive @user or !forgive N @user
 - !debts - Who owes
 
 Other:
