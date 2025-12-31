@@ -20,9 +20,14 @@ on:
         required: false
         default: '0.95'
         type: string
+      force:
+        description: 'Force evaluation even if no label changes'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
@@ -55,19 +60,42 @@ jobs:
           echo "reviewed_count=$REVIEWED" >> $GITHUB_OUTPUT
           if [ "$REVIEWED" -eq 0 ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
+            echo "reason=no reviewed labels" >> $GITHUB_OUTPUT
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Run evaluation
+      - name: Check if labels changed since baseline
+        id: check_labels_changed
         if: steps.check_reviewed.outputs.skip != 'true'
+        run: |
+          CURRENT_HASH=$(uv run scripts/eval_prompt.py --labels-hash)
+          echo "current_hash=$CURRENT_HASH" >> $GITHUB_OUTPUT
+
+          if [ -f "data/results/baseline_latest.json" ]; then
+            BASELINE_HASH=$(python3 -c "import json; print(json.load(open('data/results/baseline_latest.json')).get('reviewed_labels_hash', ''))")
+            echo "baseline_hash=$BASELINE_HASH" >> $GITHUB_OUTPUT
+
+            if [ "$CURRENT_HASH" == "$BASELINE_HASH" ] && [ "${{ inputs.force }}" != "true" ]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "No new reviewed labels since baseline (hash: $CURRENT_HASH)"
+            else
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "Labels changed: $BASELINE_HASH -> $CURRENT_HASH"
+            fi
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "No baseline found, running evaluation"
+          fi
+
+      - name: Run evaluation
+        if: steps.check_reviewed.outputs.skip != 'true' && steps.check_labels_changed.outputs.skip != 'true'
         id: eval
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           THRESHOLD="${{ inputs.threshold || '0.95' }}"
 
-          # Run evaluation with CI output
           uv run scripts/eval_prompt.py \
             --reviewed-only \
             --ci \
@@ -75,23 +103,25 @@ jobs:
             --threshold "$THRESHOLD" \
             > eval_output.json 2>&1 || true
 
-          # Parse results
           cat eval_output.json
 
           STATUS=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('status', 'unknown'))")
           ACCURACY=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('accuracy', 0))")
+          IMPROVEMENT=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('improvement_detected', False))")
+          DELTA=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('accuracy_delta', 0))")
 
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           echo "accuracy=$ACCURACY" >> $GITHUB_OUTPUT
+          echo "improvement=$IMPROVEMENT" >> $GITHUB_OUTPUT
+          echo "delta=$DELTA" >> $GITHUB_OUTPUT
 
-          # Fail if status is not pass
           if [ "$STATUS" != "pass" ]; then
             echo "Evaluation failed: accuracy=$ACCURACY, threshold=$THRESHOLD"
             exit 1
           fi
 
       - name: Comment on PR
-        if: github.event_name == 'pull_request' && steps.check_reviewed.outputs.skip != 'true'
+        if: github.event_name == 'pull_request' && steps.check_reviewed.outputs.skip != 'true' && steps.check_labels_changed.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -102,15 +132,21 @@ jobs:
             const accuracy = (evalOutput.accuracy * 100).toFixed(1);
             const baseline = evalOutput.baseline_accuracy ? (evalOutput.baseline_accuracy * 100).toFixed(1) : 'N/A';
             const delta = evalOutput.accuracy_delta ? (evalOutput.accuracy_delta * 100).toFixed(1) : 'N/A';
+            const improvement = evalOutput.improvement_detected ? '🚀 YES' : 'No';
 
             let body = `## Vision Prompt Evaluation ${status}\n\n`;
             body += `| Metric | Value |\n`;
             body += `|--------|-------|\n`;
             body += `| Accuracy | **${accuracy}%** |\n`;
             body += `| Baseline | ${baseline}% |\n`;
-            body += `| Delta | ${delta}% |\n`;
+            body += `| Delta | ${delta > 0 ? '+' : ''}${delta}% |\n`;
+            body += `| Improvement Detected | ${improvement} |\n`;
             body += `| Images Evaluated | ${evalOutput.total_images} |\n`;
-            body += `| Status | ${evalOutput.status} |\n`;
+
+            if (evalOutput.improvement_detected) {
+              body += `\n### 🎉 Improvement Detected\n`;
+              body += `This prompt shows a **+${delta}%** improvement over baseline. Auto-merge eligible.\n`;
+            }
 
             if (evalOutput.failure_reason) {
               body += `\n### Failure Reason\n${evalOutput.failure_reason}\n`;
@@ -140,8 +176,96 @@ jobs:
               body: body
             });
 
-      - name: Skip notice
+      - name: Update baseline on improvement
+        if: |
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.eval.outputs.improvement == 'True' &&
+          steps.check_reviewed.outputs.skip != 'true' &&
+          steps.check_labels_changed.outputs.skip != 'true'
+        run: |
+          echo "Improvement detected! Updating baseline..."
+
+          # Save new baseline with labels hash
+          cp eval_output.json data/results/baseline_latest.json
+
+          # Also save timestamped version
+          TIMESTAMP=$(date +%Y-%m-%d_%H%M%S)
+          uv run scripts/eval_prompt.py \
+            --reviewed-only \
+            --output "data/results/baseline_${TIMESTAMP}.json" \
+            --name "baseline"
+
+          # Commit and push
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/results/
+          git commit -m "chore: update baseline to ${{ steps.eval.outputs.accuracy }} accuracy (+${{ steps.eval.outputs.delta }})"
+          git push origin main
+
+      - name: Auto-merge improved prompt PR
+        if: |
+          github.event_name == 'pull_request' &&
+          steps.eval.outputs.improvement == 'True' &&
+          steps.eval.outputs.status == 'pass'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const evalOutput = JSON.parse(fs.readFileSync('eval_output.json', 'utf8'));
+            const delta = (evalOutput.accuracy_delta * 100).toFixed(1);
+            const accuracy = (evalOutput.accuracy * 100).toFixed(1);
+
+            // Add labels
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['auto-merge', 'prompt-improvement']
+            });
+
+            // Comment about auto-merge
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🤖 Auto-Merge Approved\n\nThis PR shows a **+${delta}%** improvement in accuracy (${accuracy}%).\n\nMerging automatically...`
+            });
+
+            // Attempt to merge
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                merge_method: 'squash',
+                commit_title: `feat(prompt): improve accuracy to ${accuracy}% (+${delta}%)`,
+                commit_message: `Automated merge of prompt improvement.\n\nAccuracy: ${accuracy}%\nImprovement: +${delta}%`
+              });
+              console.log('PR merged successfully');
+            } catch (error) {
+              console.log('Could not auto-merge:', error.message);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `Auto-merge was approved but could not complete: ${error.message}\n\nPlease merge manually.`
+              });
+            }
+
+      - name: Skip notice (no reviewed labels)
         if: steps.check_reviewed.outputs.skip == 'true'
         run: |
-          echo "No reviewed labels found. Skipping evaluation."
-          echo "Mark labels as reviewed=true to enable CI evaluation."
+          echo "## Skipped: No Reviewed Labels" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No reviewed labels found. Mark labels as \`reviewed: true\` to enable evaluation." >> $GITHUB_STEP_SUMMARY
+
+      - name: Skip notice (no label changes)
+        if: steps.check_reviewed.outputs.skip != 'true' && steps.check_labels_changed.outputs.skip == 'true'
+        run: |
+          echo "## Skipped: No New Reviewed Labels" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Labels hash unchanged since baseline (\`${{ steps.check_labels_changed.outputs.current_hash }}\`)." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Use \`force: true\` to run evaluation anyway." >> $GITHUB_STEP_SUMMARY

@@ -451,16 +451,30 @@ def load_baseline(baseline_path: Path) -> Optional[dict]:
         return json.load(f)
 
 
+def get_reviewed_labels_hash() -> str:
+    """Get hash of reviewed labels for change detection."""
+    if not LABELS_FILE.exists():
+        return ""
+    with open(LABELS_FILE) as f:
+        labels = json.load(f)
+    # Only hash reviewed labels
+    reviewed = {k: v for k, v in sorted(labels.items()) if v.get("reviewed", False)}
+    return hashlib.sha256(json.dumps(reviewed, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def print_ci_output(
     metrics: EvalMetrics,
     prompt_source: str,
     baseline: Optional[dict] = None,
     threshold: float = 0.95,
+    improvement_threshold: float = 0.01,
 ) -> bool:
     """Print CI-friendly JSON output and return success status.
 
     Returns True if evaluation passes, False if it fails.
     """
+    labels_hash = get_reviewed_labels_hash()
+
     result = {
         "status": "pass",
         "accuracy": metrics.overall_accuracy,
@@ -468,6 +482,8 @@ def print_ci_output(
         "split_g_accuracy": metrics.split_g_accuracy,
         "total_images": metrics.total_images,
         "prompt_source": prompt_source,
+        "reviewed_labels_hash": labels_hash,
+        "improvement_detected": False,
         "errors": {
             "false_negatives": len(metrics.false_negatives),
             "false_positives": len(metrics.false_positives),
@@ -488,7 +504,12 @@ def print_ci_output(
         baseline_metrics = baseline.get("metrics", {})
         baseline_accuracy = baseline_metrics.get("overall_accuracy", 0)
         result["baseline_accuracy"] = baseline_accuracy
-        result["accuracy_delta"] = round(metrics.overall_accuracy - baseline_accuracy, 3)
+        delta = round(metrics.overall_accuracy - baseline_accuracy, 3)
+        result["accuracy_delta"] = delta
+
+        # Detect definitive improvement (>= threshold, e.g., 1%)
+        if delta >= improvement_threshold:
+            result["improvement_detected"] = True
 
         if metrics.overall_accuracy < baseline_accuracy:
             result["status"] = "fail"
@@ -606,7 +627,12 @@ async def main():
     parser.add_argument("--ci", action="store_true", help="CI output mode (JSON to stdout)")
     parser.add_argument("--baseline", type=str, help="Path to baseline JSON for comparison")
     parser.add_argument("--threshold", type=float, default=0.95, help="Minimum accuracy threshold (default: 0.95)")
+    parser.add_argument("--labels-hash", action="store_true", help="Print current reviewed labels hash and exit")
     args = parser.parse_args()
+
+    if args.labels_hash:
+        print(get_reviewed_labels_hash())
+        return
 
     if args.init:
         migrate_labels()

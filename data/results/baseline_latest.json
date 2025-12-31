@@ -1004,5 +1004,6 @@
       "split_g_correct": true,
       "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
     }
-  ]
+  ],
+  "reviewed_labels_hash": "7d9aefd7f1bb"
 }
