@@ -1,9 +1,20 @@
 {
-  "scraped_at": "2025-12-31T20:13:49.670318",
+  "scraped_at": "2025-12-31T20:19:36.839569",
   "group_id": "112172155",
-  "total_images": 99,
-  "last_message_id": "176721164612613126",
+  "total_images": 100,
+  "last_message_id": "176721221700494980",
   "images": [
+    {
+      "message_id": "176721221411365442",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/0f5dab99b99f451db3667b20f40da2f5/4284x5712.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1767212214,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176721221411365442_0.jpg"
+    },
     {
       "message_id": "176721109281578720",
       "attachment_index": 0,
