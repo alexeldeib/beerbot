@@ -1,0 +1,147 @@
+name: Evaluate Vision Prompt
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'data/labels.json'
+      - 'data/prompts/**'
+      - 'src/beerbot/vision.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'data/labels.json'
+      - 'data/prompts/**'
+      - 'src/beerbot/vision.py'
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: 'Accuracy threshold (0.0-1.0)'
+        required: false
+        default: '0.95'
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check for reviewed labels
+        id: check_reviewed
+        run: |
+          REVIEWED=$(python3 -c "
+          import json
+          labels = json.load(open('data/labels.json'))
+          reviewed = sum(1 for l in labels.values() if l.get('reviewed', False))
+          print(reviewed)
+          ")
+          echo "reviewed_count=$REVIEWED" >> $GITHUB_OUTPUT
+          if [ "$REVIEWED" -eq 0 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run evaluation
+        if: steps.check_reviewed.outputs.skip != 'true'
+        id: eval
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          THRESHOLD="${{ inputs.threshold || '0.95' }}"
+
+          # Run evaluation with CI output
+          uv run scripts/eval_prompt.py \
+            --reviewed-only \
+            --ci \
+            --baseline data/results/baseline_latest.json \
+            --threshold "$THRESHOLD" \
+            > eval_output.json 2>&1 || true
+
+          # Parse results
+          cat eval_output.json
+
+          STATUS=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('status', 'unknown'))")
+          ACCURACY=$(python3 -c "import json; print(json.load(open('eval_output.json')).get('accuracy', 0))")
+
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "accuracy=$ACCURACY" >> $GITHUB_OUTPUT
+
+          # Fail if status is not pass
+          if [ "$STATUS" != "pass" ]; then
+            echo "Evaluation failed: accuracy=$ACCURACY, threshold=$THRESHOLD"
+            exit 1
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.check_reviewed.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const evalOutput = JSON.parse(fs.readFileSync('eval_output.json', 'utf8'));
+
+            const status = evalOutput.status === 'pass' ? '✅' : '❌';
+            const accuracy = (evalOutput.accuracy * 100).toFixed(1);
+            const baseline = evalOutput.baseline_accuracy ? (evalOutput.baseline_accuracy * 100).toFixed(1) : 'N/A';
+            const delta = evalOutput.accuracy_delta ? (evalOutput.accuracy_delta * 100).toFixed(1) : 'N/A';
+
+            let body = `## Vision Prompt Evaluation ${status}\n\n`;
+            body += `| Metric | Value |\n`;
+            body += `|--------|-------|\n`;
+            body += `| Accuracy | **${accuracy}%** |\n`;
+            body += `| Baseline | ${baseline}% |\n`;
+            body += `| Delta | ${delta}% |\n`;
+            body += `| Images Evaluated | ${evalOutput.total_images} |\n`;
+            body += `| Status | ${evalOutput.status} |\n`;
+
+            if (evalOutput.failure_reason) {
+              body += `\n### Failure Reason\n${evalOutput.failure_reason}\n`;
+            }
+
+            if (evalOutput.error_details) {
+              const details = evalOutput.error_details;
+              body += `\n### Error Details\n`;
+              if (details.false_negatives?.length > 0) {
+                body += `\n**False Negatives (missed drinks):**\n`;
+                details.false_negatives.forEach(f => body += `- ${f}\n`);
+              }
+              if (details.false_positives?.length > 0) {
+                body += `\n**False Positives (detected non-drinks):**\n`;
+                details.false_positives.forEach(f => body += `- ${f}\n`);
+              }
+              if (details.wrong_type?.length > 0) {
+                body += `\n**Wrong Type:**\n`;
+                details.wrong_type.forEach(w => body += `- ${w.filename}: expected ${w.expected}, got ${w.predicted}\n`);
+              }
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Skip notice
+        if: steps.check_reviewed.outputs.skip == 'true'
+        run: |
+          echo "No reviewed labels found. Skipping evaluation."
+          echo "Mark labels as reviewed=true to enable CI evaluation."

@@ -211,6 +211,87 @@ src/beerbot/
 
 ---
 
+## 🔬 Vision Pipeline (for Development)
+
+Beerbot includes a vision prompt testing and optimization pipeline for improving drink detection accuracy.
+
+### Directory Structure
+
+```
+data/
+├── images/          # Scraped GroupMe images
+├── labels.json      # Ground truth labels (reviewed: true/false)
+├── metadata.json    # Image metadata from scraping
+├── prompts/         # Vision prompt versions
+│   └── v12.txt      # Current production prompt
+└── results/
+    ├── baseline_latest.json  # Current best results
+    └── *.json                 # Historical evaluation results
+```
+
+### Local Workflow
+
+```bash
+# 1. Scrape new images from GroupMe (requires GROUPME_ACCESS_TOKEN)
+uv run scripts/scrape_images.py --scrape --incremental
+
+# 2. Auto-label with Gemini (requires GEMINI_API_KEY)
+uv run scripts/scrape_images.py --label
+
+# 3. Review labels interactively
+uv run scripts/review_labels.py
+
+# 4. Evaluate prompt accuracy
+uv run scripts/eval_prompt.py
+
+# 5. Evaluate specific prompt version
+uv run scripts/eval_prompt.py --prompt data/prompts/v12.txt
+
+# 6. CI-style evaluation with baseline comparison
+uv run scripts/eval_prompt.py --reviewed-only --ci --baseline data/results/baseline_latest.json
+```
+
+### GitHub Actions
+
+Two automated workflows help maintain vision accuracy:
+
+**1. Scrape Workflow** (`.github/workflows/scrape.yml`)
+- Runs weekly (or manually)
+- Scrapes new images from GroupMe
+- Auto-labels with Gemini
+- Creates PR with new images for review
+
+**2. Evaluate Workflow** (`.github/workflows/evaluate.yml`)
+- Triggers on changes to labels, prompts, or vision.py
+- Compares against baseline accuracy
+- Posts results as PR comment
+- Fails if accuracy drops below threshold
+
+### GitHub Secrets Required
+
+| Secret | Description |
+|--------|-------------|
+| `GROUPME_ACCESS_TOKEN` | GroupMe API token for scraping images |
+| `GEMINI_API_KEY` | Google Gemini API key for labeling and evaluation |
+
+To get these tokens:
+- **GroupMe**: Visit [dev.groupme.com](https://dev.groupme.com), click "Access Token"
+- **Gemini**: Visit [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+### Updating the Baseline
+
+After improving the prompt and verifying accuracy:
+
+```bash
+# Run full evaluation
+uv run scripts/eval_prompt.py --output data/results/new_baseline.json
+
+# If accuracy improved, update baseline
+cp data/results/new_baseline.json data/results/baseline_latest.json
+```
+
+---
+
 ## 📄 License
 
 MIT

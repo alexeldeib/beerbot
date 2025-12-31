@@ -22,23 +22,81 @@ logger = logging.getLogger(__name__)
 class VisionService:
     """Service for analyzing images using Gemini Vision API."""
 
-    PROMPT = """Analyze this image for alcoholic drinks.
+    PROMPT = """Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.
 
-Identify drink type by GLASS/CONTAINER TYPE (not the liquid inside):
-- "wine": wine glass, champagne flute, stemmed glass
-- "beer": pint glass, beer mug, beer can, beer bottle
-- "cocktail": cocktail glass, rocks glass, highball, martini glass, drink with garnish
-- "claw": hard seltzer can (White Claw, Truly, etc.)
+STEP 0: IS THIS A REAL PHOTO OF DRINKS?
+FIRST check if this is actually a photo of real drinks. Return NULL immediately if:
+- Screenshot of an app, website, or UI (text interfaces, menus, chat apps)
+- Meme, cartoon, or illustration
+- Photo of a screen/monitor
+- Text-heavy image without real drinks visible
+If you see phone UI elements, app interfaces, or mostly text = return NULL immediately!
 
-If no alcoholic drink container visible, return null.
-If glass type is ambiguous, return null.
+STEP 1: CHECK FOR NON-ALCOHOLIC VARIANTS
+If bottle/can shows "0.0%", "Cero", "Zero", "NA", or "Non-Alcoholic" = NULL (even if it looks like beer!)
+- Corona Cero (0.0%) = NULL
+- Heineken 0.0 = NULL
+- Athletic Brewing = NULL
+- O'Doul's = NULL
 
-SPLIT THE G DETECTION (Irish drinking tradition):
-"Split the G" means the beer level in a Guinness glass is positioned exactly at the middle of the letter "G" in the Guinness logo/harp printed on the glass, visually "splitting" the G in half.
-Set split_the_g: true if you see a Guinness pint glass where the beer line (top of the liquid) passes through the G in the logo.
-This is a celebrated achievement when drinking Guinness. Be generous - if the level is close to the G, count it!
+STEP 2: CHECK FOR TEQUILA/MEZCAL SHOT GLASSES
+Look carefully for Mexican-style shot glasses (caballitos):
+- Small narrow glass with GREEN or BLUE colored rim = COCKTAIL (tequila/mezcal glass)
+- This is true even if the glass appears empty!
+- Often seen with Mexican food, salsa, or in restaurant settings
+- The colored rim is the key identifier - if you see green/blue rim on a shot glass = COCKTAIL
 
-Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
+STEP 3: CHECK FOR OTHER CONSUMED COCKTAILS
+Even if the glass is nearly empty, count it as COCKTAIL if you see:
+- Creamy/white residue coating inside of glass + fruit (pineapple, cherry) = consumed piña colada/daiquiri → COCKTAIL
+- Martini glass with olive/toothpick but no liquid → COCKTAIL
+- Cocktail glass with melted ice + fruit garnish remnants → COCKTAIL
+
+STEP 4: IDENTIFY HARD SELTZER (CLAW) - BE SPECIFIC!
+Only classify as CLAW if you see these SPECIFIC BRANDS:
+- White Claw (white can with colored wave logo)
+- Truly (colorful can with "Truly" branding)
+- High Noon (sun logo)
+- Topo Chico Hard Seltzer
+Any other tall can with artistic/craft design = likely BEER, not claw!
+
+STEP 5: IDENTIFY THE CONTAINER
+- Beer can (ANY tall/slim can with craft/artistic design) → BEER
+- Beer flight paddle (wooden board with multiple small glasses) → BEER
+- Beer glass, mug, pint, bottle → BEER
+- Wine glass, champagne flute → Check liquid color
+- Rocks glass, highball, martini → Could be cocktail or non-alcoholic
+
+STEP 6: IDENTIFY THE LIQUID
+- Golden/amber with foam → BEER
+- Red/burgundy or pale yellow (no mixing) → WINE
+- Orange, layered, or mixed colors → COCKTAIL
+- Creamy/milky (like coffee with milk, no fruit/garnish) → Probably NOT alcohol, return NULL
+- Clear with no alcohol indicators → NULL
+
+STEP 7: CHECK FOR NON-ALCOHOLIC DRINKS
+These are NOT alcoholic - return NULL:
+- Iced coffee/latte (creamy, brown/tan, often with straw, NO fruit garnish)
+- Water glasses (plain clear glass, no colored rim)
+- Soft drinks
+- Plain empty glasses with no distinctive features (no colored rim, no residue)
+
+KEY RULES:
+1. Craft beer cans with artistic designs = BEER (not claw!)
+2. Only White Claw, Truly, High Noon, Topo Chico = CLAW
+3. Beer flights (multiple small glasses on paddle/board) = BEER
+4. Corona/beer with lime/orange = BEER (garnish doesn't make it cocktail)
+5. Mimosa (orange in champagne flute) = COCKTAIL
+6. Iced coffee in rocks glass = NULL (not alcohol!)
+7. GREEN or BLUE rimmed shot glass = COCKTAIL (Mexican tequila/mezcal glass, even if empty!)
+8. Glass with creamy residue + tropical fruit = COCKTAIL (consumed piña colada)
+9. Check label for "0.0%" or "Cero" = NULL (non-alcoholic)
+10. Screenshots/memes/UI images = NULL (not real photos!)
+
+SPLIT THE G:
+Check if Guinness glass shows beer level at/through the "G" in logo. Be generous!
+
+Output: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
 
     MODEL = "gemini-2.0-flash"
 

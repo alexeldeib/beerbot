@@ -314,14 +314,21 @@ class MessageParser:
         return 1  # Default to 1 split
 
     def is_explicit_assignment(self, text: str | None) -> bool:
-        """Check if the message is an explicit beer assignment (+N beers pattern).
+        """Check if the message is an explicit drink assignment (+N drinks pattern).
 
-        When used with mentions, explicit assignments give beers TO others,
+        When used with mentions, explicit assignments give drinks TO others,
         not to the sender.
         """
         if not text:
             return False
-        return bool(self.NUMERIC_PATTERN.search(text))
+        # Check all +N drink patterns (beer, wine, cocktail, claw, generic)
+        return bool(
+            self.NUMERIC_PATTERN.search(text) or  # +N beers
+            self.WINE_NUMERIC_PATTERN.search(text) or  # +N wines
+            self.COCKTAIL_NUMERIC_PATTERN.search(text) or  # +N cocktails
+            self.CLAW_NUMERIC_PATTERN.search(text) or  # +N claws
+            self.GENERIC_DRINK_PATTERN.search(text)  # +N <any drink word>
+        )
 
     def parse_debt_amount(self, text: str | None) -> int:
         """Extract the number of beers from a debt command (!owe N, !payoff N).
@@ -770,13 +777,27 @@ class StatsService:
         message: GroupMeMessage,
         quantity: int,
         drink_type: DrinkType,
+        target_user_id: str | None = None,
     ) -> str:
-        """Remove a specific number of drinks of a specific type from the sender."""
-        user = await user_repo.get_or_create(
-            groupme_user_id=message.user_id,
-            name=message.name,
-            avatar_url=message.avatar_url,
-        )
+        """Remove a specific number of drinks of a specific type.
+
+        If target_user_id is provided (from a mention), remove from that user.
+        Otherwise, remove from the sender.
+        """
+        # Determine which user to remove from
+        if target_user_id:
+            target_user = await user_repo.get_by_groupme_id(target_user_id)
+            if not target_user:
+                return "Could not find that user. They may not have logged any drinks yet."
+            user = target_user
+            target_name = target_user.name
+        else:
+            user = await user_repo.get_or_create(
+                groupme_user_id=message.user_id,
+                name=message.name,
+                avatar_url=message.avatar_url,
+            )
+            target_name = message.name
 
         # Remove drinks of this type
         quantity_removed = await beer_repo.remove_beers_by_type(
@@ -794,15 +815,15 @@ class StatsService:
         drink_word = singular if quantity_removed == 1 else plural
 
         if quantity_removed == 0:
-            return f"{message.name} has no {plural} to remove!"
+            return f"{target_name} has no {plural} to remove!"
 
         # Get new total for this drink type
         new_total = await beer_repo.get_user_total_by_type(user.id, message.group_id, drink_type)
 
         if quantity_removed < quantity:
-            return f"Removed all {quantity_removed} {drink_word} from {message.name} (only had {quantity_removed}). {singular.title()} total: {new_total}."
+            return f"Removed all {quantity_removed} {drink_word} from {target_name} (only had {quantity_removed}). {singular.title()} total: {new_total}."
 
-        return f"Removed {quantity_removed} {drink_word} from {message.name}. {singular.title()} total: {new_total}."
+        return f"Removed {quantity_removed} {drink_word} from {target_name}. {singular.title()} total: {new_total}."
 
     async def add_split(
         self,
@@ -1071,7 +1092,11 @@ Log drinks:
 - 🥤 claw me / seltzer me / +N claws
 - +N mimosas/shots/etc → counts as cocktails
 - Post a photo - Auto-detects by glass type!
-- @mention users - Log for tagged friends too
+
+Tagging others:
+- +N drinks @user → logs for @user only
+- 🍺 @user → logs for you AND @user
+- -N drinks @user → removes from @user
 
 Stats:
 - !beers - Group drink count
