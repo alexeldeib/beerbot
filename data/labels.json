@@ -1138,29 +1138,35 @@
     "drink_count": 1,
     "split_the_g": false,
     "auto_labeled": true,
-    "reviewed": false,
+    "reviewed": true,
     "message_id": "176721109281578720",
     "user_name": "Celena Tyler",
-    "text": null
+    "text": null,
+    "notes": null,
+    "has_drink": true
   },
   "msg_176721105319290751_0.jpg": {
     "drink_type": "cocktail",
     "drink_count": 1,
     "split_the_g": false,
     "auto_labeled": true,
-    "reviewed": false,
+    "reviewed": true,
     "message_id": "176721105319290751",
     "user_name": "Celena Tyler",
-    "text": null
+    "text": null,
+    "notes": null,
+    "has_drink": true
   },
   "msg_176721221411365442_0.jpg": {
     "drink_type": "beer",
     "drink_count": 1,
     "split_the_g": false,
     "auto_labeled": true,
-    "reviewed": false,
+    "reviewed": true,
     "message_id": "176721221411365442",
     "user_name": "Avada Balenciaga",
-    "text": null
+    "text": null,
+    "notes": null,
+    "has_drink": true
   }
 }
