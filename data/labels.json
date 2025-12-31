@@ -1072,5 +1072,55 @@
     "message_id": "176714192789822935",
     "user_name": "Avada Balenciaga",
     "text": null
+  },
+  "msg_176721008599776466_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176721008599776466",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176720700391638438_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176720700391638438",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176720531514313233_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176720531514313233",
+    "user_name": "Justin DeVuono",
+    "text": null
+  },
+  "msg_176720527323969085_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176720527323969085",
+    "user_name": "Jon Raduazzo",
+    "text": null
+  },
+  "msg_176720334707446797_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176720334707446797",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
