@@ -149,30 +149,45 @@ def migrate_labels():
     return labels
 
 
+@dataclass
+class SimpleVisionResult:
+    """Simplified vision result for standalone evaluation."""
+    drink_count: int = 0
+    drink_type: str = "beer"  # Just store as string
+    split_the_g_count: int = 0
+    analyzed: bool = False
+
+
+# Default production prompt (v12)
+DEFAULT_PROMPT = (PROMPTS_DIR / "v12.txt").read_text() if (PROMPTS_DIR / "v12.txt").exists() else """
+Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.
+{"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}
+"""
+
+
 class TestVisionService:
-    """Vision service that allows prompt override for testing."""
+    """Vision service that allows prompt override for testing (standalone, no beerbot imports)."""
 
     def __init__(self, custom_prompt: Optional[str] = None):
-        from beerbot.config import settings
-        from beerbot.vision import VisionService
+        import os
+        from google import genai
 
-        self._service = VisionService()
-        self.prompt = custom_prompt or VisionService.PROMPT
-        self.model = VisionService.MODEL
+        api_key = os.environ.get("GEMINI_API_KEY")
+        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.prompt = custom_prompt or DEFAULT_PROMPT
+        self.model = "gemini-2.0-flash"
 
     def analyze_image_sync(self, image_data: bytes) -> tuple:
-        """Analyze image and return (VisionResult, raw_response)."""
+        """Analyze image and return (SimpleVisionResult, raw_response)."""
         from google.genai import types
-        import json
         import re
-        from beerbot.models import DrinkType, VisionResult
 
-        if not self._service.client:
-            return VisionResult(), ""
+        if not self.client:
+            return SimpleVisionResult(), ""
 
         try:
             image_part = types.Part.from_bytes(data=image_data, mime_type="image/jpeg")
-            response = self._service.client.models.generate_content(
+            response = self.client.models.generate_content(
                 model=self.model,
                 contents=[self.prompt, image_part],
             )
@@ -191,13 +206,13 @@ class TestVisionService:
                 split_the_g = bool(data.get("split_the_g", False))
 
                 if drink_type_str:
-                    drink_type = DrinkType.from_string(drink_type_str)
+                    drink_type = drink_type_str.lower()
                     drink_count = 1
                 else:
-                    drink_type = DrinkType.BEER
+                    drink_type = "beer"
                     drink_count = 0
 
-                result = VisionResult(
+                result = SimpleVisionResult(
                     drink_count=drink_count,
                     drink_type=drink_type,
                     split_the_g_count=1 if split_the_g else 0,
@@ -206,14 +221,14 @@ class TestVisionService:
             except (json.JSONDecodeError, KeyError, TypeError):
                 # Fallback parsing
                 raw_lower = raw_text.lower()
-                drink_type = DrinkType.BEER
+                drink_type = "beer"
                 drink_count = 0
                 for dt in ["beer", "wine", "cocktail", "claw"]:
                     if dt in raw_lower:
-                        drink_type = DrinkType.from_string(dt)
+                        drink_type = dt
                         drink_count = 1
                         break
-                result = VisionResult(
+                result = SimpleVisionResult(
                     drink_count=drink_count,
                     drink_type=drink_type,
                     split_the_g_count=0,
@@ -224,8 +239,7 @@ class TestVisionService:
 
         except Exception as e:
             print(f"  API error: {e}")
-            from beerbot.models import VisionResult
-            return VisionResult(), f"ERROR: {e}"
+            return SimpleVisionResult(), f"ERROR: {e}"
 
 
 def evaluate_image(
@@ -239,8 +253,8 @@ def evaluate_image(
     gt_type = label.get("drink_type")
     gt_split_g = label.get("split_the_g", False)
 
-    # Prediction
-    pred_type = result.drink_type.value if result.drink_count > 0 else None
+    # Prediction (drink_type is now a string, not an enum)
+    pred_type = result.drink_type if result.drink_count > 0 else None
     pred_split_g = result.split_the_g_count > 0
 
     # Correctness

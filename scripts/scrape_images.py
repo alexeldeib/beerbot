@@ -220,9 +220,60 @@ def save_metadata(images: list[dict], messages: list[dict] | None = None):
         print(f"Last message ID: {last_message_id} (for incremental scraping)")
 
 
+def analyze_image_standalone(client, image_data: bytes, prompt: str) -> dict:
+    """Analyze image using Gemini without importing beerbot modules."""
+    import re
+    from google.genai import types
+
+    try:
+        image_part = types.Part.from_bytes(data=image_data, mime_type="image/jpeg")
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[prompt, image_part],
+        )
+
+        raw_text = response.text.strip()
+
+        # Try to extract JSON from response
+        json_text = raw_text
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+        if fence_match:
+            json_text = fence_match.group(1)
+
+        try:
+            data = json.loads(json_text)
+            drink_type = data.get("drink_type")
+            split_the_g = bool(data.get("split_the_g", False))
+            return {
+                "drink_type": drink_type,
+                "drink_count": 1 if drink_type else 0,
+                "split_the_g": split_the_g,
+            }
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Fallback: check for drink types in response
+            raw_lower = raw_text.lower()
+            for dt in ["beer", "wine", "cocktail", "claw"]:
+                if dt in raw_lower:
+                    return {"drink_type": dt, "drink_count": 1, "split_the_g": False}
+            return {"drink_type": None, "drink_count": 0, "split_the_g": False}
+
+    except Exception as e:
+        print(f"  Gemini API error: {e}")
+        return {"drink_type": None, "drink_count": 0, "split_the_g": False}
+
+
 async def label_images_with_gemini(api_key: str):
     """Auto-label images using Gemini."""
-    from beerbot.vision import VisionService
+    from google import genai
+
+    # Load the production prompt
+    prompt_file = DATA_DIR / "prompts" / "v12.txt"
+    if prompt_file.exists():
+        prompt = prompt_file.read_text()
+    else:
+        # Fallback to a simple prompt
+        prompt = """Analyze this image for alcoholic drinks. Return JSON:
+{"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}"""
 
     # Load metadata
     if not METADATA_FILE.exists():
@@ -241,11 +292,8 @@ async def label_images_with_gemini(api_key: str):
     else:
         labels = {}
 
-    # Create vision service
-    vision = VisionService()
-    if not vision.client:
-        print("No Gemini API key configured")
-        return
+    # Create Gemini client directly
+    client = genai.Client(api_key=api_key)
 
     for i, img in enumerate(images):
         local_path = img.get("local_path")
@@ -264,12 +312,12 @@ async def label_images_with_gemini(api_key: str):
 
             # Read image and analyze
             image_data = Path(local_path).read_bytes()
-            result = vision.analyze_image_sync(image_data)
+            result = analyze_image_standalone(client, image_data, prompt)
 
             labels[filename] = {
-                "drink_type": result.drink_type.value if result.drink_count > 0 else None,
-                "drink_count": result.drink_count,
-                "split_the_g": result.split_the_g_count > 0,
+                "drink_type": result["drink_type"],
+                "drink_count": result["drink_count"],
+                "split_the_g": result["split_the_g"],
                 "auto_labeled": True,
                 "reviewed": False,
                 "message_id": img["message_id"],
