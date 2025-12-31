@@ -1132,5 +1132,25 @@
     "text": null,
     "notes": null,
     "has_drink": true
+  },
+  "msg_176721109281578720_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176721109281578720",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176721105319290751_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176721105319290751",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
