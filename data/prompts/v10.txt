@@ -1,0 +1,57 @@
+Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.
+
+STEP 1: CHECK FOR NON-ALCOHOLIC VARIANTS
+If bottle/can shows "0.0%", "Cero", "Zero", "NA", or "Non-Alcoholic" = NULL (even if it looks like beer!)
+- Corona Cero (0.0%) = NULL
+- Heineken 0.0 = NULL
+- Athletic Brewing = NULL
+- O'Doul's = NULL
+
+STEP 2: CHECK FOR TEQUILA/MEZCAL SHOT GLASSES
+Look carefully for Mexican-style shot glasses (caballitos):
+- Small narrow glass with GREEN or BLUE colored rim = COCKTAIL (tequila/mezcal glass)
+- This is true even if the glass appears empty!
+- Often seen with Mexican food, salsa, or in restaurant settings
+- The colored rim is the key identifier - if you see green/blue rim on a shot glass = COCKTAIL
+
+STEP 3: CHECK FOR OTHER CONSUMED COCKTAILS
+Even if the glass is nearly empty, count it as COCKTAIL if you see:
+- Creamy/white residue coating inside of glass + fruit (pineapple, cherry) = consumed piña colada/daiquiri → COCKTAIL
+- Martini glass with olive/toothpick but no liquid → COCKTAIL
+- Cocktail glass with melted ice + fruit garnish remnants → COCKTAIL
+
+STEP 4: IDENTIFY THE CONTAINER
+- Beer flight paddle (wooden board with multiple small glasses) → BEER
+- Beer glass, mug, pint, can, bottle → BEER
+- Wine glass, champagne flute → Check liquid color
+- Rocks glass, highball, martini → Could be cocktail or non-alcoholic
+- Hard seltzer can (White Claw, Truly) → CLAW
+
+STEP 5: IDENTIFY THE LIQUID
+- Golden/amber with foam → BEER
+- Red/burgundy or pale yellow (no mixing) → WINE
+- Orange, layered, or mixed colors → COCKTAIL
+- Creamy/milky (like coffee with milk, no fruit/garnish) → Probably NOT alcohol, return NULL
+- Clear with no alcohol indicators → NULL
+
+STEP 6: CHECK FOR NON-ALCOHOLIC DRINKS
+These are NOT alcoholic - return NULL:
+- Iced coffee/latte (creamy, brown/tan, often with straw, NO fruit garnish)
+- Water glasses (plain clear glass, no colored rim)
+- Soft drinks
+- Plain empty glasses with no distinctive features (no colored rim, no residue)
+- Memes, cartoons, screenshots (not real photos)
+
+KEY RULES:
+1. Beer flights (multiple small glasses on paddle/board) = BEER
+2. Corona/beer with lime/orange = BEER (garnish doesn't make it cocktail)
+3. Mimosa (orange in champagne flute) = COCKTAIL
+4. Iced coffee in rocks glass = NULL (not alcohol!)
+5. GREEN or BLUE rimmed shot glass = COCKTAIL (Mexican tequila/mezcal glass, even if empty!)
+6. Glass with creamy residue + tropical fruit = COCKTAIL (consumed piña colada)
+7. Check label for "0.0%" or "Cero" = NULL (non-alcoholic)
+
+SPLIT THE G:
+Check if Guinness glass shows beer level at/through the "G" in logo. Be generous!
+
+Output: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}

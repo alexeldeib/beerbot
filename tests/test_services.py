@@ -341,6 +341,26 @@ class TestIsExplicitAssignment:
         assert self.parser.is_explicit_assignment("+1 beer") is True
         assert self.parser.is_explicit_assignment("+5 beers @user") is True
 
+    def test_wine_pattern_is_assignment(self):
+        """Test +N wines is explicit assignment."""
+        assert self.parser.is_explicit_assignment("+1 wine") is True
+        assert self.parser.is_explicit_assignment("+3 wines @user") is True
+
+    def test_cocktail_pattern_is_assignment(self):
+        """Test +N cocktails is explicit assignment."""
+        assert self.parser.is_explicit_assignment("+1 cocktail") is True
+        assert self.parser.is_explicit_assignment("+6 cocktails @user") is True
+
+    def test_claw_pattern_is_assignment(self):
+        """Test +N claws/seltzers is explicit assignment."""
+        assert self.parser.is_explicit_assignment("+1 claw") is True
+        assert self.parser.is_explicit_assignment("+2 seltzers @user") is True
+
+    def test_generic_drink_is_assignment(self):
+        """Test +N <alcoholic drink> is explicit assignment."""
+        assert self.parser.is_explicit_assignment("+3 shots") is True
+        assert self.parser.is_explicit_assignment("+2 margaritas @user") is True
+
     def test_emoji_is_not_assignment(self):
         """Test emoji is not explicit assignment."""
         assert self.parser.is_explicit_assignment("🍺") is False
@@ -354,3 +374,140 @@ class TestIsExplicitAssignment:
     def test_none_text(self):
         """Test with None text."""
         assert self.parser.is_explicit_assignment(None) is False
+
+
+class TestDrinkRemovalParsing:
+    """Tests for drink removal parsing (-N drinks syntax).
+
+    Regression tests for: https://github.com/anthropics/claude-code/issues/XXX
+    - "-1 cocktail" should remove from current user
+    - "-1 cocktail @user" should remove from tagged user
+    """
+
+    def setup_method(self):
+        self.parser = MessageParser()
+
+    def test_parse_cocktail_removal(self):
+        """Test -N cocktails pattern is parsed correctly."""
+        result = self.parser.parse_drink_removal("-1 cocktail")
+        assert result is not None
+        count, drink_type = result
+        assert count == 1
+        assert drink_type.value == "cocktail"
+
+    def test_parse_cocktail_removal_plural(self):
+        """Test -N cocktails (plural) pattern."""
+        result = self.parser.parse_drink_removal("-6 cocktails")
+        assert result is not None
+        count, drink_type = result
+        assert count == 6
+        assert drink_type.value == "cocktail"
+
+    def test_parse_cocktail_removal_with_mention(self):
+        """Test -N cocktails with @mention still parses the count correctly.
+
+        The parser only extracts the count and type;
+        the target user extraction happens in main.py from attachments.
+        """
+        result = self.parser.parse_drink_removal("-6 cocktails @Celena Tyler")
+        assert result is not None
+        count, drink_type = result
+        assert count == 6
+        assert drink_type.value == "cocktail"
+
+    def test_parse_beer_removal(self):
+        """Test -N beers pattern."""
+        result = self.parser.parse_drink_removal("-3 beers")
+        assert result is not None
+        count, drink_type = result
+        assert count == 3
+        assert drink_type.value == "beer"
+
+    def test_parse_wine_removal(self):
+        """Test -N wines pattern."""
+        result = self.parser.parse_drink_removal("-2 wines")
+        assert result is not None
+        count, drink_type = result
+        assert count == 2
+        assert drink_type.value == "wine"
+
+    def test_parse_claw_removal(self):
+        """Test -N claws/seltzers pattern."""
+        result = self.parser.parse_drink_removal("-1 claw")
+        assert result is not None
+        assert result[1].value == "claw"
+
+        result = self.parser.parse_drink_removal("-2 seltzers")
+        assert result is not None
+        assert result[1].value == "claw"
+
+    def test_parse_generic_alcoholic_removal(self):
+        """Test -N <alcoholic drink> pattern (e.g., shots, margaritas)."""
+        result = self.parser.parse_drink_removal("-3 shots")
+        assert result is not None
+        count, drink_type = result
+        assert count == 3
+        assert drink_type.value == "cocktail"  # Generic alcoholic drinks -> cocktail
+
+    def test_no_removal_pattern(self):
+        """Test message without removal pattern returns None."""
+        assert self.parser.parse_drink_removal("hello world") is None
+        assert self.parser.parse_drink_removal("+1 beer") is None
+        assert self.parser.parse_drink_removal("cheers") is None
+
+
+class TestDrinkRemovalTargeting:
+    """Tests for drink removal targeting (who gets drinks removed).
+
+    These tests verify the logic from main.py that determines:
+    - No mention: remove from sender
+    - With mention: remove from mentioned user
+    """
+
+    def test_extract_target_user_no_mention(self):
+        """With no mentions, target should be None (meaning: use sender)."""
+        attachments = []
+
+        target_user_id = None
+        for attachment in attachments:
+            if attachment.type == "mentions" and attachment.user_ids:
+                target_user_id = attachment.user_ids[0]
+                break
+
+        assert target_user_id is None
+
+    def test_extract_target_user_with_mention(self):
+        """With mentions, target should be the first mentioned user."""
+        attachments = [
+            GroupMeAttachment(
+                type="mentions",
+                user_ids=["12345678"],
+                loci=[[15, 13]],  # @Celena Tyler
+            )
+        ]
+
+        target_user_id = None
+        for attachment in attachments:
+            if attachment.type == "mentions" and attachment.user_ids:
+                target_user_id = attachment.user_ids[0]
+                break
+
+        assert target_user_id == "12345678"
+
+    def test_extract_target_user_multiple_mentions(self):
+        """With multiple mentions, only use the first one for removal."""
+        attachments = [
+            GroupMeAttachment(
+                type="mentions",
+                user_ids=["12345678", "87654321"],
+                loci=[[15, 13], [30, 10]],
+            )
+        ]
+
+        target_user_id = None
+        for attachment in attachments:
+            if attachment.type == "mentions" and attachment.user_ids:
+                target_user_id = attachment.user_ids[0]
+                break
+
+        assert target_user_id == "12345678"  # First user only

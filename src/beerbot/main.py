@@ -77,8 +77,14 @@ async def groupme_callback(request: Request):
     removal = message_parser.parse_drink_removal(message.text)
     if removal:
         removal_count, removal_type = removal
+        # Check for mentioned user in attachments (remove from them, not sender)
+        target_user_id = None
+        for attachment in message.attachments:
+            if attachment.type == "mentions" and attachment.user_ids:
+                target_user_id = attachment.user_ids[0]
+                break
         response_text = await stats_service.remove_drinks_by_type(
-            message, removal_count, removal_type
+            message, removal_count, removal_type, target_user_id
         )
         await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}

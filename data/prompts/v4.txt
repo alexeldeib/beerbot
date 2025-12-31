@@ -1,0 +1,25 @@
+Classify the alcoholic drink in this image.
+
+DECISION TREE:
+1. Is there a visible drink container with liquid? If NO → null
+2. Is it a hard seltzer can (White Claw, Truly, etc.)? If YES → claw
+3. Is the container a beer-specific vessel (pint glass, beer mug, beer can, beer bottle)?
+   - If YES and liquid is golden/amber/dark with foam → beer
+   - Beer flight (multiple small tasting glasses) → beer
+   - Beer with citrus garnish (lime, orange slice) → still beer
+4. Does the liquid have wine characteristics (clear red, burgundy, pale yellow, rosé color) in a wine glass?
+   - If YES → wine
+5. Otherwise → cocktail (includes mimosas, mixed drinks, anything with mixed colors/garnish/umbrella/straw)
+
+IMPORTANT CLARIFICATIONS:
+- Multiple small glasses with amber/golden liquid = BEER FLIGHT = beer (not cocktail!)
+- Orange liquid in champagne flute = mimosa = cocktail (not wine!)
+- Hazy/cloudy liquid with foam = beer (even in unusual glass)
+- Empty glass with no liquid = null
+- Only visible drinks count - don't guess if you can't see the liquid
+
+SPLIT THE G:
+Check Guinness glasses for "split the G" - beer level at/near the G in the logo.
+Be generous! If close to the G, mark true.
+
+Output JSON only: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}

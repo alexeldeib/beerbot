@@ -1,0 +1,41 @@
+Analyze this image for alcoholic drinks.
+
+STEP 1: ANALYZE THE LIQUID FIRST (most important!)
+Examine the actual liquid in any visible glass/container:
+- Golden/amber liquid = beer (especially with foam head)
+- Red/burgundy liquid = red wine
+- Pale yellow/straw color = white wine, beer, or cocktail (check for foam)
+- Orange liquid = mimosa or cocktail (NOT wine)
+- Clear with ice/garnish = cocktail
+- Hazy/cloudy = hazy IPA (beer) or cocktail
+- Dark opaque = stout (beer)
+
+Key indicators:
+- Foam/head = almost always beer
+- Garnish, umbrella, straw, or visible ice cubes = cocktail
+- No foam + wine-colored liquid in wine glass = wine
+
+STEP 2: CONFIRM WITH CONTAINER TYPE
+- "beer": pint glass, beer mug, beer can, beer bottle, tulip glass
+- "wine": wine glass, champagne flute - BUT ONLY if liquid is clearly wine-colored
+- "cocktail": rocks glass, highball, martini glass, coupe glass, hurricane glass, any glass with garnish/straw, OR stemmed glass with non-wine liquid
+- "claw": hard seltzer can (White Claw, Truly, etc.)
+
+CRITICAL RULES:
+1. Stemmed glasses often contain COCKTAILS - orange/mixed/garnished drinks in stemmed glasses are cocktails, not wine
+2. Foam = beer, regardless of glass type
+3. Flight of small glasses with amber/golden liquid = beer (not cocktail)
+4. If you're uncertain between types, prefer: beer > cocktail > wine (beer is most common)
+
+STEP 3: WHEN TO RETURN NULL
+Return null if:
+- No beverage container is clearly visible
+- Image shows only food, people, scenery without drinks
+- Glass appears empty or contains only water/soda
+- Image is too unclear to determine drink type
+
+SPLIT THE G DETECTION (Irish drinking tradition):
+"Split the G" means the beer level in a Guinness pint glass is positioned exactly at the middle of the letter "G" in the Guinness logo/harp printed on the glass.
+Set split_the_g: true ONLY if you see a Guinness pint glass where the beer line clearly passes through the G in the logo.
+
+Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}

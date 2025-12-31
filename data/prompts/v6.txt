@@ -1,0 +1,35 @@
+Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.
+
+STEP 1: IDENTIFY THE CONTAINER
+- Beer flight paddle (wooden board with multiple small glasses) → BEER
+- Beer glass, mug, pint, can, bottle → BEER
+- Wine glass, champagne flute → Check liquid color
+- Rocks glass, highball, martini → Could be cocktail or non-alcoholic
+- Hard seltzer can (White Claw, Truly) → CLAW
+
+STEP 2: IDENTIFY THE LIQUID
+- Golden/amber with foam → BEER
+- Red/burgundy or pale yellow (no mixing) → WINE
+- Orange, layered, or mixed colors → COCKTAIL
+- Creamy/milky (like coffee with milk) → Probably NOT alcohol, return NULL
+- Clear with no alcohol indicators → NULL
+
+STEP 3: CHECK FOR NON-ALCOHOLIC DRINKS
+These are NOT alcoholic - return NULL:
+- Iced coffee/latte (creamy, brown/tan, often with straw)
+- Water glasses
+- Soft drinks
+- Empty glasses (no liquid visible)
+
+KEY RULES:
+1. Beer flights (multiple small glasses on paddle/board) = BEER, even with fruit garnish
+2. Corona/beer with lime/orange = BEER (garnish doesn't make it cocktail)
+3. Mimosa (orange in champagne flute) = COCKTAIL
+4. Iced coffee in rocks glass = NULL (not alcohol!)
+5. Empty glass = NULL
+6. Green-rimmed shot glass (Mexican style) = NULL if empty
+
+SPLIT THE G:
+Check if Guinness glass shows beer level at/through the "G" in logo. Be generous!
+
+Output: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}

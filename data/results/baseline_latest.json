@@ -1,0 +1,1008 @@
+{
+  "name": "v12",
+  "timestamp": "2025-12-31T11:09:49.811683",
+  "prompt_source": "data/prompts/v12.txt",
+  "prompt_hash": "f705952be99d",
+  "prompt_preview": "Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.\n\nSTEP 0: IS THIS A REAL PHOTO OF DRINKS?\nFIRST check if this is actually a photo of real drinks. Return NULL immed...",
+  "model": "gemini-2.0-flash",
+  "metrics": {
+    "total_images": 92,
+    "type_accuracy": 1.0,
+    "split_g_accuracy": 0.978,
+    "overall_accuracy": 0.978,
+    "per_type": {
+      "beer": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 62
+      },
+      "wine": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 2
+      },
+      "cocktail": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 19
+      },
+      "claw": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1
+      },
+      "null": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 8
+      }
+    },
+    "confusion_matrix": {
+      "beer": {
+        "beer": 62,
+        "wine": 0,
+        "cocktail": 0,
+        "claw": 0,
+        "null": 0
+      },
+      "cocktail": {
+        "cocktail": 19,
+        "beer": 0,
+        "wine": 0,
+        "claw": 0,
+        "null": 0
+      },
+      "null": {
+        "null": 8,
+        "beer": 0,
+        "wine": 0,
+        "cocktail": 0,
+        "claw": 0
+      },
+      "claw": {
+        "claw": 1,
+        "beer": 0,
+        "wine": 0,
+        "cocktail": 0,
+        "null": 0
+      },
+      "wine": {
+        "wine": 2,
+        "beer": 0,
+        "cocktail": 0,
+        "claw": 0,
+        "null": 0
+      }
+    },
+    "false_negatives": [],
+    "false_positives": [],
+    "wrong_type": []
+  },
+  "results": [
+    {
+      "filename": "msg_176714134131284478_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714066424666466_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176713572421302542_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": true,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": true}\n```"
+    },
+    {
+      "filename": "msg_176712756478125837_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": null, \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176712476586041231_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": null, \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176712250730830777_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176711950627661207_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176711100144710374_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176710848332380011_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176710801353760865_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176707374024633443_0.jpg",
+      "ground_truth_type": "claw",
+      "ground_truth_split_g": false,
+      "predicted_type": "claw",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"claw\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176707156371970676_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706383676001145_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706200563431982_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706190297711982_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706091953800918_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706090207514803_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706089205990236_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176706028836432508_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176705771305460705_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176704310135495837_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176703610915607684_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176703374066144198_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176703124327270615_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176702692954962161_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176702275994194803_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176697879401284333_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176697877548664980_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176697875791228668_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176697734380499478_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176696457500570176_0.jpg",
+      "ground_truth_type": "wine",
+      "ground_truth_split_g": false,
+      "predicted_type": "wine",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"wine\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176696315849779964_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176696126520746880_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176695450844443179_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176695347080945837_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176695280125663179_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176695274978763443_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176694849608044803_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176694847719252734_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176694358735160583_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176694190159228668_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": null, \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176692907929757709_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": null, \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690489951973194_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690458740364826_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690389001240125_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690367606644201_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690315549519906_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690261516896338_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690260364804803_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690161143237665_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690057026099809_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176690055939284201_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176689560340029085_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176689308676344826_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": null, \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176689194229701294_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176689064740449737_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176688783171903443_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176688496755369548_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176688257769217684_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176688103582730676_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176687904343249340_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176687897396616880_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176687776781751982_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176687768265624778_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": true,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": true}"
+    },
+    {
+      "filename": "msg_176687317632240777_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176687316589622609_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": false,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176687314506679478_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": true,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": true}"
+    },
+    {
+      "filename": "msg_176687221445732734_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": false,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176687050631557905_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": true,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": true}"
+    },
+    {
+      "filename": "msg_176686675518950583_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176686659668769737_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176686616271244803_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176686550542255442_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176686509683314198_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176686380236047709_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": null, \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176686376685561890_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176719527465080176_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176715092093380751_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714909797411294_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714726450017905_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714687934213179_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": null, \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176714678041317709_0.jpg",
+      "ground_truth_type": "wine",
+      "ground_truth_split_g": false,
+      "predicted_type": "wine",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"wine\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714463095745022_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714457125289599_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714451775570176_0.jpg",
+      "ground_truth_type": null,
+      "ground_truth_split_g": false,
+      "predicted_type": null,
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": null, \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714443858539964_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": false,
+      "predicted_type": "beer",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"beer\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714442770664803_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714441385625195_0.jpg",
+      "ground_truth_type": "beer",
+      "ground_truth_split_g": true,
+      "predicted_type": "beer",
+      "predicted_split_g": true,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"beer\", \"split_the_g\": true}"
+    },
+    {
+      "filename": "msg_176714375296103081_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "{\"drink_type\": \"cocktail\", \"split_the_g\": false}"
+    },
+    {
+      "filename": "msg_176714257165543179_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714250545735442_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    },
+    {
+      "filename": "msg_176714192789822935_0.jpg",
+      "ground_truth_type": "cocktail",
+      "ground_truth_split_g": false,
+      "predicted_type": "cocktail",
+      "predicted_split_g": false,
+      "type_correct": true,
+      "split_g_correct": true,
+      "raw_response": "```json\n{\"drink_type\": \"cocktail\", \"split_the_g\": false}\n```"
+    }
+  ]
+}

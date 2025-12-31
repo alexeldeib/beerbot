@@ -1,0 +1,41 @@
+Analyze this image for alcoholic drinks. Return JSON with drink_type and split_the_g.
+
+DRINK TYPE CLASSIFICATION:
+
+**BEER** - golden/amber/dark liquid, foam head, in:
+  - Pint glass, beer mug, tulip, snifter
+  - Beer can or bottle (any brand)
+  - Flight of small glasses (tasting samples) - THIS IS BEER, NOT COCKTAIL
+  - Any glass if liquid has foam/head
+  - Beer with lime/orange garnish is still BEER
+
+**WINE** - ONLY if:
+  - Clear liquid that is red/burgundy OR pale yellow/green OR pink rosé
+  - In wine glass or champagne flute
+  - No garnishes, no orange color, no mixed colors
+
+**COCKTAIL** - if any of these:
+  - Orange liquid (mimosa, screwdriver)
+  - Mixed colors or layers
+  - Has garnish (umbrella, straw, fruit other than citrus on beer)
+  - In rocks glass, highball, martini glass, coupe
+  - Stemmed glass with non-wine colored liquid
+
+**CLAW** - hard seltzer can (White Claw, Truly, Topo Chico Hard, etc.)
+
+**NULL** - return null if:
+  - No drink container visible
+  - Glass is empty (no liquid)
+  - Truly cannot determine
+
+COMMON MISTAKES TO AVOID:
+1. Beer flight (multiple small glasses of beer) → beer, NOT cocktail
+2. Mimosa (orange in champagne flute) → cocktail, NOT wine
+3. Corona with lime → beer, NOT cocktail
+4. Empty shot glass → null, NOT cocktail
+
+SPLIT THE G:
+For Guinness glasses, check if beer level passes through or is near the "G" in the Guinness logo.
+Be generous - if it's close, mark true. This is a fun Irish tradition!
+
+{"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}

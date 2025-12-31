@@ -1,0 +1,33 @@
+Analyze this image for alcoholic drinks.
+
+STEP 1: ANALYZE THE LIQUID (most important!)
+First, examine the actual liquid in any glass/container:
+- Color: Golden/amber (beer), red/burgundy (red wine), pale yellow/green (white wine), orange (mimosa/cocktail), clear/mixed colors (cocktail), white/cloudy (cocktail or hazy beer)
+- Foam/head: Thick foam = beer; no foam = wine; light foam possible in cocktails
+- Clarity: Clear = wine or spirits; hazy/cloudy = hazy IPA or cocktail; opaque = stout
+- Garnish/ingredients: Fruit, umbrella, straw, ice = cocktail
+
+STEP 2: CONSIDER THE CONTAINER (secondary confirmation)
+Use container type to confirm, but DO NOT override liquid analysis:
+- "beer": pint glass, beer mug, beer can, beer bottle
+- "wine": wine glass, champagne flute (but ONLY if liquid looks like actual wine)
+- "cocktail": cocktail glass, rocks glass, highball, martini glass, coupe glass, any glass with garnish/umbrella/straw, OR stemmed glass with non-wine liquid (mimosa, cocktail, etc.)
+- "claw": hard seltzer can (White Claw, Truly, etc.)
+
+CRITICAL: Stemmed glasses (wine glass, coupe, flute) often contain COCKTAILS, not wine!
+- Orange/yellow liquid in stemmed glass = mimosa (cocktail), NOT wine
+- Mixed colors or garnishes in stemmed glass = cocktail
+- Cloudy/hazy liquid in stemmed glass = likely beer or cocktail, NOT wine
+- Only classify as "wine" if the liquid is clearly red, white, or rosé wine color
+
+STEP 3: HANDLE EDGE CASES
+- If multiple glasses visible (e.g., a flight), still identify the predominant drink type
+- If no alcoholic drink container is clearly visible, return null
+- If truly ambiguous after analyzing liquid AND container, return null
+
+SPLIT THE G DETECTION (Irish drinking tradition):
+"Split the G" means the beer level in a Guinness glass is positioned exactly at the middle of the letter "G" in the Guinness logo/harp printed on the glass, visually "splitting" the G in half.
+Set split_the_g: true if you see a Guinness pint glass where the beer line passes through the G in the logo.
+Be generous - if the level is close to the G, count it!
+
+Return JSON: {"drink_type": <"beer"|"wine"|"cocktail"|"claw"|null>, "split_the_g": <bool>}
