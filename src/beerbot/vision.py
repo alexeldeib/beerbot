@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from google import genai
@@ -17,6 +19,39 @@ if TYPE_CHECKING:
     from .models import GroupMeAttachment
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TokenBucket:
+    """Token bucket rate limiter for controlling response frequency.
+
+    Allows bursts of responses while limiting sustained rate.
+    Default: 5 tokens capacity, refills at 1 token per minute.
+    """
+    capacity: int = 5
+    refill_rate: float = 1 / 60  # 1 token per minute
+    tokens: float = field(default=5.0)
+    last_refill: float = field(default_factory=time.time)
+
+    def _refill(self) -> None:
+        """Refill tokens based on elapsed time."""
+        now = time.time()
+        elapsed = now - self.last_refill
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        self.last_refill = now
+
+    def consume(self) -> bool:
+        """Try to consume a token. Returns True if successful, False if empty."""
+        self._refill()
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+    def peek(self) -> bool:
+        """Check if a token is available without consuming it."""
+        self._refill()
+        return self.tokens >= 1
 
 
 class VisionService:
@@ -491,29 +526,24 @@ Output ONLY the response text, nothing else."""
 
     MODEL = "gemini-2.0-flash"
 
-    # Cooldown: minimum seconds between sassy responses per group
-    COOLDOWN_SECONDS = 300  # 5 minutes
-
     def __init__(self):
         self.client = None
         if settings.gemini_api_key:
             self.client = genai.Client(api_key=settings.gemini_api_key)
-        # Track last response time per group
-        self._last_response: dict[str, float] = {}
+        # Token bucket rate limiter per group (5 burst, 1/min refill)
+        self._rate_limiters: dict[str, TokenBucket] = {}
 
-    def _is_on_cooldown(self, group_id: str | None) -> bool:
-        """Check if we're still in cooldown for this group."""
+    def _get_bucket(self, group_id: str) -> TokenBucket:
+        """Get or create token bucket for a group."""
+        if group_id not in self._rate_limiters:
+            self._rate_limiters[group_id] = TokenBucket()
+        return self._rate_limiters[group_id]
+
+    def _try_consume(self, group_id: str | None) -> bool:
+        """Try to consume a rate limit token. Returns True if allowed."""
         if not group_id:
-            return False
-        import time
-        last = self._last_response.get(group_id, 0)
-        return (time.time() - last) < self.COOLDOWN_SECONDS
-
-    def _record_response(self, group_id: str | None) -> None:
-        """Record that we just responded to this group."""
-        if group_id:
-            import time
-            self._last_response[group_id] = time.time()
+            return True
+        return self._get_bucket(group_id).consume()
 
     async def maybe_respond(
         self, text: str, user_name: str, group_id: str | None = None
@@ -540,8 +570,8 @@ Output ONLY the response text, nothing else."""
             if "?" not in text:
                 return None
 
-        # Enforce cooldown - don't respond too frequently to the same group
-        if self._is_on_cooldown(group_id):
+        # Check rate limit - don't respond too frequently to the same group
+        if group_id and not self._get_bucket(group_id).peek():
             logger.debug("Skipping sassy response - on cooldown for group %s", group_id)
             return None
 
@@ -559,7 +589,8 @@ Output ONLY the response text, nothing else."""
                 self._classify_and_respond, text, user_name, leaderboard
             )
             if result:
-                self._record_response(group_id)
+                # Consume a token when we actually respond
+                self._try_consume(group_id)
             return result
         except Exception:
             logger.exception("Sassy responder failed")
@@ -668,7 +699,847 @@ Output ONLY the response text, nothing else."""
         return sassy_response
 
 
+class MessageClassifier:
+    """Unified AI-powered message classifier for all response types."""
+
+    CLASSIFICATION_PROMPT = """Classify this GroupMe message from a beer-tracking chat.
+
+Message: "{text}"
+Sender: {user_name}
+{leaderboard_context}
+
+Return JSON:
+{{
+  "type": "question"|"drink"|"reply"|"sassy"|"ignore",
+  "question_type": "million"|"leaderboard"|"user_stats"|"compare"|null,
+  "question_target": "user name if asking about someone"|null,
+  "drink_count": number|null,
+  "drink_type": "beer"|"wine"|"cocktail"|"claw"|null,
+  "confidence": "high"|"medium"|"low",
+  "reason": "brief explanation"
+}}
+
+=== IGNORE (default - classify as "ignore" unless there's a STRONG reason not to) ===
+
+ALWAYS IGNORE - handled by regex, never classify:
+- +N or -N patterns: "+1 beer", "-3 mimosas", "+2 wines @user", "+1 bubbly"
+- Trigger phrases: "beer me", "wine me", "cheers", "cracked one", "cracked a cold one"
+- Drink emojis anywhere in message: 🍺🍷🍸🍹🥃 (if message contains these, regex handles it)
+- Commands starting with !
+
+ALWAYS IGNORE - bot functionality and rules discussions:
+- Questions about bot rules: "Can we retroactively add beers?", "What's the statute of limitations?"
+- Questions about counting: "So each drink only counts as 1/2?", "Does X count?"
+- Discussions about features: "we can add X feature", "the bot should do Y", "think X works now"
+- Comments about bot behavior: "BBB drinks don't count", "drinks before bot don't count"
+- Meta-commentary: "the keywords are dumb", "needs more prompt engineering"
+- Bot criticism: "Bad bot", "Rude bot", "Bot doesn't recognize X"
+- Jokes with large numbers: "I'm about to send 1,000,000 beers" (hyperbole, not real)
+
+ALWAYS IGNORE - not actionable:
+- Short reactions: "ok", "nice", "lol", "Sick", "FINE", "Bruh", "Omg", "Tough"
+- One-word responses and acknowledgments
+- Links, memes, photos (context not available)
+- Context-specific jargon: "ABB beers", "BBB drinks" (Before/After Beer Bot)
+- Generic conversation not about actual drinking or leaderboard competition
+
+=== QUESTION (user genuinely wants data from the bot) ===
+
+ONLY classify as "question" if user is DIRECTLY requesting information:
+- "How many until 1 million?" → million
+- "I wonder how many drinks we have left" → million (indirect but genuine curiosity)
+- "Who's winning?" / "What's the leaderboard?" → leaderboard
+- "How many beers has Bryan had?" → user_stats, target=Bryan
+- "Can I beat Celena?" / "How far behind am I?" → compare
+
+DO NOT classify as "question":
+- Statements about goals: "We need a million", "We're almost there" (statements, not questions)
+- Rhetorical observations: "How is her lead widening" (observation, not request)
+- Bot functionality questions: "Can we retroactively add beers?" (asking about rules, not stats)
+- Questions with attached photos (probably joke about the photo, ignore)
+- Hypothetical questions about drinking in general
+
+=== DRINK (user is ACTIVELY drinking - rare, natural language only) ===
+
+ONLY classify as "drink" when:
+- Clear PRESENT TENSE statement: "Having a beer right now", "Drinking an IPA"
+- JUST finished: "Just finished my margarita", "just had a beer"
+- "Beer me" WITH MODIFIERS indicating count:
+  - "Beer me not once but twice" → count=2, type=beer
+  - "Beer me twice", "beer me x3" → extract count
+  - These are NOT handled by regex because they have additional words!
+
+IMPORTANT: Simple "beer me" or "wine me" alone is handled by regex and should be IGNORED.
+But "beer me" followed by count words (twice, not once but twice, x2, etc.) = DRINK.
+
+NEVER classify as "drink":
+- Future tense: "Guess I gotta order another" (hasn't happened yet)
+- Metaphors: "rookie coming in hot off the draft" (sports/newcomer metaphor)
+- Past stories: "I drank 5 beers yesterday" (not current)
+- Someone else drinking: "They're having wine"
+- Simple regex patterns: "+N beer", "-N drinks", drink emojis alone
+
+Drink types:
+- beer: IPA, lager, ale, stout, pilsner
+- wine: red, white, rosé
+- cocktail: margarita, martini, shots, whiskey, champagne, bubbly (sparkling wine)
+- claw: ONLY White Claw, Truly, High Noon, Topo Chico Hard Seltzer
+
+=== REPLY (simple acknowledgment - brief, friendly response) ===
+
+Use "reply" for messages that warrant a brief, friendly response but NOT a witty/sassy one:
+- Thanks directed at bot: "Thanks beerius", "Thanks bot", "Thanks beerbot"
+- Simple appreciations after bot action: "Nice", "Thanks", "Appreciated"
+- Brief positive reactions to bot behavior (not just one word in general chat)
+
+Response for "reply" should be brief and friendly, not trying to be clever.
+Only use when user is clearly acknowledging/thanking the bot.
+
+=== SASSY (genuinely interesting, ~5-10% of messages) ===
+
+ONLY classify as "sassy" when the message is:
+- Genuinely funny or clever trash talk about drinking/competition
+- A bold claim that invites a witty response
+- Something unusual or amusing worth commenting on
+
+DO NOT classify as "sassy":
+- Simple thanks or acknowledgments (use "reply" instead)
+- Short reactions or one-word messages in general chat
+- Generic positive/negative responses
+- Routine conversation between friends
+- Bot criticism or meta-commentary: "Bad bot", "needs more prompt engineering" (ignore these)
+- Hyperbolic jokes: "I'm about to send 1,000,000 beers" (ignore)
+- Anything where bot response would feel intrusive
+
+=== FINAL CHECK ===
+When in doubt, return "ignore". False positives are worse than false negatives.
+The bot should feel like a rare, welcome presence - not an annoying constant."""
+
+    # AI-only mode prompt: classifies ALL drink patterns including +N, emojis, triggers
+    AI_ONLY_CLASSIFICATION_PROMPT = """Classify this GroupMe message from a beer-tracking chat.
+
+Message: "{text}"
+Sender: {user_name}
+{leaderboard_context}
+
+Return JSON:
+{{
+  "type": "question"|"drink"|"reply"|"sassy"|"ignore",
+  "question_type": "million"|"leaderboard"|"user_stats"|"compare"|null,
+  "question_target": "user name if asking about someone"|null,
+  "drink_count": number|null,
+  "drink_type": "beer"|"wine"|"cocktail"|"claw"|null,
+  "confidence": "high"|"medium"|"low",
+  "reason": "brief explanation"
+}}
+
+=== DRINK (AI-only mode - classify ALL drink patterns) ===
+
+CLASSIFY AS DRINK - explicit drink logging:
+- +N patterns: "+1 beer", "+2 wines", "+3 cocktails" → extract count and type
+- -N patterns: "-1 beer", "-2 drinks" → type="drink", negative count (removal)
+- Drink emojis: 🍺🍷🍸🍹🥃🍻 → count emojis, type based on emoji
+- Trigger phrases: "beer me", "wine me", "cheers", "cracked one" → count=1
+- "Beer me" WITH MODIFIERS: "beer me twice", "beer me not once but twice" → count=2
+- Natural language: "Having a beer", "Just finished my IPA" → extract count/type
+- Brand names count: "+1 Moët" (champagne=cocktail), "+1 Corona" (beer)
+
+Drink types:
+- beer: IPA, lager, ale, stout, pilsner, Corona, Heineken, any brew
+- wine: red, white, rosé (still wine only)
+- cocktail: margarita, martini, shots, whiskey, champagne, Moët, bubbly, prosecco, mimosa
+- claw: ONLY White Claw, Truly, High Noon, Topo Chico Hard Seltzer
+
+=== IGNORE (default for non-drink messages) ===
+
+ALWAYS IGNORE:
+- Commands starting with !
+- Bot functionality discussions: "Can we add X feature?", "the bot should do Y"
+- Questions about rules: "Does X count?", "What's the statute of limitations?"
+- Meta-commentary: "needs more prompt engineering", "Bad bot"
+- Short reactions: "ok", "nice", "lol", "Sick"
+- Generic conversation not about drinking
+- Future tense: "Guess I gotta order another" (hasn't happened yet)
+- Past stories: "I drank 5 beers yesterday" (not current session)
+- Jokes with large numbers: "I'm about to send 1,000,000 beers"
+- Context-specific jargon: "ABB beers", "BBB drinks"
+
+=== QUESTION (user genuinely wants data) ===
+
+- "How many until 1 million?" → million
+- "Who's winning?" → leaderboard
+- "How many beers has Bryan had?" → user_stats, target=Bryan
+- "Can I beat Celena?" → compare
+
+=== SASSY (~5-10% of messages, genuinely interesting) ===
+
+Only for genuinely funny trash talk or bold claims about drinking/competition.
+DO NOT classify as sassy: short reactions, bot criticism, meta-commentary.
+
+=== FINAL CHECK ===
+Prioritize drink detection. When message clearly indicates drinking, classify as drink.
+When in doubt about non-drink messages, return "ignore"."""
+
+    MODEL = "gemini-2.0-flash"
+
+    def __init__(self):
+        self.client = None
+        if settings.gemini_api_key:
+            self.client = genai.Client(api_key=settings.gemini_api_key)
+        # Token bucket rate limiter per group (5 burst, 1/min refill)
+        self._rate_limiters: dict[str, TokenBucket] = {}
+
+    def _get_bucket(self, group_id: str) -> TokenBucket:
+        """Get or create token bucket for a group."""
+        if group_id not in self._rate_limiters:
+            self._rate_limiters[group_id] = TokenBucket()
+        return self._rate_limiters[group_id]
+
+    def _try_consume(self, group_id: str | None) -> bool:
+        """Try to consume a rate limit token. Returns True if allowed."""
+        if not group_id:
+            return True
+        return self._get_bucket(group_id).consume()
+
+    def _can_respond(self, group_id: str | None) -> bool:
+        """Check if we can respond (without consuming token)."""
+        if not group_id:
+            return True
+        return self._get_bucket(group_id).peek()
+
+    async def classify(
+        self,
+        text: str,
+        user_name: str,
+        group_id: str | None = None,
+        skip_cooldown: bool = False,
+        ai_only: bool = False,
+    ) -> dict:
+        """Classify a message and return classification details.
+
+        Args:
+            text: The message text
+            user_name: The sender's name
+            group_id: Optional group ID to fetch leaderboard context
+            skip_cooldown: If True, skip cooldown check (for testing)
+            ai_only: If True, skip regex pre-filter and classify all patterns with AI
+
+        Returns dict with:
+            - type: "question"|"drink"|"sassy"|"ignore"
+            - question_type: "million"|"leaderboard"|"user_stats"|"compare"|None
+            - question_target: user name if asking about someone, else None
+            - drink_count: int or None
+            - drink_type: "beer"|"wine"|"cocktail"|"claw"|None
+            - confidence: "high"|"medium"|"low"
+            - reason: explanation string
+        """
+        default_result = {
+            "type": "ignore",
+            "question_type": None,
+            "question_target": None,
+            "drink_count": None,
+            "drink_type": None,
+            "confidence": "high",
+            "reason": "default",
+        }
+
+        if not self.client or not text:
+            return default_result
+
+        # Skip very short messages
+        if len(text) < 3:
+            default_result["reason"] = "too short"
+            return default_result
+
+        # Skip commands (handled separately even in AI-only mode)
+        if text.startswith("!"):
+            default_result["reason"] = "command"
+            return default_result
+
+        # Skip regex patterns (handled separately) - defense in depth
+        # In AI-only mode, let AI classify these patterns instead
+        if not ai_only:
+            # +N/-N patterns
+            if re.match(r'^[+-]\d+\s*(beer|wine|cocktail|claw|shot|drink|mimosa)', text, re.IGNORECASE):
+                default_result["reason"] = "regex pattern (+N/-N)"
+                return default_result
+            # Drink emojis
+            if any(emoji in text for emoji in ['🍺', '🍷', '🍸', '🍹', '🥃', '🍻']):
+                default_result["reason"] = "drink emoji"
+                return default_result
+            # Trigger phrases - only simple ones without modifiers
+            # "beer me" or "beer me @user" is handled by regex
+            # "beer me not once but twice" has modifiers and should go to AI
+            text_lower = text.lower().strip()
+            simple_triggers = [
+                'beer me', 'wine me', 'cheers', 'cracked one', 'cracked a cold one'
+            ]
+            # Only match if it's a simple trigger (optionally with @mention at end)
+            for trigger in simple_triggers:
+                if text_lower == trigger or text_lower.startswith(trigger + ' @'):
+                    default_result["reason"] = "trigger phrase"
+                    return default_result
+
+        # Check rate limit for sassy/question responses (not for drink detection)
+        can_respond = self._can_respond(group_id) or skip_cooldown
+
+        # Fetch leaderboard context if group_id provided
+        leaderboard: dict[str, int] = {}
+        if group_id:
+            try:
+                from .services import stats_service
+                leaderboard = await stats_service.get_leaderboard_summary(group_id)
+            except Exception:
+                logger.exception("Failed to fetch leaderboard for classification")
+
+        try:
+            result = await asyncio.to_thread(
+                self._classify_sync, text, user_name, leaderboard, ai_only
+            )
+
+            # If rate limited, downgrade sassy/question to ignore
+            if not can_respond and result["type"] in ("sassy", "question"):
+                logger.debug(
+                    "Downgrading %s to ignore due to rate limit for group %s",
+                    result["type"], group_id
+                )
+                result["type"] = "ignore"
+                result["reason"] = f"rate_limited (was: {result['reason']})"
+
+            # Consume token if we're going to respond
+            if result["type"] in ("sassy", "question"):
+                self._try_consume(group_id)
+
+            return result
+
+        except Exception:
+            logger.exception("Message classification failed")
+            return default_result
+
+    def _format_leaderboard_context(self, leaderboard: dict[str, int]) -> str:
+        """Format leaderboard data for prompt context."""
+        if not leaderboard:
+            return ""
+
+        lines = ["Current Leaderboard:"]
+        for i, (name, count) in enumerate(leaderboard.items(), 1):
+            lines.append(f"  {i}. {name}: {count} drinks")
+        return "\n".join(lines) + "\n"
+
+    def _classify_sync(
+        self, text: str, user_name: str, leaderboard: dict[str, int], ai_only: bool = False
+    ) -> dict:
+        """Classify message synchronously (runs in thread pool)."""
+        leaderboard_context = self._format_leaderboard_context(leaderboard)
+
+        # Choose prompt based on mode
+        if ai_only:
+            prompt = self.AI_ONLY_CLASSIFICATION_PROMPT.format(
+                text=text,
+                user_name=user_name,
+                leaderboard_context=leaderboard_context,
+            )
+        else:
+            prompt = self.CLASSIFICATION_PROMPT.format(
+                text=text,
+                user_name=user_name,
+                leaderboard_context=leaderboard_context,
+            )
+
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+        )
+
+        raw_text = response.text.strip()
+
+        # Parse JSON response
+        try:
+            json_text = raw_text
+            fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if fence_match:
+                json_text = fence_match.group(1)
+
+            data = json.loads(json_text)
+
+            result = {
+                "type": data.get("type", "ignore"),
+                "question_type": data.get("question_type"),
+                "question_target": data.get("question_target"),
+                "drink_count": data.get("drink_count"),
+                "drink_type": data.get("drink_type"),
+                "confidence": data.get("confidence", "medium"),
+                "reason": data.get("reason", ""),
+            }
+
+            # Validate type
+            if result["type"] not in ("question", "drink", "reply", "sassy", "ignore"):
+                result["type"] = "ignore"
+
+            logger.info(
+                "Classified message: %r -> type=%s reason=%s",
+                text[:50], result["type"], result["reason"]
+            )
+
+            return result
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning("Failed to parse classification: %r", raw_text)
+            return {
+                "type": "ignore",
+                "question_type": None,
+                "question_target": None,
+                "drink_count": None,
+                "drink_type": None,
+                "confidence": "low",
+                "reason": "parse error",
+            }
+
+
+class QuestionAnswerer:
+    """Generate natural language answers to classified questions."""
+
+    ANSWER_PROMPT = """You are a witty beer-tracking bot answering a question.
+
+Question type: {question_type}
+Original message: "{text}"
+Sender: {user_name}
+{context_data}
+
+Generate a helpful, natural response (under 150 characters). Be:
+- Informative first, witty second
+- Use ACTUAL numbers from the context data
+- Friendly but slightly sarcastic
+- Encouraging or teasing based on the situation
+
+DO NOT:
+- Make up numbers - only use data provided
+- Be mean or discouraging
+- Mention being a bot/AI
+- Use hashtags
+
+Output ONLY the response text."""
+
+    MODEL = "gemini-2.0-flash"
+
+    def __init__(self):
+        self.client = None
+        if settings.gemini_api_key:
+            self.client = genai.Client(api_key=settings.gemini_api_key)
+
+    async def answer(
+        self,
+        text: str,
+        user_name: str,
+        question_type: str,
+        question_target: str | None,
+        group_id: str,
+    ) -> str | None:
+        """Generate an answer to a classified question.
+
+        Args:
+            text: Original message text
+            user_name: Sender's name
+            question_type: "million"|"leaderboard"|"user_stats"|"compare"
+            question_target: Target user name for compare/user_stats questions
+            group_id: Group ID to fetch data from
+
+        Returns answer string or None on failure.
+        """
+        if not self.client:
+            return None
+
+        try:
+            # Fetch relevant context data based on question type
+            context_data = await self._fetch_context(
+                question_type, question_target, user_name, group_id
+            )
+
+            result = await asyncio.to_thread(
+                self._generate_answer, text, user_name, question_type, context_data
+            )
+            return result
+
+        except Exception:
+            logger.exception("Question answering failed")
+            return None
+
+    async def _fetch_context(
+        self,
+        question_type: str,
+        question_target: str | None,
+        user_name: str,
+        group_id: str,
+    ) -> str:
+        """Fetch relevant data for answering the question."""
+        from .services import stats_service
+        from .repositories import beer_repo
+
+        lines = []
+
+        if question_type == "million":
+            # Get million countdown data
+            total = await beer_repo.get_group_total_by_type(group_id, None)
+            _, beers_7d, days_7d = await beer_repo.get_rate_stats(group_id, days=7)
+            _, beers_30d, days_30d = await beer_repo.get_rate_stats(group_id, days=30)
+
+            lines.append(f"Total drinks: {total:,}")
+            lines.append(f"Remaining to 1 million: {1_000_000 - total:,}")
+
+            if days_7d > 0 and beers_7d > 0:
+                rate = beers_7d / days_7d
+                days_left = (1_000_000 - total) / rate
+                lines.append(f"7-day pace: {rate:.1f} drinks/day")
+                lines.append(f"At this pace: {days_left:.0f} days ({days_left/365:.1f} years)")
+
+        elif question_type == "leaderboard":
+            leaderboard = await stats_service.get_leaderboard_summary(group_id)
+            lines.append("Leaderboard:")
+            for i, (name, count) in enumerate(leaderboard.items(), 1):
+                lines.append(f"  {i}. {name}: {count}")
+
+        elif question_type == "compare":
+            leaderboard = await stats_service.get_leaderboard_summary(group_id)
+            sender_count = leaderboard.get(user_name, 0)
+            target_count = leaderboard.get(question_target, 0) if question_target else 0
+
+            lines.append(f"{user_name}'s count: {sender_count}")
+            if question_target:
+                lines.append(f"{question_target}'s count: {target_count}")
+                gap = target_count - sender_count
+                lines.append(f"Gap: {abs(gap)} ({'behind' if gap > 0 else 'ahead'})")
+
+        elif question_type == "user_stats":
+            leaderboard = await stats_service.get_leaderboard_summary(group_id)
+            target = question_target or user_name
+            count = leaderboard.get(target, 0)
+            lines.append(f"{target}'s total: {count} drinks")
+
+            # Find their rank
+            for i, (name, _) in enumerate(leaderboard.items(), 1):
+                if name == target:
+                    lines.append(f"Rank: #{i}")
+                    break
+
+        return "\n".join(lines) if lines else "No data available"
+
+    def _generate_answer(
+        self, text: str, user_name: str, question_type: str, context_data: str
+    ) -> str:
+        """Generate answer synchronously."""
+        prompt = self.ANSWER_PROMPT.format(
+            text=text,
+            user_name=user_name,
+            question_type=question_type,
+            context_data=context_data,
+        )
+
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+        )
+
+        return response.text.strip().strip('"')
+
+
+class UnifiedBeerBot:
+    """Unified bot that handles classification and response in one call.
+
+    Replaces the multi-step flow of MessageClassifier + QuestionAnswerer + SassyResponder
+    with a single, simpler prompt that returns both action and optional reply.
+    """
+
+    PROMPT = """You are Beerius, a witty beer-tracking bot in a GroupMe chat.
+
+PRIMARY PURPOSE: Track drinks (beer/wine/claw/cocktail) and share statistics.
+SECONDARY PURPOSE: Respond to messages that directly address you.
+
+Message: "{text}"
+Sender: {user_name}
+{sender_context}
+{image_context}
+{leaderboard_context}
+
+Return JSON:
+{{
+  "action": "log_drink" | "answer" | "respond" | "ignore",
+  "drink": {{"count": N, "type": "beer"|"wine"|"cocktail"|"claw"}} or null,
+  "reply": "Your response" or null,
+  "reasoning": "Brief explanation"
+}}
+
+=== PRIORITY 1: LOG DRINKS ===
+
+LOG when someone is CLEARLY drinking NOW or JUST finished:
+- Explicit: "+1 beer", "+2 wines", "-1 beer" (negative = removal)
+- Triggers: "beer me", "wine me", "cheers", "cracked one"
+- Natural: "Having a beer", "Just finished my IPA"
+- Modifiers: "beer me twice" = 2, "beer me not once but twice" = 2
+- Brands: "+1 Moët" = cocktail, "+1 Corona" = beer
+- Emojis: 🍺🍷🍸🍹🥃 = 1 drink
+
+REMOVALS: "-N drink" → count is NEGATIVE (e.g., -1)
+
+DO NOT log for:
+- Numbers without context: "21 21 21" is slang, NOT beers
+- Future: "gonna get a beer"
+- Past: "had 5 beers yesterday"
+- Jokes: "1,000,000 beers"
+- Someone ELSE drinking
+
+Types: beer (brews), wine (still), cocktail (mixed/shots/champagne), claw (seltzers only)
+
+=== PRIORITY 2: ANSWER STAT QUESTIONS ===
+
+Answer questions about drinking stats:
+- "How many until 1 million?" → million countdown
+- "Who's winning?" / "leaderboard" → current standings
+- "How many beers has X had?" → user stats
+
+Keep answers under 100 chars. Use provided leaderboard data.
+
+=== PRIORITY 3: RESPOND WITH WIT ===
+
+RESPOND when:
+1. Someone directly addresses "Beerius" by name → always respond
+2. Someone insults or challenges the bot → clap back
+3. A message is a PERFECT setup for a roast using leaderboard data
+4. When logging a drink, occasionally add witty commentary
+
+BANGER-WORTHY roast setups (RESPOND to these):
+- Excuses or procrastination: "I'll do X tomorrow" → doubt them
+- Humble brags about NOT drinking: "going to bed early" → tease them
+- Bold claims that invite teasing: "I'm gonna crush it" → challenge them
+- Self-deprecating: "+1 hangover" → add "+1 regret" style commentary
+
+You CAN use leaderboard data for personalized burns, but don't force it.
+Good roasts work with or without stats. Be clever, not formulaic.
+
+Keep responses under 100 chars. Be savage but playful.
+
+=== WHEN TO IGNORE ===
+
+IGNORE messages that:
+- Are mundane chatter with no roast potential
+- Are short reactions: "ok", "nice", "lol", "Sick"
+- Are meta-commentary about bot rules/features (not insults TO the bot)
+- Are numbers without drink context: "21 21 21"
+- Are jokes with absurd numbers: "1,000,000 beers"
+- Start with ! (commands handled separately)
+- Don't give you anything to work with for a good roast
+
+DEFAULT: Only respond if you have a BANGER. Silence is better than a mediocre response.
+
+If image shows drinks, log them. Otherwise ignore images too.
+
+Your personality: Playful, slightly sarcastic, supportive of drinking goals. Never preachy."""
+
+    MODEL = "gemini-2.0-flash"
+
+    def __init__(self):
+        self.client = None
+        if settings.gemini_api_key:
+            self.client = genai.Client(api_key=settings.gemini_api_key)
+        # Token bucket rate limiter per group (5 burst, 1/min refill)
+        self._rate_limiters: dict[str, TokenBucket] = {}
+
+    def _get_bucket(self, group_id: str) -> TokenBucket:
+        """Get or create token bucket for a group."""
+        if group_id not in self._rate_limiters:
+            self._rate_limiters[group_id] = TokenBucket()
+        return self._rate_limiters[group_id]
+
+    def _try_consume(self, group_id: str | None) -> bool:
+        """Try to consume a rate limit token. Returns True if allowed."""
+        if not group_id:
+            return True
+        return self._get_bucket(group_id).consume()
+
+    def _can_respond(self, group_id: str | None) -> bool:
+        """Check if we can respond (without consuming token)."""
+        if not group_id:
+            return True
+        return self._get_bucket(group_id).peek()
+
+    async def respond(
+        self,
+        text: str,
+        user_name: str,
+        group_id: str | None = None,
+        user_id: str | None = None,
+        image_result: VisionResult | None = None,
+        skip_cooldown: bool = False,
+    ) -> dict:
+        """Process a message and return action with optional reply.
+
+        Args:
+            text: The message text
+            user_name: The sender's name
+            group_id: Optional group ID for leaderboard context
+            user_id: Optional GroupMe user ID for sender stats
+            image_result: Optional VisionResult from image analysis
+            skip_cooldown: If True, skip cooldown check (for testing)
+
+        Returns dict with:
+            - action: "log_drink" | "answer" | "respond" | "ignore"
+            - drink: {"count": N, "type": str} or None
+            - reply: response text or None
+            - reasoning: explanation string
+        """
+        default_result = {
+            "action": "ignore",
+            "drink": None,
+            "reply": None,
+            "reasoning": "default",
+        }
+
+        if not self.client:
+            return default_result
+
+        # Skip commands (handled separately)
+        if text and text.startswith("!"):
+            default_result["reasoning"] = "command"
+            return default_result
+
+        # Check rate limit for response actions
+        can_respond = self._can_respond(group_id) or skip_cooldown
+
+        # Fetch leaderboard and sender stats
+        leaderboard: dict[str, int] = {}
+        sender_stats: dict[str, int] | None = None
+        if group_id:
+            try:
+                from .services import stats_service
+                leaderboard = await stats_service.get_leaderboard_summary(group_id)
+                if user_id:
+                    sender_stats = await stats_service.get_sender_stats_summary(user_id, group_id)
+            except Exception:
+                logger.exception("Failed to fetch leaderboard/sender stats")
+
+        try:
+            result = await asyncio.to_thread(
+                self._respond_sync, text, user_name, leaderboard, sender_stats, image_result
+            )
+
+            # If rate limited, suppress reply for non-drink actions
+            if not can_respond and result["action"] in ("answer", "respond"):
+                logger.debug("Suppressing reply due to rate limit for group %s", group_id)
+                result["reply"] = None
+
+            # Consume token if we have a reply
+            if result["reply"]:
+                self._try_consume(group_id)
+
+            return result
+
+        except Exception:
+            logger.exception("UnifiedBeerBot respond failed")
+            return default_result
+
+    def _format_leaderboard_context(self, leaderboard: dict[str, int]) -> str:
+        """Format leaderboard data for prompt context."""
+        if not leaderboard:
+            return ""
+        lines = ["Current Leaderboard:"]
+        for i, (name, count) in enumerate(leaderboard.items(), 1):
+            lines.append(f"  {i}. {name}: {count} drinks")
+        return "\n".join(lines)
+
+    def _format_image_context(self, image_result: VisionResult | None) -> str:
+        """Format image analysis results for prompt context."""
+        if not image_result or not image_result.analyzed:
+            return ""
+        if image_result.drink_count > 0:
+            return f"Image analysis: {image_result.drink_count} {image_result.drink_type.value}(s) detected. Split the G: {image_result.split_the_g_count > 0}"
+        return "Image analysis: No alcoholic drinks detected in image."
+
+    def _format_sender_context(self, sender_stats: dict[str, int] | None) -> str:
+        """Format sender's stats for prompt context."""
+        if not sender_stats:
+            return "(new user, no drinks logged yet)"
+        return f"Sender stats: {sender_stats['total']} drinks total, rank #{sender_stats['rank']}"
+
+    def _respond_sync(
+        self,
+        text: str,
+        user_name: str,
+        leaderboard: dict[str, int],
+        sender_stats: dict[str, int] | None,
+        image_result: VisionResult | None,
+    ) -> dict:
+        """Generate response synchronously (runs in thread pool)."""
+        leaderboard_context = self._format_leaderboard_context(leaderboard)
+        sender_context = self._format_sender_context(sender_stats)
+        image_context = self._format_image_context(image_result)
+
+        prompt = self.PROMPT.format(
+            text=text or "(no text)",
+            user_name=user_name,
+            sender_context=sender_context,
+            leaderboard_context=leaderboard_context or "(no leaderboard data)",
+            image_context=image_context or "(no image)",
+        )
+
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+            config={"response_mime_type": "application/json"},
+        )
+
+        raw_text = response.text.strip()
+
+        # Parse JSON response
+        try:
+            json_text = raw_text
+            fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if fence_match:
+                json_text = fence_match.group(1)
+
+            data = json.loads(json_text)
+
+            action = data.get("action", "ignore")
+            if action not in ("log_drink", "answer", "respond", "ignore"):
+                action = "ignore"
+
+            drink = data.get("drink")
+            if drink:
+                # Validate and normalize drink data
+                drink = {
+                    "count": int(drink.get("count", 1)),
+                    "type": drink.get("type", "beer"),
+                }
+                if drink["type"] not in ("beer", "wine", "cocktail", "claw"):
+                    drink["type"] = "beer"
+
+            result = {
+                "action": action,
+                "drink": drink if action == "log_drink" else None,
+                "reply": data.get("reply"),
+                "reasoning": data.get("reasoning", ""),
+            }
+
+            logger.info(
+                "UnifiedBeerBot: %r -> action=%s drink=%s reply=%s",
+                (text or "")[:50], result["action"], result["drink"],
+                (result["reply"] or "")[:30] if result["reply"] else None
+            )
+
+            return result
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.warning("Failed to parse UnifiedBeerBot response: %r error=%s", raw_text, e)
+            return {
+                "action": "ignore",
+                "drink": None,
+                "reply": None,
+                "reasoning": "parse error",
+            }
+
+
 # Singleton instances
 vision_service = VisionService()
 ai_text_parser = AITextParser()
 sassy_responder = SassyResponder()
+message_classifier = MessageClassifier()
+question_answerer = QuestionAnswerer()
+unified_beer_bot = UnifiedBeerBot()

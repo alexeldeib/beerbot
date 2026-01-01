@@ -25,7 +25,14 @@ from .services import (
     message_parser,
     stats_service,
 )
-from .vision import ai_text_parser, sassy_responder, vision_service
+from .vision import (
+    ai_text_parser,
+    message_classifier,
+    question_answerer,
+    sassy_responder,
+    unified_beer_bot,
+    vision_service,
+)
 
 
 @asynccontextmanager
@@ -73,7 +80,10 @@ async def groupme_callback(request: Request):
             await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "command", "command": command}
 
-    # Check for drink removal (-N drinks syntax)
+    # Check if this group uses AI-only mode (skip regex patterns)
+    ai_only_mode = settings.is_ai_only_group(message.group_id)
+
+    # Check for drink removal (-N drinks syntax) - still use regex for removals
     removal = message_parser.parse_drink_removal(message.text)
     if removal:
         removal_count, removal_type = removal
@@ -89,22 +99,11 @@ async def groupme_callback(request: Request):
         await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}
 
-    # Check for drink logging (text triggers)
-    text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
-
-    # AI fallback: if no drinks detected by regex but message has signal words
-    if text_drink_count == 0 and message_parser.should_try_ai_parsing(message.text):
-        try:
-            ai_count, ai_type = await ai_text_parser.parse_drink_text(message.text)
-            if ai_count > 0:
-                text_drink_count = ai_count
-                text_drink_type = ai_type
-                logging.getLogger(__name__).info(
-                    "AI parser detected drink: text=%r count=%d type=%s",
-                    message.text[:50], ai_count, ai_type.value
-                )
-        except Exception:
-            logging.getLogger(__name__).exception("AI text parsing failed")
+    # Check for drink logging (text triggers via regex) - skip if AI-only mode
+    if ai_only_mode:
+        text_drink_count, text_drink_type = 0, DrinkType.BEER
+    else:
+        text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
 
     # Check for drink logging (image analysis)
     vision_result = VisionResult()
@@ -129,6 +128,7 @@ async def groupme_callback(request: Request):
         await groupme_client.send_message(quip, group_id=message.group_id)
         return {"status": "ok", "action": "quip", "reason": "no_drinks_in_image"}
 
+    # If regex detected drinks, log them
     if drink_count > 0:
         # Extract mentioned users with their names
         mentioned_users = extract_mentioned_users(message.text, message.attachments)
@@ -160,16 +160,121 @@ async def groupme_callback(request: Request):
         else:
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
 
-    # Check for sassy response opportunity (for "something else" messages)
-    # Let AI decide what's interesting - no probability filter here
-    # Pass group_id so AI can reference actual leaderboard data
-    if settings.sassy_responses_enabled and message.text:
-        sassy_reply = await sassy_responder.maybe_respond(
-            message.text, message.name, group_id=message.group_id
+    # AI-only mode: Use UnifiedBeerBot for all classification + response in one call
+    if ai_only_mode and message.text:
+        bot_response = await unified_beer_bot.respond(
+            message.text,
+            message.name,
+            group_id=message.group_id,
+            user_id=message.user_id,
+            image_result=vision_result if vision_result.analyzed else None,
         )
-        if sassy_reply:
-            await groupme_client.send_message(sassy_reply, group_id=message.group_id)
-            return {"status": "ok", "action": "sassy_reply"}
+
+        if bot_response["action"] == "log_drink" and bot_response["drink"]:
+            # AI detected a drink
+            ai_count = bot_response["drink"]["count"]
+            ai_type = DrinkType.from_string(bot_response["drink"]["type"])
+
+            logging.getLogger(__name__).info(
+                "UnifiedBeerBot detected drink: text=%r count=%d type=%s",
+                message.text[:50], ai_count, ai_type.value
+            )
+
+            # Handle negative counts as removals
+            if ai_count < 0:
+                # Check for mentioned user in attachments (remove from them, not sender)
+                target_user_id = None
+                for attachment in message.attachments:
+                    if attachment.type == "mentions" and attachment.user_ids:
+                        target_user_id = attachment.user_ids[0]
+                        break
+                response_text = await stats_service.remove_drinks_by_type(
+                    message, abs(ai_count), ai_type, target_user_id
+                )
+                await groupme_client.send_message(response_text, group_id=message.group_id)
+                return {"status": "ok", "action": "removed", "drinks": abs(ai_count), "drink_type": ai_type.value, "source": "unified_bot"}
+
+            # Log the drink (positive count)
+            mentioned_users = extract_mentioned_users(message.text, message.attachments)
+            is_assignment = message_parser.is_explicit_assignment(message.text)
+            include_sender = not (is_assignment and mentioned_users)
+
+            response_text = await stats_service.log_beers_for_users(
+                message, ai_count, mentioned_users, include_sender, 0, ai_type
+            )
+            if response_text:
+                await groupme_client.send_message(response_text, group_id=message.group_id)
+                # Also send any reply from the bot
+                if bot_response["reply"]:
+                    await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
+                return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "unified_bot"}
+            else:
+                return {"status": "ok", "action": "duplicate", "message_id": message.id}
+
+        elif bot_response["action"] in ("answer", "respond") and bot_response["reply"]:
+            # Bot has a reply (answer to question or witty response)
+            await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
+            return {"status": "ok", "action": bot_response["action"], "reason": bot_response["reasoning"]}
+
+        # action == "ignore" - no action needed
+        return {"status": "ok", "action": "none", "source": "unified_bot"}
+
+    # Non-AI-only mode: Use old multi-step classifier flow
+    if settings.sassy_responses_enabled and message.text:
+        classification = await message_classifier.classify(
+            message.text, message.name, group_id=message.group_id, ai_only=False
+        )
+
+        if classification["type"] == "question":
+            # Answer the question with actual data
+            answer = await question_answerer.answer(
+                message.text,
+                message.name,
+                classification["question_type"],
+                classification["question_target"],
+                message.group_id,
+            )
+            if answer:
+                await groupme_client.send_message(answer, group_id=message.group_id)
+                return {
+                    "status": "ok",
+                    "action": "question_answered",
+                    "question_type": classification["question_type"],
+                }
+
+        elif classification["type"] == "drink":
+            # AI detected a drink not caught by regex
+            ai_count = classification["drink_count"] or 1
+            ai_type_str = classification["drink_type"] or "beer"
+            ai_type = DrinkType.from_string(ai_type_str)
+
+            logging.getLogger(__name__).info(
+                "AI classifier detected drink: text=%r count=%d type=%s",
+                message.text[:50], ai_count, ai_type.value
+            )
+
+            # Log the drink
+            mentioned_users = extract_mentioned_users(message.text, message.attachments)
+            is_assignment = message_parser.is_explicit_assignment(message.text)
+            include_sender = not (is_assignment and mentioned_users)
+
+            response_text = await stats_service.log_beers_for_users(
+                message, ai_count, mentioned_users, include_sender, 0, ai_type
+            )
+            if response_text:
+                await groupme_client.send_message(response_text, group_id=message.group_id)
+                return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "ai_classifier"}
+            else:
+                return {"status": "ok", "action": "duplicate", "message_id": message.id}
+
+        elif classification["type"] == "sassy":
+            # Generate a sassy response
+            sassy_reply = await sassy_responder.maybe_respond(
+                message.text, message.name, group_id=message.group_id
+            )
+            if sassy_reply:
+                await groupme_client.send_message(sassy_reply, group_id=message.group_id)
+                return {"status": "ok", "action": "sassy_reply", "reason": classification["reason"]}
 
     # No action needed
     return {"status": "ok", "action": "none"}
