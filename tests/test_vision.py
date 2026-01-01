@@ -449,3 +449,130 @@ class TestSassyResponder:
                 # maybe_respond catches exceptions and returns None
                 result = await responder.maybe_respond("Test message for sassy bot", "TestUser")
                 assert result is None
+
+    def test_format_leaderboard_context_empty(self):
+        """Test _format_leaderboard_context returns empty string for empty leaderboard."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_genai.Client.return_value = MagicMock()
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                result = responder._format_leaderboard_context({})
+                assert result == ""
+
+    def test_format_leaderboard_context_with_data(self):
+        """Test _format_leaderboard_context formats leaderboard correctly."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_genai.Client.return_value = MagicMock()
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                leaderboard = {"Alice": 100, "Bob": 75, "Charlie": 50}
+                result = responder._format_leaderboard_context(leaderboard)
+                assert "Current Leaderboard:" in result
+                assert "Alice: 100 drinks" in result
+                assert "Bob: 75 drinks" in result
+                assert "Charlie: 50 drinks" in result
+
+    def test_classify_and_respond_with_leaderboard(self):
+        """Test _classify_and_respond includes leaderboard context in prompts."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                # Mock two responses: classification and sassy response
+                mock_classify = MagicMock()
+                mock_classify.text = '{"interesting": true, "reason": "asks about leaderboard"}'
+                mock_sassy = MagicMock()
+                mock_sassy.text = "You're 25 behind Celena - better start chugging!"
+
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = [mock_classify, mock_sassy]
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                leaderboard = {"Celena": 100, "TestUser": 75}
+                result = responder._classify_and_respond(
+                    "Can I beat Celena on the leaderboard?",
+                    "TestUser",
+                    leaderboard
+                )
+                assert result == "You're 25 behind Celena - better start chugging!"
+
+                # Verify leaderboard was included in the prompts
+                calls = mock_client.models.generate_content.call_args_list
+                assert len(calls) == 2
+                # Classification prompt should include leaderboard
+                classify_call = calls[0]
+                assert "Celena: 100 drinks" in classify_call.kwargs["contents"][0]
+                # Response prompt should also include leaderboard
+                response_call = calls[1]
+                assert "Celena: 100 drinks" in response_call.kwargs["contents"][0]
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_fetches_leaderboard(self):
+        """Test maybe_respond fetches leaderboard when group_id is provided."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_classify = MagicMock()
+                mock_classify.text = '{"interesting": true, "reason": "competitive"}'
+                mock_sassy = MagicMock()
+                mock_sassy.text = "Nice try!"
+
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = [mock_classify, mock_sassy]
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+
+                # Mock the stats_service module that gets imported inside maybe_respond
+                with patch.dict("sys.modules", {"src.beerbot.services": MagicMock()}) as mock_modules:
+                    mock_stats = MagicMock()
+                    mock_stats.get_leaderboard_summary = AsyncMock(
+                        return_value={"Alice": 100, "Bob": 75}
+                    )
+                    mock_modules["src.beerbot.services"].stats_service = mock_stats
+                    result = await responder.maybe_respond(
+                        "I'm gonna win this leaderboard!",
+                        "TestUser",
+                        group_id="test-group-123"
+                    )
+                    assert result == "Nice try!"
+                    mock_stats.get_leaderboard_summary.assert_called_once_with("test-group-123")
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_handles_leaderboard_fetch_error(self):
+        """Test maybe_respond continues even if leaderboard fetch fails."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_classify = MagicMock()
+                mock_classify.text = '{"interesting": true, "reason": "competitive"}'
+                mock_sassy = MagicMock()
+                mock_sassy.text = "Keep trying!"
+
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = [mock_classify, mock_sassy]
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+
+                # Mock stats_service.get_leaderboard_summary to fail
+                with patch.dict("sys.modules", {"src.beerbot.services": MagicMock()}) as mock_modules:
+                    mock_stats = MagicMock()
+                    mock_stats.get_leaderboard_summary = AsyncMock(
+                        side_effect=Exception("Database error")
+                    )
+                    mock_modules["src.beerbot.services"].stats_service = mock_stats
+                    # Should still work, just without leaderboard data
+                    result = await responder.maybe_respond(
+                        "I'm gonna win this leaderboard!",
+                        "TestUser",
+                        group_id="test-group-123"
+                    )
+                    assert result == "Keep trying!"
