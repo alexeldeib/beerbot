@@ -330,100 +330,6 @@ class MessageParser:
             self.GENERIC_DRINK_PATTERN.search(text)  # +N <any drink word>
         )
 
-    # Signal words that suggest a drink mention worth checking with AI
-    # These are cheap heuristics to avoid calling AI on every message
-    AI_SIGNAL_WORDS = {
-        # Consumption verbs
-        "drinking", "drank", "had", "having", "finished", "enjoying",
-        "sipping", "chugged", "polished", "slammed", "nursing", "pounding",
-        # Request phrases (for natural language requests like "grant me a beer")
-        "grant me", "give me", "get me", "pour me", "fetch me",
-        # Drink-adjacent nouns
-        "round", "pour", "glass", "pint", "bottle", "can", "tap",
-        "happy hour", "nightcap", "pregame", "bar", "brewery", "winery",
-        "pub", "tavern", "taproom",
-        # Time/occasion indicators
-        "after work", "tonight", "celebrating", "toasting",
-        # Basic drink words (needed for natural language like "grant me a beer")
-        "beer", "beers", "wine", "wines", "cocktail", "cocktails",
-        # Specific drink names not in existing patterns
-        "ipa", "lager", "stout", "ale", "pilsner", "porter", "hazy",
-        "cabernet", "merlot", "pinot", "chardonnay", "rosé", "rose",
-        "prosecco", "champagne", "bubbly",
-        "margarita", "martini", "mojito", "daiquiri", "negroni",
-        "manhattan", "old fashioned", "whiskey", "bourbon", "scotch",
-        "tequila", "mezcal", "vodka", "gin", "rum",
-    }
-
-    # Pre-compiled patterns for word boundary matching of signal words
-    # Built lazily to avoid circular import issues
-    _signal_word_pattern: re.Pattern | None = None
-
-    @classmethod
-    def _get_signal_word_pattern(cls) -> re.Pattern:
-        """Get or create the compiled signal word pattern."""
-        if cls._signal_word_pattern is None:
-            # Escape special regex chars and join with | for alternation
-            # Sort by length descending so longer phrases match first
-            sorted_words = sorted(cls.AI_SIGNAL_WORDS, key=len, reverse=True)
-            escaped = [re.escape(w) for w in sorted_words]
-            pattern = r"\b(" + "|".join(escaped) + r")\b"
-            cls._signal_word_pattern = re.compile(pattern, re.IGNORECASE)
-        return cls._signal_word_pattern
-
-    def should_try_ai_parsing(self, text: str | None) -> bool:
-        """Determine if message is worth sending to AI for drink parsing.
-
-        Called only when parse_drink() returns 0 drinks.
-        Uses cheap heuristics to filter out obvious non-drink messages.
-        """
-        if not text:
-            return False
-
-        # Skip commands and quotes
-        if text.startswith(("!", ">")):
-            return False
-
-        text_lower = text.lower()
-
-        # Skip messages that mention the bot unless they're requests TO the bot
-        # "beerius, grant me a beer" = request, should parse
-        # "I think beerius is flirting" = meta-commentary, skip
-        if "beerius" in text_lower:
-            # Allow if it looks like a request TO beerius (starts with beerius or has request verbs)
-            request_verbs = ["grant", "give", "get", "pour", "log", "add"]
-            is_request = text_lower.startswith("beerius") or any(v in text_lower for v in request_verbs)
-            if not is_request:
-                return False
-
-        # For +N or -N patterns, check if the drink word is unrecognized
-        # If so, let AI classify it (e.g., "+1 Moet" should go to AI)
-        # Check this BEFORE length limits since these are short but valid
-        if text.startswith(("+", "-")):
-            match = self.GENERIC_DRINK_PATTERN.search(text) or self.NEGATIVE_GENERIC_PATTERN.search(text)
-            if match:
-                word = match.group(2).lower()
-                # Known drink types that are already handled by parse_drink
-                known_words = {
-                    "beer", "beers", "wine", "wines", "cocktail", "cocktails",
-                    "claw", "claws", "seltzer", "seltzers",
-                } | self.ALCOHOLIC_DRINK_WORDS
-                # If word is unknown, let AI classify it
-                if word not in known_words:
-                    return True
-            return False
-
-        # Length limits - too short or too long messages are unlikely to be drink mentions
-        if len(text) < 8 or len(text) > 300:
-            return False
-
-        # Check for signal words with word boundaries (not substring matching)
-        # This prevents "beer" from matching inside "beerius"
-        if self._get_signal_word_pattern().search(text):
-            return True
-
-        return False
-
     def parse_debt_amount(self, text: str | None) -> int:
         """Extract the number of beers from a debt command (!owe N, !payoff N).
 
@@ -800,6 +706,29 @@ class StatsService:
         """
         leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, limit)
         return {name: total for name, total, _ in leaderboard}
+
+    async def get_sender_stats_summary(
+        self, groupme_user_id: str, group_id: str
+    ) -> dict[str, int] | None:
+        """Get sender's stats for AI context.
+
+        Returns {"total": N, "rank": M} or None if user not found.
+        """
+        user = await user_repo.get_by_groupme_id(groupme_user_id)
+        if not user:
+            return None
+
+        total = await beer_repo.get_user_total(user.id, group_id)
+
+        # Get rank by counting users with more drinks
+        leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, 100)
+        rank = 1
+        for name, count, _ in leaderboard:
+            if name == user.name:
+                break
+            rank += 1
+
+        return {"total": total, "rank": rank}
 
     async def undo_beer(self, message: GroupMeMessage, target_user_id: str | None = None) -> str:
         """Undo the last beer for a user.

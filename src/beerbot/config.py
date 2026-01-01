@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     enable_sassy_responses: bool = True
     sassy_response_rate: float = 0.3  # Probability of responding to interesting messages
 
+    # Feature flags
+    # Comma-separated list of group IDs that use AI-only mode (no regex)
+    ai_only_groups: str = ""
+
     # Admin (optional - required for admin endpoints)
     admin_token: str | None = None
 
@@ -39,6 +43,13 @@ class Settings(BaseSettings):
     @property
     def sassy_responses_enabled(self) -> bool:
         return self.enable_sassy_responses and self.gemini_api_key is not None
+
+    def is_ai_only_group(self, group_id: str) -> bool:
+        """Check if a group should use AI-only mode (skip regex patterns)."""
+        if not self.ai_only_groups:
+            return False
+        ai_groups = [g.strip() for g in self.ai_only_groups.split(",")]
+        return group_id in ai_groups
 
 
 settings = Settings()
