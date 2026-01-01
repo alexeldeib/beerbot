@@ -161,14 +161,12 @@ async def groupme_callback(request: Request):
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
 
     # Check for sassy response opportunity (for "something else" messages)
+    # Let AI decide what's interesting - no probability filter here
     if settings.sassy_responses_enabled and message.text:
-        import random
-        # Rate limit: only try sassy response with configured probability
-        if random.random() < settings.sassy_response_rate:
-            sassy_reply = await sassy_responder.maybe_respond(message.text, message.name)
-            if sassy_reply:
-                await groupme_client.send_message(sassy_reply, group_id=message.group_id)
-                return {"status": "ok", "action": "sassy_reply"}
+        sassy_reply = await sassy_responder.maybe_respond(message.text, message.name)
+        if sassy_reply:
+            await groupme_client.send_message(sassy_reply, group_id=message.group_id)
+            return {"status": "ok", "action": "sassy_reply"}
 
     # No action needed
     return {"status": "ok", "action": "none"}
