@@ -127,7 +127,7 @@ class MessageParser:
         "week": re.compile(r"^(!week|beers this week)\b", re.IGNORECASE),
         "undo": re.compile(r"^(!undo|-1 beer)\b", re.IGNORECASE),
         "unbeer": re.compile(r"^(!unbeer(\s+\d+)?|minus\s+\d+\s*beers?|-\d+\s*beers?)\b", re.IGNORECASE),
-        "million": re.compile(r"^(!million\b|!millionbeers|!countdown|!goal|time to million)\b", re.IGNORECASE),
+        "million": re.compile(r"^(!million|!countdown|!goal|time to million)\b", re.IGNORECASE),
         "splitg": re.compile(r"^(!splitg|split the g)\b", re.IGNORECASE),
         "split": re.compile(r"^!split(\s|$)", re.IGNORECASE),
         "unsplit": re.compile(r"^(!unsplit(\s+\d+)?)\b", re.IGNORECASE),
