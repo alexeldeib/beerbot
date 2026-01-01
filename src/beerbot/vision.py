@@ -318,5 +318,268 @@ Output ONLY the toast text, nothing else."""
         return response.text.strip().strip('"')
 
 
-# Singleton instance
+class AITextParser:
+    """AI-powered text parser for detecting drinks in natural language."""
+
+    PROMPT = """Analyze this message for alcoholic drink mentions.
+
+Return JSON: {{"drink_type": "beer"|"wine"|"cocktail"|"claw"|null, "count": 1}}
+
+Rules:
+- Look for drinking verbs: drinking, drank, had, having, finished, enjoying, sipping, nursing, polishing off
+- Beer includes: IPA, lager, ale, stout, pilsner, porter, hazy, pale ale, wheat beer, hefeweizen, kolsch, etc.
+- Wine includes: red, white, rosé, champagne, prosecco, pinot, chardonnay, cabernet, merlot, etc.
+- Cocktail includes: margarita, martini, mojito, old fashioned, manhattan, negroni, mixed drinks, shots, whiskey, vodka, tequila, rum, gin neat, etc.
+- Claw includes: White Claw, Truly, hard seltzer, High Noon only
+- Return null if no alcoholic drink clearly mentioned
+- Return count = 1 unless explicitly stated otherwise ("had 3 IPAs" = count 3)
+- Be conservative: if uncertain, return null
+
+Message: "{text}"
+"""
+
+    MODEL = "gemini-2.0-flash"
+
+    def __init__(self):
+        self.client = None
+        if settings.gemini_api_key:
+            self.client = genai.Client(api_key=settings.gemini_api_key)
+
+    async def parse_drink_text(self, text: str) -> tuple[int, DrinkType]:
+        """Parse natural language for drink mentions using AI.
+
+        Returns (count, drink_type) tuple. Returns (0, BEER) if no drink detected.
+        """
+        if not self.client or not text:
+            return 0, DrinkType.BEER
+
+        try:
+            result = await asyncio.to_thread(self._call_gemini, text)
+            return result
+        except Exception:
+            logger.exception("AI text parsing failed")
+            return 0, DrinkType.BEER
+
+    def _call_gemini(self, text: str) -> tuple[int, DrinkType]:
+        """Call Gemini API synchronously (runs in thread pool)."""
+        try:
+            prompt = self.PROMPT.format(text=text)
+            response = self.client.models.generate_content(
+                model=self.MODEL,
+                contents=[prompt],
+            )
+
+            raw_text = response.text.strip()
+            logger.debug("AI text parser response: %r", raw_text)
+
+            # Extract JSON from response
+            json_text = raw_text
+            fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if fence_match:
+                json_text = fence_match.group(1)
+
+            try:
+                data = json.loads(json_text)
+                drink_type_str = data.get("drink_type")
+                count = int(data.get("count", 1))
+
+                if drink_type_str and drink_type_str.lower() != "null":
+                    drink_type = DrinkType.from_string(drink_type_str)
+                    logger.info(
+                        "AI text parser detected: text=%r count=%d type=%s",
+                        text[:50], count, drink_type.value
+                    )
+                    return count, drink_type
+                else:
+                    return 0, DrinkType.BEER
+
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                logger.warning("AI text parser JSON decode failed: %r", raw_text)
+                return 0, DrinkType.BEER
+
+        except Exception:
+            logger.exception("AI text parser Gemini error")
+            return 0, DrinkType.BEER
+
+
+class SassyResponder:
+    """AI-powered responder for generating witty replies to interesting messages."""
+
+    DRINK_SASSY_PROMPT = """You are a witty beer-tracking bot. Someone just logged {count} {drink_type}(s).
+
+Sender: {user_name}
+Their message: "{text}"
+
+Generate a SHORT, sassy one-liner (under 80 characters) celebrating/teasing their drink. Be:
+- Playful about their drinking pace or choice
+- Light trash talk about catching up on the leaderboard
+- Occasionally genuinely encouraging
+
+DO NOT:
+- Repeat the drink count (they already saw that)
+- Be offensive or preachy about alcohol
+- Mention being a bot
+- Use hashtags
+
+Output ONLY the quip, nothing else."""
+
+    CLASSIFICATION_PROMPT = """Analyze this GroupMe message from a beer-tracking chat group.
+
+Message: "{text}"
+Sender: {user_name}
+
+Is this message "interesting" enough for a sassy bot reply? Return JSON:
+{{"interesting": true/false, "reason": "brief reason"}}
+
+Messages ARE interesting if they:
+- Show competitive banter about drinking/leaderboard positions
+- Ask questions about beer/drinking rules or pace
+- Make bold claims about drinking prowess
+- Express regret, excuses, or justifications about drinking
+- Reference specific drinking occasions or strategies
+- Trash talk other group members about their stats
+
+Messages are NOT interesting if they:
+- Are generic short responses ("Sick", "Nice", "Lol", "Ok")
+- Are technical questions about the bot itself
+- Are completely off-topic from drinking
+- Are just sharing links without comment
+- Are asking for help with bot commands
+
+Be selective - only ~30% of messages should be interesting."""
+
+    RESPONSE_PROMPT = """You are a witty, sassy beer-tracking bot responding to a message in a GroupMe chat.
+
+Message: "{text}"
+Sender: {user_name}
+Context: {reason}
+
+Generate a SHORT, clever response (under 100 characters). Be:
+- Playful and teasing, not mean
+- Reference their drinking habits or the leaderboard when relevant
+- Use light trash talk about their beer count
+- Occasionally encouraging but mostly sarcastic
+
+DO NOT:
+- Be offensive or hurtful
+- Mention being a bot or AI
+- Use generic responses
+- Be preachy about drinking
+- Include hashtags
+
+Output ONLY the response text, nothing else."""
+
+    MODEL = "gemini-2.0-flash"
+
+    def __init__(self):
+        self.client = None
+        if settings.gemini_api_key:
+            self.client = genai.Client(api_key=settings.gemini_api_key)
+
+    async def maybe_respond(self, text: str, user_name: str) -> str | None:
+        """Check if message is interesting and generate a sassy response if so.
+
+        Returns response text or None if not responding.
+        """
+        if not self.client or not text:
+            return None
+
+        # Skip very short or very long messages
+        if len(text) < 10 or len(text) > 300:
+            return None
+
+        try:
+            result = await asyncio.to_thread(self._classify_and_respond, text, user_name)
+            return result
+        except Exception:
+            logger.exception("Sassy responder failed")
+            return None
+
+    async def generate_drink_quip(
+        self, text: str, user_name: str, count: int, drink_type: str
+    ) -> str | None:
+        """Generate a sassy quip for a drink that was just logged.
+
+        Returns quip text or None on failure.
+        """
+        if not self.client:
+            return None
+
+        try:
+            result = await asyncio.to_thread(
+                self._generate_drink_quip, text, user_name, count, drink_type
+            )
+            return result
+        except Exception:
+            logger.exception("Drink quip generation failed")
+            return None
+
+    def _generate_drink_quip(
+        self, text: str, user_name: str, count: int, drink_type: str
+    ) -> str:
+        """Generate drink quip synchronously."""
+        prompt = self.DRINK_SASSY_PROMPT.format(
+            text=text or "",
+            user_name=user_name,
+            count=count,
+            drink_type=drink_type,
+        )
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[prompt],
+        )
+        return response.text.strip().strip('"')
+
+    def _classify_and_respond(self, text: str, user_name: str) -> str | None:
+        """Classify message and generate response synchronously."""
+        # Step 1: Classify if interesting
+        classify_prompt = self.CLASSIFICATION_PROMPT.format(text=text, user_name=user_name)
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[classify_prompt],
+        )
+
+        raw_text = response.text.strip()
+
+        # Parse classification
+        try:
+            # Extract JSON from response
+            json_text = raw_text
+            fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if fence_match:
+                json_text = fence_match.group(1)
+
+            data = json.loads(json_text)
+            is_interesting = data.get("interesting", False)
+            reason = data.get("reason", "")
+
+            if not is_interesting:
+                logger.debug("Message not interesting: %r reason=%s", text[:50], reason)
+                return None
+
+            logger.info("Interesting message detected: %r reason=%s", text[:50], reason)
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning("Failed to parse classification: %r", raw_text)
+            return None
+
+        # Step 2: Generate sassy response
+        response_prompt = self.RESPONSE_PROMPT.format(
+            text=text,
+            user_name=user_name,
+            reason=reason
+        )
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=[response_prompt],
+        )
+
+        sassy_response = response.text.strip().strip('"')
+        logger.info("Generated sassy response: %r -> %r", text[:50], sassy_response)
+        return sassy_response
+
+
+# Singleton instances
 vision_service = VisionService()
+ai_text_parser = AITextParser()
+sassy_responder = SassyResponder()

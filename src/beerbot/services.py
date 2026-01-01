@@ -330,6 +330,74 @@ class MessageParser:
             self.GENERIC_DRINK_PATTERN.search(text)  # +N <any drink word>
         )
 
+    # Signal words that suggest a drink mention worth checking with AI
+    # These are cheap heuristics to avoid calling AI on every message
+    AI_SIGNAL_WORDS = {
+        # Consumption verbs
+        "drinking", "drank", "had", "having", "finished", "enjoying",
+        "sipping", "chugged", "polished", "slammed", "nursing", "pounding",
+        # Request phrases (for natural language requests like "grant me a beer")
+        "grant me", "give me", "get me", "pour me", "fetch me",
+        # Drink-adjacent nouns
+        "round", "pour", "glass", "pint", "bottle", "can", "tap",
+        "happy hour", "nightcap", "pregame", "bar", "brewery", "winery",
+        "pub", "tavern", "taproom",
+        # Time/occasion indicators
+        "after work", "tonight", "celebrating", "toasting",
+        # Basic drink words (needed for natural language like "grant me a beer")
+        "beer", "beers", "wine", "wines", "cocktail", "cocktails",
+        # Specific drink names not in existing patterns
+        "ipa", "lager", "stout", "ale", "pilsner", "porter", "hazy",
+        "cabernet", "merlot", "pinot", "chardonnay", "rosé", "rose",
+        "prosecco", "champagne", "bubbly",
+        "margarita", "martini", "mojito", "daiquiri", "negroni",
+        "manhattan", "old fashioned", "whiskey", "bourbon", "scotch",
+        "tequila", "mezcal", "vodka", "gin", "rum",
+    }
+
+    def should_try_ai_parsing(self, text: str | None) -> bool:
+        """Determine if message is worth sending to AI for drink parsing.
+
+        Called only when parse_drink() returns 0 drinks.
+        Uses cheap heuristics to filter out obvious non-drink messages.
+        """
+        if not text:
+            return False
+
+        # Skip commands and quotes
+        if text.startswith(("!", ">")):
+            return False
+
+        # For +N or -N patterns, check if the drink word is unrecognized
+        # If so, let AI classify it (e.g., "+1 Moet" should go to AI)
+        # Check this BEFORE length limits since these are short but valid
+        if text.startswith(("+", "-")):
+            match = self.GENERIC_DRINK_PATTERN.search(text) or self.NEGATIVE_GENERIC_PATTERN.search(text)
+            if match:
+                word = match.group(2).lower()
+                # Known drink types that are already handled by parse_drink
+                known_words = {
+                    "beer", "beers", "wine", "wines", "cocktail", "cocktails",
+                    "claw", "claws", "seltzer", "seltzers",
+                } | self.ALCOHOLIC_DRINK_WORDS
+                # If word is unknown, let AI classify it
+                if word not in known_words:
+                    return True
+            return False
+
+        # Length limits - too short or too long messages are unlikely to be drink mentions
+        if len(text) < 8 or len(text) > 300:
+            return False
+
+        text_lower = text.lower()
+
+        # Check for any signal word
+        for word in self.AI_SIGNAL_WORDS:
+            if word in text_lower:
+                return True
+
+        return False
+
     def parse_debt_amount(self, text: str | None) -> int:
         """Extract the number of beers from a debt command (!owe N, !payoff N).
 

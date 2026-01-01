@@ -46,3 +46,14 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scraped data (contains messages, not for version control)
+data/all_messages.json
+data/text_messages.json
+data/text_metadata.json
+data/results/message_categories.json
+data/results/something_else.json
+data/results/sassy_test_results.json
+data/results/ai_detections.json
+data/results/comparison_results.json
+data/results/comparison_report.md

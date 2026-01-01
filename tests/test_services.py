@@ -511,3 +511,95 @@ class TestDrinkRemovalTargeting:
                 break
 
         assert target_user_id == "12345678"  # First user only
+
+
+class TestShouldTryAIParsing:
+    """Tests for should_try_ai_parsing heuristic filtering."""
+
+    def setup_method(self):
+        self.parser = MessageParser()
+
+    def test_returns_true_for_drink_verbs(self):
+        """Test that consumption verbs trigger AI parsing."""
+        assert self.parser.should_try_ai_parsing("Just finished my IPA") is True
+        assert self.parser.should_try_ai_parsing("I'm drinking a margarita") is True
+        assert self.parser.should_try_ai_parsing("Had a great whiskey") is True
+        assert self.parser.should_try_ai_parsing("Enjoying some champagne") is True
+        assert self.parser.should_try_ai_parsing("Sipping on a mojito") is True
+
+    def test_returns_true_for_specific_drinks(self):
+        """Test that specific drink names trigger AI parsing."""
+        assert self.parser.should_try_ai_parsing("This IPA is amazing") is True
+        assert self.parser.should_try_ai_parsing("Love a good stout") is True
+        assert self.parser.should_try_ai_parsing("The cabernet was excellent") is True
+        assert self.parser.should_try_ai_parsing("Trying a negroni tonight") is True
+
+    def test_returns_true_for_locations(self):
+        """Test that drink-related locations trigger AI parsing."""
+        assert self.parser.should_try_ai_parsing("At the brewery right now") is True
+        assert self.parser.should_try_ai_parsing("Just got to the bar") is True
+        assert self.parser.should_try_ai_parsing("Visiting a winery today") is True
+
+    def test_returns_false_for_no_signal_words(self):
+        """Test that messages without signal words don't trigger AI."""
+        assert self.parser.should_try_ai_parsing("Hello everyone") is False
+        assert self.parser.should_try_ai_parsing("What's for dinner?") is False
+        assert self.parser.should_try_ai_parsing("Nice weather today") is False
+
+    def test_returns_false_for_short_messages(self):
+        """Test that very short messages don't trigger AI."""
+        assert self.parser.should_try_ai_parsing("hi") is False
+        assert self.parser.should_try_ai_parsing("ok") is False
+        assert self.parser.should_try_ai_parsing("") is False
+        assert self.parser.should_try_ai_parsing(None) is False
+
+    def test_returns_false_for_long_messages(self):
+        """Test that very long messages don't trigger AI."""
+        long_msg = "I had a great time at the bar " * 20  # > 300 chars
+        assert len(long_msg) > 300
+        assert self.parser.should_try_ai_parsing(long_msg) is False
+
+    def test_returns_false_for_commands(self):
+        """Test that command-like messages don't trigger AI."""
+        assert self.parser.should_try_ai_parsing("!stats") is False
+        assert self.parser.should_try_ai_parsing("+1 beer") is False
+        assert self.parser.should_try_ai_parsing("-1 cocktail") is False
+        assert self.parser.should_try_ai_parsing("> quoted text about drinking") is False
+
+    def test_case_insensitive(self):
+        """Test that signal word matching is case-insensitive."""
+        assert self.parser.should_try_ai_parsing("Just HAD a MARGARITA") is True
+        assert self.parser.should_try_ai_parsing("DRINKING some IPA") is True
+
+    def test_request_phrases_trigger_ai(self):
+        """Test that natural language request phrases trigger AI parsing."""
+        # "grant me" should trigger
+        assert self.parser.should_try_ai_parsing("beerius, grant me a beer") is True
+        # Other request phrases
+        assert self.parser.should_try_ai_parsing("give me a beer please") is True
+        assert self.parser.should_try_ai_parsing("get me a cold one") is True
+        assert self.parser.should_try_ai_parsing("pour me another") is True
+        assert self.parser.should_try_ai_parsing("fetch me a pint") is True
+
+    def test_basic_drink_words_trigger_ai(self):
+        """Test that basic drink words (beer, wine, cocktail) trigger AI parsing."""
+        # These were added specifically for natural language requests
+        assert self.parser.should_try_ai_parsing("I want a beer") is True
+        assert self.parser.should_try_ai_parsing("time for some wine") is True
+        assert self.parser.should_try_ai_parsing("making a cocktail") is True
+        # With creative phrasing
+        assert self.parser.should_try_ai_parsing("beerius, grant me a beer") is True
+        assert self.parser.should_try_ai_parsing("the beer gods have blessed me") is True
+
+    def test_unrecognized_drink_patterns_trigger_ai(self):
+        """Test that +N <unknown_word> patterns trigger AI for classification."""
+        # Unknown drink words should go to AI
+        assert self.parser.should_try_ai_parsing("+1 Moet") is True
+        assert self.parser.should_try_ai_parsing("+2 champagne") is True
+        assert self.parser.should_try_ai_parsing("+1 prosecco") is True
+        assert self.parser.should_try_ai_parsing("-1 Moet") is True
+        assert self.parser.should_try_ai_parsing("+3 Cristal") is True
+        # Known drink words should NOT trigger AI (handled by parse_drink)
+        assert self.parser.should_try_ai_parsing("+1 beer") is False
+        assert self.parser.should_try_ai_parsing("+1 wine") is False
+        assert self.parser.should_try_ai_parsing("+1 margarita") is False

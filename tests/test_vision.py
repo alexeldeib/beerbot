@@ -175,3 +175,277 @@ class TestVisionService:
                     service = VisionService()
                     result = service._call_gemini("https://example.com/beer.jpg", b"fake-image", "image/jpeg")
                     assert result == VisionResult()
+
+
+class TestAITextParser:
+    """Tests for AITextParser."""
+
+    def test_init_without_api_key(self):
+        """Test initialization without API key."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = None
+            from src.beerbot.vision import AITextParser
+            parser = AITextParser()
+            assert parser.client is None
+
+    def test_init_with_api_key(self):
+        """Test initialization with API key."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_client = MagicMock()
+                mock_genai.Client.return_value = mock_client
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                assert parser.client == mock_client
+
+    @pytest.mark.asyncio
+    async def test_parse_drink_text_no_client(self):
+        """Test parse_drink_text returns default when client is not configured."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = None
+            from src.beerbot.vision import AITextParser
+            parser = AITextParser()
+            count, drink_type = await parser.parse_drink_text("Just had a margarita")
+            assert count == 0
+            assert drink_type == DrinkType.BEER
+
+    @pytest.mark.asyncio
+    async def test_parse_drink_text_empty_text(self):
+        """Test parse_drink_text returns default for empty text."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_genai.Client.return_value = MagicMock()
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = await parser.parse_drink_text("")
+                assert count == 0
+                assert drink_type == DrinkType.BEER
+
+    def test_call_gemini_parses_beer(self):
+        """Test _call_gemini parses beer response."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '{"drink_type": "beer", "count": 1}'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Finished my IPA")
+                assert count == 1
+                assert drink_type == DrinkType.BEER
+
+    def test_call_gemini_parses_cocktail(self):
+        """Test _call_gemini parses cocktail response."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '{"drink_type": "cocktail", "count": 2}'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Had 2 margaritas")
+                assert count == 2
+                assert drink_type == DrinkType.COCKTAIL
+
+    def test_call_gemini_parses_wine(self):
+        """Test _call_gemini parses wine response."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '{"drink_type": "wine", "count": 1}'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Enjoying some cabernet")
+                assert count == 1
+                assert drink_type == DrinkType.WINE
+
+    def test_call_gemini_returns_null_no_drink(self):
+        """Test _call_gemini returns 0 when no drink detected."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '{"drink_type": null, "count": 0}'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Hello everyone")
+                assert count == 0
+
+    def test_call_gemini_handles_json_in_markdown(self):
+        """Test _call_gemini extracts JSON from markdown code fence."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '```json\n{"drink_type": "beer", "count": 1}\n```'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Had an IPA")
+                assert count == 1
+                assert drink_type == DrinkType.BEER
+
+    def test_call_gemini_handles_exception(self):
+        """Test _call_gemini handles API exceptions."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = Exception("API error")
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                count, drink_type = parser._call_gemini("Had a beer")
+                assert count == 0
+                assert drink_type == DrinkType.BEER
+
+    def test_call_gemini_parses_natural_language_request(self):
+        """Test _call_gemini parses natural language beer requests like 'beerius, grant me a beer'."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_response = MagicMock()
+                mock_response.text = '{"drink_type": "beer", "count": 1}'
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_response
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import AITextParser
+                parser = AITextParser()
+                # This is the key test case: natural language request
+                count, drink_type = parser._call_gemini("beerius, grant me a beer")
+                assert count == 1
+                assert drink_type == DrinkType.BEER
+
+
+class TestSassyResponder:
+    """Tests for SassyResponder."""
+
+    def test_init_without_api_key(self):
+        """Test initialization without API key."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = None
+            from src.beerbot.vision import SassyResponder
+            responder = SassyResponder()
+            assert responder.client is None
+
+    def test_init_with_api_key(self):
+        """Test initialization with API key."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_client = MagicMock()
+                mock_genai.Client.return_value = mock_client
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                assert responder.client == mock_client
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_no_client(self):
+        """Test maybe_respond returns None when client is not configured."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = None
+            from src.beerbot.vision import SassyResponder
+            responder = SassyResponder()
+            result = await responder.maybe_respond("Test message", "TestUser")
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_short_message(self):
+        """Test maybe_respond skips very short messages."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_genai.Client.return_value = MagicMock()
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                result = await responder.maybe_respond("Hi", "TestUser")
+                assert result is None
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_empty_text(self):
+        """Test maybe_respond skips empty text."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_genai.Client.return_value = MagicMock()
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                result = await responder.maybe_respond("", "TestUser")
+                assert result is None
+
+    def test_classify_and_respond_interesting(self):
+        """Test _classify_and_respond returns response for interesting message."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                # Mock two responses: classification and sassy response
+                mock_classify = MagicMock()
+                mock_classify.text = '{"interesting": true, "reason": "competitive banter"}'
+                mock_sassy = MagicMock()
+                mock_sassy.text = "Nice try, but you're still losing!"
+
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = [mock_classify, mock_sassy]
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                result = responder._classify_and_respond("I'm catching up on the leaderboard!", "TestUser")
+                assert result == "Nice try, but you're still losing!"
+
+    def test_classify_and_respond_not_interesting(self):
+        """Test _classify_and_respond returns None for uninteresting message."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_classify = MagicMock()
+                mock_classify.text = '{"interesting": false, "reason": "generic response"}'
+
+                mock_client = MagicMock()
+                mock_client.models.generate_content.return_value = mock_classify
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                result = responder._classify_and_respond("Ok", "TestUser")
+                assert result is None
+
+    @pytest.mark.asyncio
+    async def test_maybe_respond_handles_exception(self):
+        """Test maybe_respond handles API exceptions gracefully."""
+        with patch("src.beerbot.vision.settings") as mock_settings:
+            mock_settings.gemini_api_key = "test-key"
+            with patch("src.beerbot.vision.genai") as mock_genai:
+                mock_client = MagicMock()
+                mock_client.models.generate_content.side_effect = Exception("API error")
+                mock_genai.Client.return_value = mock_client
+
+                from src.beerbot.vision import SassyResponder
+                responder = SassyResponder()
+                # maybe_respond catches exceptions and returns None
+                result = await responder.maybe_respond("Test message for sassy bot", "TestUser")
+                assert result is None

@@ -25,7 +25,7 @@ from .services import (
     message_parser,
     stats_service,
 )
-from .vision import vision_service
+from .vision import ai_text_parser, sassy_responder, vision_service
 
 
 @asynccontextmanager
@@ -92,6 +92,20 @@ async def groupme_callback(request: Request):
     # Check for drink logging (text triggers)
     text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
 
+    # AI fallback: if no drinks detected by regex but message has signal words
+    if text_drink_count == 0 and message_parser.should_try_ai_parsing(message.text):
+        try:
+            ai_count, ai_type = await ai_text_parser.parse_drink_text(message.text)
+            if ai_count > 0:
+                text_drink_count = ai_count
+                text_drink_type = ai_type
+                logging.getLogger(__name__).info(
+                    "AI parser detected drink: text=%r count=%d type=%s",
+                    message.text[:50], ai_count, ai_type.value
+                )
+        except Exception:
+            logging.getLogger(__name__).exception("AI text parsing failed")
+
     # Check for drink logging (image analysis)
     vision_result = VisionResult()
     if settings.image_analysis_enabled:
@@ -131,9 +145,30 @@ async def groupme_callback(request: Request):
         )
         if response_text:
             await groupme_client.send_message(response_text, group_id=message.group_id)
+
+            # Occasionally add a sassy quip after logging drinks
+            if settings.sassy_responses_enabled:
+                import random
+                if random.random() < settings.sassy_response_rate:
+                    quip = await sassy_responder.generate_drink_quip(
+                        message.text, message.name, drink_count, drink_type.value
+                    )
+                    if quip:
+                        await groupme_client.send_message(quip, group_id=message.group_id)
+
             return {"status": "ok", "action": "logged", "drinks": drink_count, "drink_type": drink_type.value, "split_the_g": split_the_g}
         else:
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
+
+    # Check for sassy response opportunity (for "something else" messages)
+    if settings.sassy_responses_enabled and message.text:
+        import random
+        # Rate limit: only try sassy response with configured probability
+        if random.random() < settings.sassy_response_rate:
+            sassy_reply = await sassy_responder.maybe_respond(message.text, message.name)
+            if sassy_reply:
+                await groupme_client.send_message(sassy_reply, group_id=message.group_id)
+                return {"status": "ok", "action": "sassy_reply"}
 
     # No action needed
     return {"status": "ok", "action": "none"}
