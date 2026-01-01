@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     enable_image_analysis: bool = True
 
+    # Sassy responses (optional)
+    enable_sassy_responses: bool = True
+    sassy_response_rate: float = 0.3  # Probability of responding to interesting messages
+
     # Admin (optional - required for admin endpoints)
     admin_token: str | None = None
 
@@ -31,6 +35,10 @@ class Settings(BaseSettings):
     @property
     def image_analysis_enabled(self) -> bool:
         return self.enable_image_analysis and self.gemini_api_key is not None
+
+    @property
+    def sassy_responses_enabled(self) -> bool:
+        return self.enable_sassy_responses and self.gemini_api_key is not None
 
 
 settings = Settings()
