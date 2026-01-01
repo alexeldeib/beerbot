@@ -767,6 +767,14 @@ class StatsService:
 
         return "\n".join(lines)
 
+    async def get_leaderboard_summary(self, group_id: str, limit: int = 10) -> dict[str, int]:
+        """Get leaderboard as a simple dict for AI context.
+
+        Returns {name: total_count} for top users.
+        """
+        leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, limit)
+        return {name: total for name, total, _ in leaderboard}
+
     async def undo_beer(self, message: GroupMeMessage, target_user_id: str | None = None) -> str:
         """Undo the last beer for a user.
 

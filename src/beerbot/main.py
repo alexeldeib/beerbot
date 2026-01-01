@@ -162,8 +162,11 @@ async def groupme_callback(request: Request):
 
     # Check for sassy response opportunity (for "something else" messages)
     # Let AI decide what's interesting - no probability filter here
+    # Pass group_id so AI can reference actual leaderboard data
     if settings.sassy_responses_enabled and message.text:
-        sassy_reply = await sassy_responder.maybe_respond(message.text, message.name)
+        sassy_reply = await sassy_responder.maybe_respond(
+            message.text, message.name, group_id=message.group_id
+        )
         if sassy_reply:
             await groupme_client.send_message(sassy_reply, group_id=message.group_id)
             return {"status": "ok", "action": "sassy_reply"}

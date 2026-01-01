@@ -427,7 +427,7 @@ Output ONLY the quip, nothing else."""
 
 Message: "{text}"
 Sender: {user_name}
-
+{leaderboard_context}
 Is this message "interesting" enough for a sassy bot reply? Return JSON:
 {{"interesting": true/false, "reason": "brief reason"}}
 
@@ -438,6 +438,7 @@ Messages ARE interesting if they:
 - Express regret, excuses, or justifications about drinking
 - Reference specific drinking occasions or strategies
 - Trash talk other group members about their stats
+- Ask about specific people's drink counts or position on leaderboard
 
 Messages are NOT interesting if they:
 - Are generic short responses ("Sick", "Nice", "Lol", "Ok")
@@ -453,10 +454,11 @@ Be selective - only ~30% of messages should be interesting."""
 Message: "{text}"
 Sender: {user_name}
 Context: {reason}
-
+{leaderboard_context}
 Generate a SHORT, clever response (under 100 characters). Be:
 - Playful and teasing, not mean
 - Reference their drinking habits or the leaderboard when relevant
+- Use ACTUAL leaderboard data when provided to make responses specific and accurate
 - Use light trash talk about their beer count
 - Occasionally encouraging but mostly sarcastic
 
@@ -466,6 +468,7 @@ DO NOT:
 - Use generic responses
 - Be preachy about drinking
 - Include hashtags
+- Make up drink counts - use the leaderboard data provided
 
 Output ONLY the response text, nothing else."""
 
@@ -476,8 +479,15 @@ Output ONLY the response text, nothing else."""
         if settings.gemini_api_key:
             self.client = genai.Client(api_key=settings.gemini_api_key)
 
-    async def maybe_respond(self, text: str, user_name: str) -> str | None:
+    async def maybe_respond(
+        self, text: str, user_name: str, group_id: str | None = None
+    ) -> str | None:
         """Check if message is interesting and generate a sassy response if so.
+
+        Args:
+            text: The message text
+            user_name: The sender's name
+            group_id: Optional group ID to fetch leaderboard context
 
         Returns response text or None if not responding.
         """
@@ -488,8 +498,19 @@ Output ONLY the response text, nothing else."""
         if len(text) < 10 or len(text) > 300:
             return None
 
+        # Fetch leaderboard context if group_id provided
+        leaderboard: dict[str, int] = {}
+        if group_id:
+            try:
+                from .services import stats_service
+                leaderboard = await stats_service.get_leaderboard_summary(group_id)
+            except Exception:
+                logger.exception("Failed to fetch leaderboard for sassy response")
+
         try:
-            result = await asyncio.to_thread(self._classify_and_respond, text, user_name)
+            result = await asyncio.to_thread(
+                self._classify_and_respond, text, user_name, leaderboard
+            )
             return result
         except Exception:
             logger.exception("Sassy responder failed")
@@ -530,10 +551,28 @@ Output ONLY the response text, nothing else."""
         )
         return response.text.strip().strip('"')
 
-    def _classify_and_respond(self, text: str, user_name: str) -> str | None:
+    def _format_leaderboard_context(self, leaderboard: dict[str, int]) -> str:
+        """Format leaderboard data for prompt context."""
+        if not leaderboard:
+            return ""
+
+        lines = ["Current Leaderboard:"]
+        for i, (name, count) in enumerate(leaderboard.items(), 1):
+            lines.append(f"  {i}. {name}: {count} drinks")
+        return "\n".join(lines) + "\n"
+
+    def _classify_and_respond(
+        self, text: str, user_name: str, leaderboard: dict[str, int] | None = None
+    ) -> str | None:
         """Classify message and generate response synchronously."""
+        leaderboard_context = self._format_leaderboard_context(leaderboard or {})
+
         # Step 1: Classify if interesting
-        classify_prompt = self.CLASSIFICATION_PROMPT.format(text=text, user_name=user_name)
+        classify_prompt = self.CLASSIFICATION_PROMPT.format(
+            text=text,
+            user_name=user_name,
+            leaderboard_context=leaderboard_context,
+        )
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=[classify_prompt],
@@ -567,7 +606,8 @@ Output ONLY the response text, nothing else."""
         response_prompt = self.RESPONSE_PROMPT.format(
             text=text,
             user_name=user_name,
-            reason=reason
+            reason=reason,
+            leaderboard_context=leaderboard_context,
         )
         response = self.client.models.generate_content(
             model=self.MODEL,
