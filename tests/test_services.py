@@ -603,3 +603,14 @@ class TestShouldTryAIParsing:
         assert self.parser.should_try_ai_parsing("+1 beer") is False
         assert self.parser.should_try_ai_parsing("+1 wine") is False
         assert self.parser.should_try_ai_parsing("+1 margarita") is False
+
+    def test_beerius_meta_commentary_skipped(self):
+        """Test that meta-commentary about beerius is skipped, but requests are allowed."""
+        # Meta-commentary about the bot should NOT trigger AI
+        assert self.parser.should_try_ai_parsing("I think beerius is flirting with you") is False
+        assert self.parser.should_try_ai_parsing("beerius is so annoying") is False
+        assert self.parser.should_try_ai_parsing("Did beerius just say that?") is False
+        # But requests TO beerius should still trigger AI
+        assert self.parser.should_try_ai_parsing("beerius, grant me a beer") is True
+        assert self.parser.should_try_ai_parsing("beerius give me a cocktail") is True
+        assert self.parser.should_try_ai_parsing("pour me a drink beerius") is True

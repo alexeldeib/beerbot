@@ -127,7 +127,7 @@ class MessageParser:
         "week": re.compile(r"^(!week|beers this week)\b", re.IGNORECASE),
         "undo": re.compile(r"^(!undo|-1 beer)\b", re.IGNORECASE),
         "unbeer": re.compile(r"^(!unbeer(\s+\d+)?|minus\s+\d+\s*beers?|-\d+\s*beers?)\b", re.IGNORECASE),
-        "million": re.compile(r"^(!million|!countdown|!goal|time to million)\b", re.IGNORECASE),
+        "million": re.compile(r"^(!million\b|!millionbeers|!countdown|!goal|time to million)\b", re.IGNORECASE),
         "splitg": re.compile(r"^(!splitg|split the g)\b", re.IGNORECASE),
         "split": re.compile(r"^!split(\s|$)", re.IGNORECASE),
         "unsplit": re.compile(r"^(!unsplit(\s+\d+)?)\b", re.IGNORECASE),
@@ -355,6 +355,22 @@ class MessageParser:
         "tequila", "mezcal", "vodka", "gin", "rum",
     }
 
+    # Pre-compiled patterns for word boundary matching of signal words
+    # Built lazily to avoid circular import issues
+    _signal_word_pattern: re.Pattern | None = None
+
+    @classmethod
+    def _get_signal_word_pattern(cls) -> re.Pattern:
+        """Get or create the compiled signal word pattern."""
+        if cls._signal_word_pattern is None:
+            # Escape special regex chars and join with | for alternation
+            # Sort by length descending so longer phrases match first
+            sorted_words = sorted(cls.AI_SIGNAL_WORDS, key=len, reverse=True)
+            escaped = [re.escape(w) for w in sorted_words]
+            pattern = r"\b(" + "|".join(escaped) + r")\b"
+            cls._signal_word_pattern = re.compile(pattern, re.IGNORECASE)
+        return cls._signal_word_pattern
+
     def should_try_ai_parsing(self, text: str | None) -> bool:
         """Determine if message is worth sending to AI for drink parsing.
 
@@ -367,6 +383,18 @@ class MessageParser:
         # Skip commands and quotes
         if text.startswith(("!", ">")):
             return False
+
+        text_lower = text.lower()
+
+        # Skip messages that mention the bot unless they're requests TO the bot
+        # "beerius, grant me a beer" = request, should parse
+        # "I think beerius is flirting" = meta-commentary, skip
+        if "beerius" in text_lower:
+            # Allow if it looks like a request TO beerius (starts with beerius or has request verbs)
+            request_verbs = ["grant", "give", "get", "pour", "log", "add"]
+            is_request = text_lower.startswith("beerius") or any(v in text_lower for v in request_verbs)
+            if not is_request:
+                return False
 
         # For +N or -N patterns, check if the drink word is unrecognized
         # If so, let AI classify it (e.g., "+1 Moet" should go to AI)
@@ -389,12 +417,10 @@ class MessageParser:
         if len(text) < 8 or len(text) > 300:
             return False
 
-        text_lower = text.lower()
-
-        # Check for any signal word
-        for word in self.AI_SIGNAL_WORDS:
-            if word in text_lower:
-                return True
+        # Check for signal words with word boundaries (not substring matching)
+        # This prevents "beer" from matching inside "beerius"
+        if self._get_signal_word_pattern().search(text):
+            return True
 
         return False
 
