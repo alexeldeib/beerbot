@@ -325,15 +325,33 @@ class AITextParser:
 
 Return JSON: {{"drink_type": "beer"|"wine"|"cocktail"|"claw"|null, "count": 1}}
 
-Rules:
-- Look for drinking verbs: drinking, drank, had, having, finished, enjoying, sipping, nursing, polishing off
-- Beer includes: IPA, lager, ale, stout, pilsner, porter, hazy, pale ale, wheat beer, hefeweizen, kolsch, etc.
-- Wine includes: red, white, rosé, champagne, prosecco, pinot, chardonnay, cabernet, merlot, etc.
-- Cocktail includes: margarita, martini, mojito, old fashioned, manhattan, negroni, mixed drinks, shots, whiskey, vodka, tequila, rum, gin neat, etc.
-- Claw includes: White Claw, Truly, hard seltzer, High Noon only
-- Return null if no alcoholic drink clearly mentioned
-- Return count = 1 unless explicitly stated otherwise ("had 3 IPAs" = count 3)
-- Be conservative: if uncertain, return null
+CRITICAL: Only return a drink if the person is CLEARLY stating they are CURRENTLY drinking or have JUST finished drinking.
+
+Return null (no drink) for:
+- Messages about the bot or app (beerius, bot, tracker)
+- Messages ABOUT drinking conceptually (not actually drinking)
+- Sports team names (Miami Hurricanes, etc.)
+- Casual conversation that happens to mention drinks
+- Metaphors, jokes, or references that aren't actual consumption
+- Commands, questions about the bot, or meta-commentary
+- Someone else drinking (must be the message sender)
+- Past tense beyond "just had" (stories about yesterday don't count)
+
+Only return a drink for:
+- Clear present tense: "drinking an IPA right now", "having a beer"
+- Just finished: "just had a margarita", "finished my wine"
+- Explicit logging: "beerius give me a beer", "grant me a cocktail"
+- Cheers/toasts with context indicating current drinking
+
+Categories if drink IS detected:
+- beer: IPA, lager, ale, stout, pilsner, porter, etc.
+- wine: red, white, rosé, champagne, prosecco, etc.
+- cocktail: margarita, martini, shots, whiskey, vodka, mixed drinks, etc.
+- claw: White Claw, Truly, hard seltzer, High Noon only
+
+Count = 1 unless explicitly stated ("had 3 beers" = count 3)
+
+When in doubt, return null. False negatives are better than false positives.
 
 Message: "{text}"
 """
@@ -431,23 +449,22 @@ Sender: {user_name}
 Is this message "interesting" enough for a sassy bot reply? Return JSON:
 {{"interesting": true/false, "reason": "brief reason"}}
 
-Messages ARE interesting if they:
-- Show competitive banter about drinking/leaderboard positions
-- Ask questions about beer/drinking rules or pace
-- Make bold claims about drinking prowess
-- Express regret, excuses, or justifications about drinking
-- Reference specific drinking occasions or strategies
-- Trash talk other group members about their stats
-- Ask about specific people's drink counts or position on leaderboard
+ONLY respond "interesting": true if the message EXPLICITLY and DIRECTLY:
+- Directly addresses the bot by name (beerius) with a question or challenge
+- Makes a specific claim about beating someone on the leaderboard BY NAME
+- Explicitly asks about leaderboard positions or drink counts
+- Is clearly directed AT the bot requesting a response
 
-Messages are NOT interesting if they:
-- Are generic short responses ("Sick", "Nice", "Lol", "Ok")
-- Are technical questions about the bot itself
-- Are completely off-topic from drinking
-- Are just sharing links without comment
-- Are asking for help with bot commands
+Messages are NOT interesting (default to false):
+- Generic chat messages, even if they mention drinking casually
+- Messages about sports, work, life, or anything not directly about THIS leaderboard
+- Short responses ("Sick", "Nice", "Lol", "Ok", "Fuck off")
+- Questions or comments to other users (not the bot)
+- Messages that are just conversation between friends
+- Anything where replying would feel intrusive or annoying
 
-Be selective - only ~30% of messages should be interesting."""
+Be VERY selective - only ~10% of messages warrant a bot response.
+When in doubt, return false. The bot should feel like a rare treat, not a constant presence."""
 
     RESPONSE_PROMPT = """You are a witty, sassy beer-tracking bot responding to a message in a GroupMe chat.
 
@@ -474,10 +491,29 @@ Output ONLY the response text, nothing else."""
 
     MODEL = "gemini-2.0-flash"
 
+    # Cooldown: minimum seconds between sassy responses per group
+    COOLDOWN_SECONDS = 300  # 5 minutes
+
     def __init__(self):
         self.client = None
         if settings.gemini_api_key:
             self.client = genai.Client(api_key=settings.gemini_api_key)
+        # Track last response time per group
+        self._last_response: dict[str, float] = {}
+
+    def _is_on_cooldown(self, group_id: str | None) -> bool:
+        """Check if we're still in cooldown for this group."""
+        if not group_id:
+            return False
+        import time
+        last = self._last_response.get(group_id, 0)
+        return (time.time() - last) < self.COOLDOWN_SECONDS
+
+    def _record_response(self, group_id: str | None) -> None:
+        """Record that we just responded to this group."""
+        if group_id:
+            import time
+            self._last_response[group_id] = time.time()
 
     async def maybe_respond(
         self, text: str, user_name: str, group_id: str | None = None
@@ -498,6 +534,17 @@ Output ONLY the response text, nothing else."""
         if len(text) < 10 or len(text) > 300:
             return None
 
+        # Skip messages about the bot itself (meta-commentary)
+        if "beerius" in text.lower():
+            # Allow if directly addressing the bot with a question
+            if "?" not in text:
+                return None
+
+        # Enforce cooldown - don't respond too frequently to the same group
+        if self._is_on_cooldown(group_id):
+            logger.debug("Skipping sassy response - on cooldown for group %s", group_id)
+            return None
+
         # Fetch leaderboard context if group_id provided
         leaderboard: dict[str, int] = {}
         if group_id:
@@ -511,6 +558,8 @@ Output ONLY the response text, nothing else."""
             result = await asyncio.to_thread(
                 self._classify_and_respond, text, user_name, leaderboard
             )
+            if result:
+                self._record_response(group_id)
             return result
         except Exception:
             logger.exception("Sassy responder failed")
