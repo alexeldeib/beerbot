@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,15 @@ class TokenBucket:
         """Check if a token is available without consuming it."""
         self._refill()
         return self.tokens >= 1
+
+
+@dataclass
+class ChatMessage:
+    """A message in the conversation history."""
+    text: str
+    user_name: str
+    is_bot: bool
+    timestamp: float = field(default_factory=time.time)
 
 
 class VisionService:
@@ -1254,7 +1264,9 @@ class UnifiedBeerBot:
 PRIMARY PURPOSE: Track drinks (beer/wine/claw/cocktail) and share statistics.
 SECONDARY PURPOSE: Respond to messages that directly address you.
 
-Message: "{text}"
+{conversation_history}
+
+Current message: "{text}"
 Sender: {user_name}
 {sender_context}
 {image_context}
@@ -1286,17 +1298,87 @@ DO NOT log for:
 - Past: "had 5 beers yesterday"
 - Jokes: "1,000,000 beers"
 - Someone ELSE drinking
+- Metaphors/idioms: "feed the beast", "beast mode", "going hard"
+- Messages that DON'T explicitly mention a drink word (beer, wine, shot, etc.)
+
+CRITICAL: Only log if message contains a SPECIFIC DRINK WORD or DRINK EMOJI!
+If there's no explicit drink reference, DO NOT log - it's probably not about drinking.
 
 Types: beer (brews), wine (still), cocktail (mixed/shots/champagne), claw (seltzers only)
 
 === PRIORITY 2: ANSWER STAT QUESTIONS ===
 
-Answer questions about drinking stats:
+Answer questions about ACTUAL drinking stats:
 - "How many until 1 million?" → million countdown
-- "Who's winning?" / "leaderboard" → current standings
 - "How many beers has X had?" → user stats
 
-Keep answers under 100 chars. Use provided leaderboard data.
+LEADERBOARD QUERIES - Check for drink type FIRST:
+
+STEP 1: Extract drink type from message (case-insensitive):
+- Contains "beer" → TYPE = beer
+- Contains "wine" → TYPE = wine
+- Contains "cocktail" → TYPE = cocktail
+- Contains "claw" → TYPE = claw
+- None of the above → GENERAL leaderboard
+
+IF TYPE WAS FOUND (beer/wine/cocktail/claw):
+  Title MUST be "[Type] Leaderboard:" (capitalize type)
+  - "beer leaderboard" → title = "Beer Leaderboard:"
+  - "wine leaderboard" → title = "Wine Leaderboard:"
+  - "cocktail leaderboard" → title = "Cocktail Leaderboard:"
+  - "claw leaderboard" → title = "Claw Leaderboard:"
+
+  HOW TO EXTRACT TYPE COUNTS FROM CONTEXT:
+  Context line format: "N. Name: Total total (beer:X, wine:Y, cocktail:Z, claw:W)"
+
+  PARSE STEP BY STEP:
+  1. For each user in context, extract the count for the requested TYPE
+  2. If "wine leaderboard": extract the number after "wine:" for each user
+  3. If "beer leaderboard": extract the number after "beer:" for each user
+  4. Sort users by that extracted count (highest first)
+  5. Output the sorted list
+
+  Example context line: "  1. Bob Smith: 15 total (beer:8, wine:5, cocktail:2)"
+  - Query "wine leaderboard" → Bob has wine:5 → output "Bob Smith - 5 wines"
+  - Query "beer leaderboard" → Bob has beer:8 → output "Bob Smith - 8 beers"
+
+  ALWAYS extract from the ACTUAL context data provided above, not the example!
+
+  OUTPUT FORMAT - MUST include title and numbers:
+  ```
+  [Type] Leaderboard:
+  1. Name - N [type]s
+  2. Name - N [type]s
+  ```
+  Example output for wine leaderboard: "Wine Leaderboard:\n1. Bob Smith - 5 wines"
+  Example output for beer leaderboard: "Beer Leaderboard:\n1. Bob Smith - 8 beers"
+
+  Only say "No [type]s logged yet!" if EVERY user in context has 0 of that type.
+
+IF GENERAL (no type word found):
+  Title = "Drink Leaderboard:"
+  Keep original order (by total).
+  Format: "1. Name - N | 🍺X 🍷Y 🍸Z"
+  Example: "Drink Leaderboard:\n1. Bob Smith - 15 | 🍺8 🍷5 🍸2"
+
+ALL LEADERBOARD QUERIES MUST RETURN ACTUAL DATA - NEVER WITTY RESPONSES!
+When user says "leaderboard" or "[type] leaderboard", ALWAYS output the formatted list.
+
+CRITICAL: The title and data MUST match the TYPE in the query!
+- "wine leaderboard" → "Wine Leaderboard:" + wine counts ONLY
+- "beer leaderboard" → "Beer Leaderboard:" + beer counts ONLY
+NEVER output beer data for a wine query or vice versa!
+
+Context data format: "beer:N, wine:N, cocktail:N, claw:N"
+DO NOT make up data! DO NOT respond with witty comments!
+
+Use the EXACT numbers from the provided leaderboard context.
+
+DO NOT answer questions about bot rules/mechanics like:
+- "Does X count as a drink?"
+- "So each drink only counts as 1/2?"
+- "Can we retroactively add beers?"
+These are meta questions - IGNORE them.
 
 === PRIORITY 3: RESPOND WITH WIT ===
 
@@ -1322,7 +1404,7 @@ Keep responses under 100 chars. Be savage but playful.
 IGNORE messages that:
 - Are mundane chatter with no roast potential
 - Are short reactions: "ok", "nice", "lol", "Sick"
-- Are meta-commentary about bot rules/features (not insults TO the bot)
+- Are meta-commentary about bot/prompt/features: "needs more prompt engineering", "the bot should..."
 - Are numbers without drink context: "21 21 21"
 - Are jokes with absurd numbers: "1,000,000 beers"
 - Start with ! (commands handled separately)
@@ -1330,11 +1412,15 @@ IGNORE messages that:
 
 DEFAULT: Only respond if you have a BANGER. Silence is better than a mediocre response.
 
+CRITICAL: Drink logging ALWAYS takes priority over witty responses!
+If someone is drinking ("just took a shot", "having a beer"), LOG THE DRINK even if it's also roast-worthy.
+You CAN include both: action="log_drink" AND reply="witty comment".
+
 If image shows drinks, log them. Otherwise ignore images too.
 
 Your personality: Playful, slightly sarcastic, supportive of drinking goals. Never preachy."""
 
-    MODEL = "gemini-2.0-flash"
+    MODEL = "gemini-3-flash-preview"
 
     def __init__(self):
         self.client = None
@@ -1342,12 +1428,41 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
             self.client = genai.Client(api_key=settings.gemini_api_key)
         # Token bucket rate limiter per group (5 burst, 1/min refill)
         self._rate_limiters: dict[str, TokenBucket] = {}
+        # Message history per group (last N messages for context)
+        self._message_history: dict[str, deque[ChatMessage]] = {}
+        self._history_max_len = 10
 
     def _get_bucket(self, group_id: str) -> TokenBucket:
         """Get or create token bucket for a group."""
         if group_id not in self._rate_limiters:
             self._rate_limiters[group_id] = TokenBucket()
         return self._rate_limiters[group_id]
+
+    def _get_history(self, group_id: str) -> deque[ChatMessage]:
+        """Get or create message history for a group."""
+        if group_id not in self._message_history:
+            self._message_history[group_id] = deque(maxlen=self._history_max_len)
+        return self._message_history[group_id]
+
+    def record_message(self, group_id: str, text: str, user_name: str, is_bot: bool = False) -> None:
+        """Record a message to the conversation history."""
+        if not group_id or not text:
+            return
+        history = self._get_history(group_id)
+        history.append(ChatMessage(text=text, user_name=user_name, is_bot=is_bot))
+
+    def _format_conversation_history(self, group_id: str | None) -> str:
+        """Format recent conversation history for prompt context."""
+        if not group_id:
+            return ""
+        history = self._get_history(group_id)
+        if not history:
+            return ""
+        lines = ["Recent conversation:"]
+        for msg in history:
+            prefix = "[Beerius]" if msg.is_bot else f"[{msg.user_name}]"
+            lines.append(f"  {prefix}: {msg.text[:100]}")
+        return "\n".join(lines)
 
     def _try_consume(self, group_id: str | None) -> bool:
         """Try to consume a rate limit token. Returns True if allowed."""
@@ -1405,8 +1520,8 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
         can_respond = self._can_respond(group_id) or skip_cooldown
 
         # Fetch leaderboard and sender stats
-        leaderboard: dict[str, int] = {}
-        sender_stats: dict[str, int] | None = None
+        leaderboard: list[tuple[str, int, dict[str, int]]] = []
+        sender_stats: dict | None = None
         if group_id:
             try:
                 from .services import stats_service
@@ -1416,9 +1531,12 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
             except Exception:
                 logger.exception("Failed to fetch leaderboard/sender stats")
 
+        # Get conversation history for context
+        conversation_history = self._format_conversation_history(group_id)
+
         try:
             result = await asyncio.to_thread(
-                self._respond_sync, text, user_name, leaderboard, sender_stats, image_result
+                self._respond_sync, text, user_name, leaderboard, sender_stats, image_result, conversation_history
             )
 
             # If rate limited, suppress reply for non-drink actions
@@ -1436,13 +1554,26 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
             logger.exception("UnifiedBeerBot respond failed")
             return default_result
 
-    def _format_leaderboard_context(self, leaderboard: dict[str, int]) -> str:
+    def _format_leaderboard_context(
+        self, leaderboard: list[tuple[str, int, dict[str, int]]]
+    ) -> str:
         """Format leaderboard data for prompt context."""
         if not leaderboard:
             return ""
         lines = ["Current Leaderboard:"]
-        for i, (name, count) in enumerate(leaderboard.items(), 1):
-            lines.append(f"  {i}. {name}: {count} drinks")
+        for i, (name, total, breakdown) in enumerate(leaderboard, 1):
+            # Format breakdown with explicit labels to avoid AI confusion
+            parts = []
+            if breakdown.get("beer", 0) > 0:
+                parts.append(f"beer:{breakdown['beer']}")
+            if breakdown.get("wine", 0) > 0:
+                parts.append(f"wine:{breakdown['wine']}")
+            if breakdown.get("cocktail", 0) > 0:
+                parts.append(f"cocktail:{breakdown['cocktail']}")
+            if breakdown.get("claw", 0) > 0:
+                parts.append(f"claw:{breakdown['claw']}")
+            breakdown_str = ", ".join(parts) if parts else "none"
+            lines.append(f"  {i}. {name}: {total} total ({breakdown_str})")
         return "\n".join(lines)
 
     def _format_image_context(self, image_result: VisionResult | None) -> str:
@@ -1453,19 +1584,31 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
             return f"Image analysis: {image_result.drink_count} {image_result.drink_type.value}(s) detected. Split the G: {image_result.split_the_g_count > 0}"
         return "Image analysis: No alcoholic drinks detected in image."
 
-    def _format_sender_context(self, sender_stats: dict[str, int] | None) -> str:
+    def _format_sender_context(self, sender_stats: dict | None) -> str:
         """Format sender's stats for prompt context."""
         if not sender_stats:
             return "(new user, no drinks logged yet)"
-        return f"Sender stats: {sender_stats['total']} drinks total, rank #{sender_stats['rank']}"
+        breakdown = sender_stats.get("breakdown", {})
+        parts = []
+        if breakdown.get("beer", 0) > 0:
+            parts.append(f"beer:{breakdown['beer']}")
+        if breakdown.get("wine", 0) > 0:
+            parts.append(f"wine:{breakdown['wine']}")
+        if breakdown.get("cocktail", 0) > 0:
+            parts.append(f"cocktail:{breakdown['cocktail']}")
+        if breakdown.get("claw", 0) > 0:
+            parts.append(f"claw:{breakdown['claw']}")
+        breakdown_str = f" ({', '.join(parts)})" if parts else ""
+        return f"Sender stats: {sender_stats['total']} drinks{breakdown_str}, rank #{sender_stats['rank']}"
 
     def _respond_sync(
         self,
         text: str,
         user_name: str,
-        leaderboard: dict[str, int],
-        sender_stats: dict[str, int] | None,
+        leaderboard: list[tuple[str, int, dict[str, int]]],
+        sender_stats: dict | None,
         image_result: VisionResult | None,
+        conversation_history: str = "",
     ) -> dict:
         """Generate response synchronously (runs in thread pool)."""
         leaderboard_context = self._format_leaderboard_context(leaderboard)
@@ -1478,6 +1621,7 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
             sender_context=sender_context,
             leaderboard_context=leaderboard_context or "(no leaderboard data)",
             image_context=image_context or "(no image)",
+            conversation_history=conversation_history or "(no recent conversation)",
         )
 
         response = self.client.models.generate_content(
