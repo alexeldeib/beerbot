@@ -162,6 +162,11 @@ async def groupme_callback(request: Request):
 
     # AI-only mode: Use UnifiedBeerBot for all classification + response in one call
     if ai_only_mode and message.text:
+        # Record incoming message to conversation history (before processing)
+        unified_beer_bot.record_message(
+            message.group_id, message.text, message.name, is_bot=False
+        )
+
         bot_response = await unified_beer_bot.respond(
             message.text,
             message.name,
@@ -204,9 +209,11 @@ async def groupme_callback(request: Request):
             )
             if response_text:
                 await groupme_client.send_message(response_text, group_id=message.group_id)
+                unified_beer_bot.record_message(message.group_id, response_text, "Beerius", is_bot=True)
                 # Also send any reply from the bot
                 if bot_response["reply"]:
                     await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
+                    unified_beer_bot.record_message(message.group_id, bot_response["reply"], "Beerius", is_bot=True)
                 return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "unified_bot"}
             else:
                 return {"status": "ok", "action": "duplicate", "message_id": message.id}
@@ -214,6 +221,7 @@ async def groupme_callback(request: Request):
         elif bot_response["action"] in ("answer", "respond") and bot_response["reply"]:
             # Bot has a reply (answer to question or witty response)
             await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
+            unified_beer_bot.record_message(message.group_id, bot_response["reply"], "Beerius", is_bot=True)
             return {"status": "ok", "action": bot_response["action"], "reason": bot_response["reasoning"]}
 
         # action == "ignore" - no action needed
