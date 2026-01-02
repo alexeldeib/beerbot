@@ -1638,5 +1638,15 @@
     "message_id": "176731626008170676",
     "user_name": "Bryan Otero Gilmer",
     "text": null
+  },
+  "msg_176732876190427665_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176732876190427665",
+    "user_name": "Avada Balenciaga",
+    "text": "Trinidad hour"
   }
 }
