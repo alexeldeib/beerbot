@@ -1,9 +1,88 @@
 {
-  "scraped_at": "2026-01-01T20:07:54.328629",
+  "scraped_at": "2026-01-02T00:30:00.881996",
   "group_id": "112172155",
-  "total_images": 134,
-  "last_message_id": "176729148505941015",
+  "total_images": 141,
+  "last_message_id": "176731379314689598",
   "images": [
+    {
+      "message_id": "176731338375047199",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/dcabf08d53be4de8baf7b3b611956164/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1767313383,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176731338375047199_0.jpg"
+    },
+    {
+      "message_id": "176731334573046880",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/253cda0cad8b4891965a463023eba11b/720x960.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1767313345,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176731334573046880_0.jpg"
+    },
+    {
+      "message_id": "176730970472279599",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a20c959e021b44dc9731a52d309aa524/4284x5712.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1767309704,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176730970472279599_0.jpg"
+    },
+    {
+      "message_id": "176730679800180125",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/c12b8cd7a9bc4e2fa60813f8d2aebe43/719x1280.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1767306798,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176730679800180125_0.jpg"
+    },
+    {
+      "message_id": "176730592033636835",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a86f8ffe38184b6184bc35f2715422e5/720x960.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1767305920,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176730592033636835_0.jpg"
+    },
+    {
+      "message_id": "176730400462186338",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/104b5fab3b8945c5b93bc580d0b30f4f/719x1280.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1767304004,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176730400462186338_0.jpg"
+    },
+    {
+      "message_id": "176730235356991231",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/bfb8df24cb194af6b6b274855ce7e5ba/719x1280.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1767302353,
+      "favorited_by": [
+        "13419729"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176730235356991231_0.jpg"
+    },
     {
       "message_id": "176728979341208094",
       "attachment_index": 0,
