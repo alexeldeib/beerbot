@@ -1788,5 +1788,45 @@
     "message_id": "176740106954175195",
     "user_name": "Avada Balenciaga",
     "text": null
+  },
+  "msg_176742612830078720_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": true,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176742612830078720",
+    "user_name": "Joe L",
+    "text": null
+  },
+  "msg_176741861621466880_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176741861621466880",
+    "user_name": "Ani Srinivasan",
+    "text": null
+  },
+  "msg_176741546461565837_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176741546461565837",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176741463777640676_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176741463777640676",
+    "user_name": "Ani Srinivasan",
+    "text": null
   }
 }
