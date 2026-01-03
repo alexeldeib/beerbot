@@ -1,9 +1,20 @@
 {
-  "scraped_at": "2026-01-03T08:09:01.414751",
+  "scraped_at": "2026-01-03T12:11:36.692729",
   "group_id": "112172155",
-  "total_images": 166,
-  "last_message_id": "176742613140111909",
+  "total_images": 167,
+  "last_message_id": "176743336418827684",
   "images": [
+    {
+      "message_id": "176743336239759340",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/f444c3d19b5545068704368227c23ac2/220x118.original.gif",
+      "user_id": "14279296",
+      "user_name": "Toby Roper",
+      "text": null,
+      "created_at": 1767433362,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176743336239759340_0.jpg"
+    },
     {
       "message_id": "176742612830078720",
       "attachment_index": 0,
