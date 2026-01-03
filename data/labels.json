@@ -1648,5 +1648,85 @@
     "message_id": "176732876190427665",
     "user_name": "Avada Balenciaga",
     "text": "Trinidad hour"
+  },
+  "msg_176739964795134803_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739964795134803",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176739957653267347_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739957653267347",
+    "user_name": "Ace Eldeib",
+    "text": null
+  },
+  "msg_176739816273978438_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739816273978438",
+    "user_name": "Avada Balenciaga",
+    "text": "Damn Friday snuck up on me"
+  },
+  "msg_176739279622987905_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739279622987905",
+    "user_name": "Jason Solis",
+    "text": null
+  },
+  "msg_176739251294993194_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739251294993194",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176739239955183081_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739239955183081",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176739235734758833_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739235734758833",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176739232407884826_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176739232407884826",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
