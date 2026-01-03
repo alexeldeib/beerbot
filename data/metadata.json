@@ -1,9 +1,31 @@
 {
-  "scraped_at": "2026-01-03T16:07:37.921555",
+  "scraped_at": "2026-01-03T20:07:33.080752",
   "group_id": "112172155",
-  "total_images": 167,
-  "last_message_id": "176744399876925442",
+  "total_images": 169,
+  "last_message_id": "176746982064888720",
   "images": [
+    {
+      "message_id": "176746939032683443",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a9a2c8eae2b946aaa470922da33475b9/4284x5712.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1767469390,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176746939032683443_0.jpg"
+    },
+    {
+      "message_id": "176746771288735022",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/dd41b7cae40a45f0a249e201444d8f09/4284x5712.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1767467712,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176746771288735022_0.jpg"
+    },
     {
       "message_id": "176743336239759340",
       "attachment_index": 0,
