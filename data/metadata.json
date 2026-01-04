@@ -1,9 +1,31 @@
 {
-  "scraped_at": "2026-01-04T04:26:34.769159",
+  "scraped_at": "2026-01-04T08:09:09.745340",
   "group_id": "112172155",
-  "total_images": 177,
-  "last_message_id": "176750078754754201",
+  "total_images": 179,
+  "last_message_id": "176751047038586835",
   "images": [
+    {
+      "message_id": "176750417717001294",
+      "attachment_index": 0,
+      "url": "https://i.groupme.com/320x180.gif.556d9b7906ec4d36a33a39109f36f12f",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1767504177,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176750417717001294_0.jpg"
+    },
+    {
+      "message_id": "176750333181520430",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/03d28a6c2f05451385df2a77da96b5df/719x1280.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1767503331,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176750333181520430_0.jpg"
+    },
     {
       "message_id": "176750012997390236",
       "attachment_index": 0,

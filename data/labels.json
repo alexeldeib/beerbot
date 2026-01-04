@@ -1938,5 +1938,25 @@
     "message_id": "176748891356791207",
     "user_name": "Avada Balenciaga",
     "text": null
+  },
+  "msg_176750417717001294_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176750417717001294",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176750333181520430_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176750333181520430",
+    "user_name": "Sasha Deshuk",
+    "text": null
   }
 }
