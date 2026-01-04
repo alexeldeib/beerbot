@@ -27,7 +27,7 @@ TEXT_MESSAGES_FILE = DATA_DIR / "text_messages.json"
 TEXT_METADATA_FILE = DATA_DIR / "text_metadata.json"
 
 GROUPME_API = "https://api.groupme.com/v3"
-GROUP_ID = "112172155"
+GROUP_ID = "112180555"  # AI-only mode test group
 
 
 def load_last_message_id() -> str | None:

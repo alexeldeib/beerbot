@@ -19,12 +19,12 @@
   },
   {
     "id": "reg-003",
-    "category": "false_positive_meta",
+    "category": "bot_insult",
     "text": "Bad bot",
     "user_name": "Test User",
-    "expected_action": "ignore",
+    "expected_action": "respond",
     "expected_drink": null,
-    "notes": "Bot criticism, should ignore"
+    "notes": "Bot criticism = clap back"
   },
   {
     "id": "reg-004",
@@ -42,7 +42,7 @@
     "user_name": "Test User",
     "expected_action": "ignore",
     "expected_drink": null,
-    "notes": "Question about bot rules, not drinking"
+    "notes": "Meta question about bot rules/mechanics - should ignore"
   },
   {
     "id": "reg-006",
@@ -295,5 +295,32 @@
     "expected_action": "log_drink",
     "expected_drink": {"count": -5, "type": "cocktail"},
     "notes": "Adjective + drink removal"
+  },
+  {
+    "id": "reg-034",
+    "category": "question_leaderboard",
+    "text": "Leaderboard",
+    "user_name": "Test User",
+    "expected_action": "answer",
+    "expected_drink": null,
+    "notes": "Single word leaderboard query"
+  },
+  {
+    "id": "reg-035",
+    "category": "question_leaderboard",
+    "text": "Beer leaderboard",
+    "user_name": "Test User",
+    "expected_action": "answer",
+    "expected_drink": null,
+    "notes": "Beer leaderboard query"
+  },
+  {
+    "id": "reg-036",
+    "category": "false_positive_idiom",
+    "text": "Time to feed the beast",
+    "user_name": "Test User",
+    "expected_action": "ignore",
+    "expected_drink": null,
+    "notes": "Idiom without drink words - should not log drink"
   }
 ]

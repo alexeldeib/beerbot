@@ -7,9 +7,6 @@ Usage:
 
     # Evaluate on latest scraped messages
     uv run scripts/eval_unified.py --messages N
-
-    # Compare with old classifier
-    uv run scripts/eval_unified.py --compare N
 """
 
 import argparse
@@ -17,7 +14,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from beerbot.vision import unified_beer_bot, message_classifier
+from beerbot.vision import unified_beer_bot
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 REGRESSION_FILE = DATA_DIR / "regression_tests.json"
@@ -166,103 +163,16 @@ async def evaluate_messages(n: int) -> dict:
     return results
 
 
-async def compare_classifiers(n: int) -> dict:
-    """Compare UnifiedBeerBot with old MessageClassifier on N messages."""
-    with open(MESSAGES_FILE) as f:
-        messages = json.load(f)
-
-    latest = sorted(messages, key=lambda m: m.get("created_at", 0), reverse=True)[:n]
-
-    print("=" * 70)
-    print(f"COMPARISON: UnifiedBeerBot vs MessageClassifier - {n} messages")
-    print("=" * 70)
-    print()
-
-    differences = []
-    agreements = 0
-
-    for i, msg in enumerate(latest, 1):
-        # Run unified bot
-        unified_result = await unified_beer_bot.respond(
-            msg["text"],
-            msg.get("user_name", "Unknown"),
-            group_id="112180555",
-            skip_cooldown=True,
-        )
-
-        # Run old classifier
-        old_result = await message_classifier.classify(
-            msg["text"],
-            msg.get("user_name", "Unknown"),
-            group_id="112180555",
-            skip_cooldown=True,
-            ai_only=True,
-        )
-
-        # Map old types to unified actions
-        type_to_action = {
-            "question": "answer",
-            "drink": "log_drink",
-            "sassy": "respond",
-            "reply": "respond",
-            "ignore": "ignore",
-        }
-        old_action = type_to_action.get(old_result["type"], "ignore")
-
-        # Check if they agree
-        if unified_result["action"] == old_action:
-            agreements += 1
-        else:
-            differences.append({
-                "text": msg["text"],
-                "unified": unified_result["action"],
-                "old": old_action,
-                "unified_reasoning": unified_result["reasoning"],
-                "old_reasoning": old_result["reason"],
-            })
-
-        # Print comparison
-        text_display = (msg["text"] or "")[:35]
-        match = "✓" if unified_result["action"] == old_action else "≠"
-        print(f"{i:2}. {match} {text_display:<35} | U:{unified_result['action']:<10} O:{old_action:<10}")
-
-    # Summary
-    print()
-    print("=" * 70)
-    agreement_pct = 100 * agreements / len(latest) if latest else 0
-    print(f"AGREEMENT: {agreements}/{len(latest)} ({agreement_pct:.1f}%)")
-    print(f"DIFFERENCES: {len(differences)}")
-    print("=" * 70)
-
-    if differences:
-        print("\nKey differences:")
-        for d in differences[:10]:
-            print(f"  '{d['text'][:40]}...'")
-            print(f"    Unified: {d['unified']} ({d['unified_reasoning'][:30]})")
-            print(f"    Old:     {d['old']} ({d['old_reasoning'][:30]})")
-            print()
-
-    return {
-        "total": len(latest),
-        "agreements": agreements,
-        "differences": len(differences),
-        "agreement_pct": agreement_pct,
-    }
-
-
 async def main():
     parser = argparse.ArgumentParser(description="Evaluate UnifiedBeerBot")
     parser.add_argument("--regression", action="store_true", help="Run regression tests")
     parser.add_argument("--messages", type=int, metavar="N", help="Evaluate on N latest messages")
-    parser.add_argument("--compare", type=int, metavar="N", help="Compare with old classifier on N messages")
     args = parser.parse_args()
 
     if args.regression:
         await run_regression_tests()
     elif args.messages:
         await evaluate_messages(args.messages)
-    elif args.compare:
-        await compare_classifiers(args.compare)
     else:
         parser.print_help()
 
