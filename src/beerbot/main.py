@@ -187,12 +187,13 @@ async def groupme_callback(request: Request):
                 message, ai_count, mentioned_users, include_sender, 0, ai_type
             )
             if response_text:
-                await groupme_client.send_message(response_text, group_id=message.group_id)
-                unified_beer_bot.record_message(message.group_id, response_text, "Beerius", is_bot=True)
-                # Also send any reply from the bot
+                # Combine stats message with witty reply if present
                 if bot_response["reply"]:
-                    await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
-                    unified_beer_bot.record_message(message.group_id, bot_response["reply"], "Beerius", is_bot=True)
+                    full_response = f"{response_text}\n{bot_response['reply']}"
+                else:
+                    full_response = response_text
+                await groupme_client.send_message(full_response, group_id=message.group_id)
+                unified_beer_bot.record_message(message.group_id, full_response, "Beerius", is_bot=True)
                 return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "unified_bot"}
             else:
                 return {"status": "ok", "action": "duplicate", "message_id": message.id}

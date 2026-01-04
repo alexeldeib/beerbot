@@ -14,6 +14,10 @@ import asyncio
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+load_dotenv(".env.local", override=True)
+
 from beerbot.vision import unified_beer_bot
 
 DATA_DIR = Path(__file__).parent.parent / "data"
