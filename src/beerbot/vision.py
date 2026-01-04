@@ -536,7 +536,14 @@ Most drink logs should have reply=null. Only add a witty reply when:
 DO NOT add replies to routine "+1 beer" or "cheers" messages.
 Stats are sent automatically - your reply is BONUS personality, not required.
 
-When you DO reply, keep it short and punchy. Never mimic the stats format.
+CRITICAL REPLY FORMAT RULES:
+- NEVER start your reply with "Cheers" - that's for the stats system
+- NEVER include drink counts like "+3 cocktails logged" in your reply
+- NEVER mention totals like "You've now had X total" - the system does this
+- NEVER mimic the stats format in any way
+- Your reply should be ONLY witty commentary, roasts, or reactions
+- Good reply examples: "Welcome to the Top 10!", "Bold choice.", "The audacity."
+- BAD reply examples: "Cheers! +3 logged. You've now had 21 total." (NEVER DO THIS)
 
 If image shows drinks, log them. Otherwise ignore images too.
 
@@ -597,6 +604,32 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
         if not group_id:
             return True
         return self._get_bucket(group_id).peek()
+
+    def _is_stats_like_reply(self, reply: str) -> bool:
+        """Check if reply looks like a stats message (should come from system instead).
+
+        The stats_service generates messages like:
+        - "Cheers, X! +N drinks logged. You've now had Y total."
+        - "Salut, X! You've now had Y wines total."
+
+        AI should NOT generate these - it should only add witty commentary.
+        """
+        reply_lower = reply.lower()
+
+        # Check for stats-format patterns that AI should never generate
+        stats_patterns = [
+            r"you'?ve?\s+now\s+ha[vd]",  # "you've now had", "you now have"
+            r"\d+\s+total",               # "X total"
+            r"\+\d+\s+\w+\s+logged",      # "+N drinks logged"
+            r"^cheers,?\s+\w",            # starts with "Cheers, Name"
+            r"^salut,?\s+\w",             # starts with "Salut, Name"
+        ]
+
+        for pattern in stats_patterns:
+            if re.search(pattern, reply_lower):
+                return True
+
+        return False
 
     async def respond(
         self,
@@ -777,10 +810,17 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
                 if drink["type"] not in ("beer", "wine", "cocktail", "claw"):
                     drink["type"] = "beer"
 
+            reply = data.get("reply")
+
+            # Filter out stats-like replies that duplicate the system's output
+            if reply and self._is_stats_like_reply(reply):
+                logger.warning("Filtered stats-like AI reply: %r", reply[:50])
+                reply = None
+
             result = {
                 "action": action,
                 "drink": drink if action == "log_drink" else None,
-                "reply": data.get("reply"),
+                "reply": reply,
                 "reasoning": data.get("reasoning", ""),
             }
 
