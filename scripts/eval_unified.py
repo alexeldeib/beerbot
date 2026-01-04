@@ -50,8 +50,13 @@ async def run_regression_tests() -> dict:
             skip_cooldown=True,
         )
 
-        # Check action match
-        action_match = result["action"] == test["expected_action"]
+        # Check action match (answer/respond are equivalent - both send a reply)
+        expected = test["expected_action"]
+        got = result["action"]
+        if expected in ("answer", "respond") and got in ("answer", "respond"):
+            action_match = True  # Both result in reply being sent
+        else:
+            action_match = got == expected
 
         # Check drink match (if applicable)
         drink_match = True

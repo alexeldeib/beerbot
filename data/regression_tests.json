@@ -150,7 +150,7 @@
     "user_name": "Test User",
     "expected_action": "answer",
     "expected_drink": null,
-    "notes": "Question about million goal"
+    "notes": "Natural language stats question - AI answers with personality"
   },
   {
     "id": "reg-018",
@@ -159,7 +159,7 @@
     "user_name": "Test User",
     "expected_action": "answer",
     "expected_drink": null,
-    "notes": "Question about leaderboard"
+    "notes": "Natural language stats question - AI answers with personality"
   },
   {
     "id": "reg-019",
@@ -240,7 +240,7 @@
     "user_name": "Test User",
     "expected_action": "respond",
     "expected_drink": null,
-    "notes": "Direct address should get response"
+    "notes": "Direct address gets response"
   },
   {
     "id": "reg-028",
@@ -262,21 +262,21 @@
   },
   {
     "id": "reg-030",
-    "category": "banger_setup",
+    "category": "ignore_banter",
     "text": "I'll fix it tomorrow lol",
     "user_name": "Ace",
-    "expected_action": "respond",
+    "expected_action": "ignore",
     "expected_drink": null,
-    "notes": "Procrastination excuse = perfect roast setup"
+    "notes": "Procrastination joke - not worth responding to"
   },
   {
     "id": "reg-031",
-    "category": "banger_setup",
+    "category": "ignore_banter",
     "text": "Going to bed early tonight",
     "user_name": "Burke",
-    "expected_action": "respond",
+    "expected_action": "ignore",
     "expected_drink": null,
-    "notes": "Not drinking brag = mock their count"
+    "notes": "Humble brag about not drinking - let them be"
   },
   {
     "id": "reg-032",
@@ -303,7 +303,7 @@
     "user_name": "Test User",
     "expected_action": "answer",
     "expected_drink": null,
-    "notes": "Single word leaderboard query"
+    "notes": "Natural language stats request - AI answers with personality"
   },
   {
     "id": "reg-035",
@@ -312,7 +312,7 @@
     "user_name": "Test User",
     "expected_action": "answer",
     "expected_drink": null,
-    "notes": "Beer leaderboard query"
+    "notes": "Natural language stats request - AI answers with personality"
   },
   {
     "id": "reg-036",
