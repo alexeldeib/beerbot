@@ -27,11 +27,11 @@ class TokenBucket:
     """Token bucket rate limiter for controlling response frequency.
 
     Allows bursts of responses while limiting sustained rate.
-    Default: 15 tokens capacity, refills at 3 tokens per minute.
+    Default: 45 tokens capacity, refills at 9 tokens per minute.
     """
-    capacity: int = 15
-    refill_rate: float = 3 / 60  # 3 tokens per minute (1 every 20 sec)
-    tokens: float = field(default=15.0)
+    capacity: int = 45
+    refill_rate: float = 9 / 60  # 9 tokens per minute (1 every ~7 sec)
+    tokens: float = field(default=45.0)
     last_refill: float = field(default_factory=time.time)
 
     def _refill(self) -> None:
@@ -548,7 +548,7 @@ Your personality: Playful, slightly sarcastic, supportive of drinking goals. Nev
         self.client = None
         if settings.gemini_api_key:
             self.client = genai.Client(api_key=settings.gemini_api_key)
-        # Token bucket rate limiter per group (15 burst, 3/min refill)
+        # Token bucket rate limiter per group (45 burst, 9/min refill)
         self._rate_limiters: dict[str, TokenBucket] = {}
         # Message history per group (last N messages for context)
         self._message_history: dict[str, deque[ChatMessage]] = {}
