@@ -1858,5 +1858,45 @@
     "message_id": "176746771288735022",
     "user_name": "Celena Tyler",
     "text": null
+  },
+  "msg_176748586115400496_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176748586115400496",
+    "user_name": "John Russell",
+    "text": null
+  },
+  "msg_176748513189253443_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176748513189253443",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176748462179172935_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176748462179172935",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176747190854186466_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176747190854186466",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
