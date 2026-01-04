@@ -699,26 +699,31 @@ class StatsService:
 
         return "\n".join(lines)
 
-    async def get_leaderboard_summary(self, group_id: str, limit: int = 10) -> dict[str, int]:
-        """Get leaderboard as a simple dict for AI context.
+    async def get_leaderboard_summary(
+        self, group_id: str, limit: int = 10
+    ) -> list[tuple[str, int, dict[str, int]]]:
+        """Get leaderboard with drink type breakdown for AI context.
 
-        Returns {name: total_count} for top users.
+        Returns list of (name, total, {type: count}) tuples.
         """
-        leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, limit)
-        return {name: total for name, total, _ in leaderboard}
+        return await beer_repo.get_leaderboard_with_breakdown(group_id, None, limit)
 
     async def get_sender_stats_summary(
         self, groupme_user_id: str, group_id: str
-    ) -> dict[str, int] | None:
+    ) -> dict | None:
         """Get sender's stats for AI context.
 
-        Returns {"total": N, "rank": M} or None if user not found.
+        Returns {"total": N, "rank": M, "breakdown": {type: count}} or None if user not found.
         """
         user = await user_repo.get_by_groupme_id(groupme_user_id)
         if not user:
             return None
 
         total = await beer_repo.get_user_total(user.id, group_id)
+        by_type = await beer_repo.get_user_stats_by_type(user.id, group_id)
+
+        # Convert DrinkType keys to strings
+        breakdown = {dt.value: count for dt, count in by_type.items()}
 
         # Get rank by counting users with more drinks
         leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, 100)
@@ -728,7 +733,7 @@ class StatsService:
                 break
             rank += 1
 
-        return {"total": total, "rank": rank}
+        return {"total": total, "rank": rank, "breakdown": breakdown}
 
     async def undo_beer(self, message: GroupMeMessage, target_user_id: str | None = None) -> str:
         """Undo the last beer for a user.

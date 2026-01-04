@@ -26,10 +26,6 @@ from .services import (
     stats_service,
 )
 from .vision import (
-    ai_text_parser,
-    message_classifier,
-    question_answerer,
-    sassy_responder,
     unified_beer_bot,
     vision_service,
 )
@@ -80,9 +76,6 @@ async def groupme_callback(request: Request):
             await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "command", "command": command}
 
-    # Check if this group uses AI-only mode (skip regex patterns)
-    ai_only_mode = settings.is_ai_only_group(message.group_id)
-
     # Check for drink removal (-N drinks syntax) - still use regex for removals
     removal = message_parser.parse_drink_removal(message.text)
     if removal:
@@ -99,11 +92,8 @@ async def groupme_callback(request: Request):
         await groupme_client.send_message(response_text, group_id=message.group_id)
         return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}
 
-    # Check for drink logging (text triggers via regex) - skip if AI-only mode
-    if ai_only_mode:
-        text_drink_count, text_drink_type = 0, DrinkType.BEER
-    else:
-        text_drink_count, text_drink_type = message_parser.parse_drink(message.text)
+    # Text drink detection is handled by UnifiedBeerBot AI
+    text_drink_count, text_drink_type = 0, DrinkType.BEER
 
     # Check for drink logging (image analysis)
     vision_result = VisionResult()
@@ -128,7 +118,7 @@ async def groupme_callback(request: Request):
         await groupme_client.send_message(quip, group_id=message.group_id)
         return {"status": "ok", "action": "quip", "reason": "no_drinks_in_image"}
 
-    # If regex detected drinks, log them
+    # If image detected drinks, log them
     if drink_count > 0:
         # Extract mentioned users with their names
         mentioned_users = extract_mentioned_users(message.text, message.attachments)
@@ -145,23 +135,12 @@ async def groupme_callback(request: Request):
         )
         if response_text:
             await groupme_client.send_message(response_text, group_id=message.group_id)
-
-            # Occasionally add a sassy quip after logging drinks
-            if settings.sassy_responses_enabled:
-                import random
-                if random.random() < settings.sassy_response_rate:
-                    quip = await sassy_responder.generate_drink_quip(
-                        message.text, message.name, drink_count, drink_type.value
-                    )
-                    if quip:
-                        await groupme_client.send_message(quip, group_id=message.group_id)
-
             return {"status": "ok", "action": "logged", "drinks": drink_count, "drink_type": drink_type.value, "split_the_g": split_the_g}
         else:
             return {"status": "ok", "action": "duplicate", "message_id": message.id}
 
-    # AI-only mode: Use UnifiedBeerBot for all classification + response in one call
-    if ai_only_mode and message.text:
+    # Use UnifiedBeerBot for all text classification + response
+    if message.text:
         # Record incoming message to conversation history (before processing)
         unified_beer_bot.record_message(
             message.group_id, message.text, message.name, is_bot=False
@@ -227,64 +206,7 @@ async def groupme_callback(request: Request):
         # action == "ignore" - no action needed
         return {"status": "ok", "action": "none", "source": "unified_bot"}
 
-    # Non-AI-only mode: Use old multi-step classifier flow
-    if settings.sassy_responses_enabled and message.text:
-        classification = await message_classifier.classify(
-            message.text, message.name, group_id=message.group_id, ai_only=False
-        )
-
-        if classification["type"] == "question":
-            # Answer the question with actual data
-            answer = await question_answerer.answer(
-                message.text,
-                message.name,
-                classification["question_type"],
-                classification["question_target"],
-                message.group_id,
-            )
-            if answer:
-                await groupme_client.send_message(answer, group_id=message.group_id)
-                return {
-                    "status": "ok",
-                    "action": "question_answered",
-                    "question_type": classification["question_type"],
-                }
-
-        elif classification["type"] == "drink":
-            # AI detected a drink not caught by regex
-            ai_count = classification["drink_count"] or 1
-            ai_type_str = classification["drink_type"] or "beer"
-            ai_type = DrinkType.from_string(ai_type_str)
-
-            logging.getLogger(__name__).info(
-                "AI classifier detected drink: text=%r count=%d type=%s",
-                message.text[:50], ai_count, ai_type.value
-            )
-
-            # Log the drink
-            mentioned_users = extract_mentioned_users(message.text, message.attachments)
-            is_assignment = message_parser.is_explicit_assignment(message.text)
-            include_sender = not (is_assignment and mentioned_users)
-
-            response_text = await stats_service.log_beers_for_users(
-                message, ai_count, mentioned_users, include_sender, 0, ai_type
-            )
-            if response_text:
-                await groupme_client.send_message(response_text, group_id=message.group_id)
-                return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "ai_classifier"}
-            else:
-                return {"status": "ok", "action": "duplicate", "message_id": message.id}
-
-        elif classification["type"] == "sassy":
-            # Generate a sassy response
-            sassy_reply = await sassy_responder.maybe_respond(
-                message.text, message.name, group_id=message.group_id
-            )
-            if sassy_reply:
-                await groupme_client.send_message(sassy_reply, group_id=message.group_id)
-                return {"status": "ok", "action": "sassy_reply", "reason": classification["reason"]}
-
-    # No action needed
+    # No text message - no action needed
     return {"status": "ok", "action": "none"}
 
 
