@@ -1,9 +1,42 @@
 {
-  "scraped_at": "2026-01-05T00:32:52.397325",
+  "scraped_at": "2026-01-05T04:31:20.071379",
   "group_id": "112172155",
-  "total_images": 187,
-  "last_message_id": "176757178005200250",
+  "total_images": 190,
+  "last_message_id": "176758707230307796",
   "images": [
+    {
+      "message_id": "176758151361135544",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/de9666fc217e481fa120b79d03d01c3e/719x1280.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1767581513,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176758151361135544_0.jpg"
+    },
+    {
+      "message_id": "176757959382574787",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/7932e92af7b04a6097f7ea8b990f25b6/3024x4032.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": "Beerius eat your heart out",
+      "created_at": 1767579593,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176757959382574787_0.jpg"
+    },
+    {
+      "message_id": "176757798385393126",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/e11fc8ec3e2e44189f17db4b0b459372/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1767577983,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176757798385393126_0.jpg"
+    },
     {
       "message_id": "176757173586125022",
       "attachment_index": 0,

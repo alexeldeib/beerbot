@@ -2038,5 +2038,35 @@
     "message_id": "176755879350730676",
     "user_name": "Ace Eldeib",
     "text": null
+  },
+  "msg_176758151361135544_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176758151361135544",
+    "user_name": "Sasha Deshuk",
+    "text": null
+  },
+  "msg_176757959382574787_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176757959382574787",
+    "user_name": "Sasha Deshuk",
+    "text": "Beerius eat your heart out"
+  },
+  "msg_176757798385393126_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176757798385393126",
+    "user_name": "Burke Hall",
+    "text": null
   }
 }
