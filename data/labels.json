@@ -2098,5 +2098,15 @@
     "message_id": "176766080830078720",
     "user_name": "Ace Eldeib",
     "text": null
+  },
+  "msg_176772679237355097_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176772679237355097",
+    "user_name": "Sasha Deshuk",
+    "text": null
   }
 }
