@@ -1,9 +1,22 @@
 {
-  "scraped_at": "2026-01-08T00:30:16.805065",
+  "scraped_at": "2026-01-08T04:21:47.387328",
   "group_id": "112172155",
-  "total_images": 197,
-  "last_message_id": "176783221266023886",
+  "total_images": 198,
+  "last_message_id": "176784487150988058",
   "images": [
+    {
+      "message_id": "176784486626468760",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/5d30e05eafcd4dda9a8dc03403ff2d2c/719x1280.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1767844866,
+      "favorited_by": [
+        "13419729"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176784486626468760_0.jpg"
+    },
     {
       "message_id": "176783187298725097",
       "attachment_index": 0,
