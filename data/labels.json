@@ -2148,5 +2148,15 @@
     "message_id": "176784486626468760",
     "user_name": "Sasha Deshuk",
     "text": null
+  },
+  "msg_176785718291837214_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176785718291837214",
+    "user_name": "Patrick Jolicoeur",
+    "text": null
   }
 }
