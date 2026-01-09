@@ -1,9 +1,66 @@
 {
-  "scraped_at": "2026-01-09T16:08:53.873117",
+  "scraped_at": "2026-01-09T20:09:24.100101",
   "group_id": "112172155",
-  "total_images": 215,
-  "last_message_id": "176797238288012264",
+  "total_images": 220,
+  "last_message_id": "176798624099124630",
   "images": [
+    {
+      "message_id": "176798623575801338",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/0b736a4e0e564d699350052a06909c0c/2316x3088.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": "Beerius do you understand selfies",
+      "created_at": 1767986235,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176798623575801338_0.jpg"
+    },
+    {
+      "message_id": "176798542558617898",
+      "attachment_index": 1,
+      "url": "https://m.groupme.com/uploads/5deeb21750b043738dadb98a7e1c4b97/903x1485.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "@Ace Eldeib  was Beerus the inspiration? ",
+      "created_at": 1767985425,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176798542558617898_1.jpg"
+    },
+    {
+      "message_id": "176798478699361214",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/0ed72b4594a646f6aac6d872a298d3f8/903x1505.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "Highly recommend Roku gin, especially if you don't like juniper aftertaste ",
+      "created_at": 1767984786,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176798478699361214_0.jpg"
+    },
+    {
+      "message_id": "176798461673438593",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/0b7c4ced583a42c6a98844a4c0638969/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "From 1st flight, I told the flight attendant she looks like my daughter and she gave these for free. GMG ",
+      "created_at": 1767984616,
+      "favorited_by": [
+        "2325793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176798461673438593_0.jpg"
+    },
+    {
+      "message_id": "176797704784737898",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a0ad246758a7403891bcc81f46bc3140/720x1280.original.jpeg",
+      "user_id": "112464690",
+      "user_name": "Ashmit Singh",
+      "text": null,
+      "created_at": 1767977047,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176797704784737898_0.jpg"
+    },
     {
       "message_id": "176794558738458128",
       "attachment_index": 0,

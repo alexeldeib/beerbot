@@ -2318,5 +2318,55 @@
     "message_id": "176793284332109180",
     "user_name": "Celena Tyler",
     "text": "+1 cocktail fu Bryan"
+  },
+  "msg_176798623575801338_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176798623575801338",
+    "user_name": "Sasha Deshuk",
+    "text": "Beerius do you understand selfies"
+  },
+  "msg_176798542558617898_1.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176798542558617898",
+    "user_name": "Patrick Jolicoeur",
+    "text": "@Ace Eldeib  was Beerus the inspiration? "
+  },
+  "msg_176798478699361214_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176798478699361214",
+    "user_name": "Patrick Jolicoeur",
+    "text": "Highly recommend Roku gin, especially if you don't like juniper aftertaste "
+  },
+  "msg_176798461673438593_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176798461673438593",
+    "user_name": "Patrick Jolicoeur",
+    "text": "From 1st flight, I told the flight attendant she looks like my daughter and she gave these for free. GMG "
+  },
+  "msg_176797704784737898_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176797704784737898",
+    "user_name": "Ashmit Singh",
+    "text": null
   }
 }
