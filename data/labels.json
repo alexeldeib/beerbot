@@ -2278,5 +2278,45 @@
     "message_id": "176791964089474899",
     "user_name": "Sasha Deshuk",
     "text": null
+  },
+  "msg_176794558738458128_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176794558738458128",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176794258256177214_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176794258256177214",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176793745857651844_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176793745857651844",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176793284332109180_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176793284332109180",
+    "user_name": "Celena Tyler",
+    "text": "+1 cocktail fu Bryan"
   }
 }
