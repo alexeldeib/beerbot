@@ -1,9 +1,53 @@
 {
-  "scraped_at": "2026-01-10T04:16:43.103978",
+  "scraped_at": "2026-01-10T08:09:02.452108",
   "group_id": "112172155",
-  "total_images": 243,
-  "last_message_id": "176801742306485011",
+  "total_images": 247,
+  "last_message_id": "176803017658867898",
   "images": [
+    {
+      "message_id": "176802822637414743",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a6b2702b2a424ab7b11a72af148f684c/3024x4032.original.jpeg",
+      "user_id": "98871",
+      "user_name": "Joe L",
+      "text": null,
+      "created_at": 1768028226,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176802822637414743_0.jpg"
+    },
+    {
+      "message_id": "176802483480200662",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/acf73f86b5284e418f3d94c68b582bed/720x960.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1768024834,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176802483480200662_0.jpg"
+    },
+    {
+      "message_id": "176802002945962861",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/1bd71c8b96884251931c3cd799cb1082/3024x4032.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": "I just got iced :/",
+      "created_at": 1768020029,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176802002945962861_0.jpg"
+    },
+    {
+      "message_id": "176801865910668508",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/4603e002bcfb413a8c65e0201eed1398/719x1280.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1768018659,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801865910668508_0.jpg"
+    },
     {
       "message_id": "176801704463302909",
       "attachment_index": 0,

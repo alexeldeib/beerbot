@@ -2598,5 +2598,45 @@
     "message_id": "176800563637188729",
     "user_name": "Toby Roper",
     "text": null
+  },
+  "msg_176802822637414743_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176802822637414743",
+    "user_name": "Joe L",
+    "text": null
+  },
+  "msg_176802483480200662_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176802483480200662",
+    "user_name": "Celena Tyler",
+    "text": null
+  },
+  "msg_176802002945962861_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176802002945962861",
+    "user_name": "Sasha Deshuk",
+    "text": "I just got iced :/"
+  },
+  "msg_176801865910668508_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801865910668508",
+    "user_name": "Sasha Deshuk",
+    "text": null
   }
 }
