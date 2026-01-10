@@ -1,9 +1,118 @@
 {
-  "scraped_at": "2026-01-10T00:29:51.596226",
+  "scraped_at": "2026-01-10T04:16:43.103978",
   "group_id": "112172155",
-  "total_images": 234,
-  "last_message_id": "176800420613011582",
+  "total_images": 243,
+  "last_message_id": "176801742306485011",
   "images": [
+    {
+      "message_id": "176801704463302909",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/0b5985353a1e4bc6a2edc600b08af3eb/2160x3840.original.jpeg",
+      "user_id": "13190085",
+      "user_name": "Bryan Otero Gilmer",
+      "text": null,
+      "created_at": 1768017044,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801704463302909_0.jpg"
+    },
+    {
+      "message_id": "176801645856985204",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/86d872d522704608b3d93f5711fa3dfa/498x231.original.gif",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768016458,
+      "favorited_by": [
+        "13419729",
+        "22258407",
+        "3321628"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801645856985204_0.jpg"
+    },
+    {
+      "message_id": "176801436819435369",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ce52af8e9ea84821aa7e4e5951f600f7/720x1280.original.jpeg",
+      "user_id": "13419729",
+      "user_name": "Ace Eldeib",
+      "text": null,
+      "created_at": 1768014368,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801436819435369_0.jpg"
+    },
+    {
+      "message_id": "176801406410027944",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/d06dfe09b36e4c9395e18e516808815b/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "Separate beers beerius",
+      "created_at": 1768014064,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801406410027944_0.jpg"
+    },
+    {
+      "message_id": "176801406410027944",
+      "attachment_index": 1,
+      "url": "https://m.groupme.com/uploads/24ef81aaa179473c9b49e3cb7220b297/1500x2000.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "Separate beers beerius",
+      "created_at": 1768014064,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801406410027944_1.jpg"
+    },
+    {
+      "message_id": "176801099170968158",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/23e78013c9604932935a9047d1bedb6e/2157x3840.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1768010991,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801099170968158_0.jpg"
+    },
+    {
+      "message_id": "176801035592204944",
+      "attachment_index": 1,
+      "url": "https://m.groupme.com/uploads/4abfcaaf1ac94dae8da2ed5b2419b6d2/912x1216.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": "@Justin DeVuono  met your ozempic doppelganger ",
+      "created_at": 1768010355,
+      "favorited_by": [
+        "21180940",
+        "6234154"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176801035592204944_1.jpg"
+    },
+    {
+      "message_id": "176800965472293770",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/f845e547c6c743a395b63a8363bb5790/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": null,
+      "created_at": 1768009654,
+      "favorited_by": [
+        "13419729",
+        "6774793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176800965472293770_0.jpg"
+    },
+    {
+      "message_id": "176800563637188729",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/d32741c26e044695ae5239bb41e4cbac/719x1280.original.jpeg",
+      "user_id": "14279296",
+      "user_name": "Toby Roper",
+      "text": null,
+      "created_at": 1768005636,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176800563637188729_0.jpg"
+    },
     {
       "message_id": "176800322844918760",
       "attachment_index": 0,

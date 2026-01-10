@@ -2508,5 +2508,95 @@
     "message_id": "176799095733714834",
     "user_name": "Sasha Deshuk",
     "text": "Beerius wait! They don\u2019t love you like i love you"
+  },
+  "msg_176801704463302909_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801704463302909",
+    "user_name": "Bryan Otero Gilmer",
+    "text": null
+  },
+  "msg_176801645856985204_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801645856985204",
+    "user_name": "Burke Hall",
+    "text": null
+  },
+  "msg_176801436819435369_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801436819435369",
+    "user_name": "Ace Eldeib",
+    "text": null
+  },
+  "msg_176801406410027944_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801406410027944",
+    "user_name": "Patrick Jolicoeur",
+    "text": "Separate beers beerius"
+  },
+  "msg_176801406410027944_1.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801406410027944",
+    "user_name": "Patrick Jolicoeur",
+    "text": "Separate beers beerius"
+  },
+  "msg_176801099170968158_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801099170968158",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176801035592204944_1.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176801035592204944",
+    "user_name": "Patrick Jolicoeur",
+    "text": "@Justin DeVuono  met your ozempic doppelganger "
+  },
+  "msg_176800965472293770_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176800965472293770",
+    "user_name": "Patrick Jolicoeur",
+    "text": null
+  },
+  "msg_176800563637188729_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176800563637188729",
+    "user_name": "Toby Roper",
+    "text": null
   }
 }
