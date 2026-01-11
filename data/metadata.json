@@ -1,9 +1,31 @@
 {
-  "scraped_at": "2026-01-11T16:08:42.999037",
+  "scraped_at": "2026-01-11T20:08:19.075752",
   "group_id": "112172155",
-  "total_images": 290,
-  "last_message_id": "176814387282337725",
+  "total_images": 292,
+  "last_message_id": "176816004884840489",
   "images": [
+    {
+      "message_id": "176816004374710011",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/6907764e428743ab9ffe791f2195dc05/719x1280.original.jpeg",
+      "user_id": "22258407",
+      "user_name": "Matt Vollenweider",
+      "text": null,
+      "created_at": 1768160043,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176816004374710011_0.jpg"
+    },
+    {
+      "message_id": "176815612698475883",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/3095116a361c4ba0b641ec6048ccfc70/720x1280.original.jpeg",
+      "user_id": "7188828",
+      "user_name": "Krishnan Ramanujan",
+      "text": null,
+      "created_at": 1768156126,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176815612698475883_0.jpg"
+    },
     {
       "message_id": "176812928429022262",
       "attachment_index": 0,

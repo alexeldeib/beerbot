@@ -3068,5 +3068,25 @@
     "message_id": "176812248451706849",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176816004374710011_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176816004374710011",
+    "user_name": "Matt Vollenweider",
+    "text": null
+  },
+  "msg_176815612698475883_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176815612698475883",
+    "user_name": "Krishnan Ramanujan",
+    "text": null
   }
 }
