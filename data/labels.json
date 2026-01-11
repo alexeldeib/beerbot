@@ -3028,5 +3028,45 @@
     "message_id": "176810647575795823",
     "user_name": "Avada Balenciaga",
     "text": null
+  },
+  "msg_176812928429022262_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176812928429022262",
+    "user_name": "Sasha Deshuk",
+    "text": null
+  },
+  "msg_176812928429022262_1.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176812928429022262",
+    "user_name": "Sasha Deshuk",
+    "text": null
+  },
+  "msg_176812299937325099_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176812299937325099",
+    "user_name": "Sasha Deshuk",
+    "text": "Me and des drinking beer in bed \ud83d\ude34\ud83d\udca4\ud83d\udecc"
+  },
+  "msg_176812248451706849_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176812248451706849",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }

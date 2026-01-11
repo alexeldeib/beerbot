@@ -1,9 +1,53 @@
 {
-  "scraped_at": "2026-01-11T08:10:25.801772",
+  "scraped_at": "2026-01-11T12:12:16.426258",
   "group_id": "112172155",
-  "total_images": 286,
-  "last_message_id": "176811795786273970",
+  "total_images": 290,
+  "last_message_id": "176812932463845289",
   "images": [
+    {
+      "message_id": "176812928429022262",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/631d3aa6d3aa46598cf75c690968f8ca/2316x3088.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1768129284,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176812928429022262_0.jpg"
+    },
+    {
+      "message_id": "176812928429022262",
+      "attachment_index": 1,
+      "url": "https://m.groupme.com/uploads/2a04a9f270ab4b87a61acfadf5fa612a/2316x3088.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": null,
+      "created_at": 1768129284,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176812928429022262_1.jpg"
+    },
+    {
+      "message_id": "176812299937325099",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/177b7e45bf724af0b0316de2604ac788/3024x4032.original.jpeg",
+      "user_id": "465739",
+      "user_name": "Sasha Deshuk",
+      "text": "Me and des drinking beer in bed \ud83d\ude34\ud83d\udca4\ud83d\udecc",
+      "created_at": 1768122999,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176812299937325099_0.jpg"
+    },
+    {
+      "message_id": "176812248451706849",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/39544735878a428db0b3e38b29ee6c9c/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768122484,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176812248451706849_0.jpg"
+    },
     {
       "message_id": "176811772553983770",
       "attachment_index": 0,
