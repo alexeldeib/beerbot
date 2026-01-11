@@ -1,9 +1,163 @@
 {
-  "scraped_at": "2026-01-10T20:07:37.654280",
+  "scraped_at": "2026-01-11T00:34:08.003550",
   "group_id": "112172155",
-  "total_images": 251,
-  "last_message_id": "176807565238584546",
+  "total_images": 264,
+  "last_message_id": "176809161994121044",
   "images": [
+    {
+      "message_id": "176809161516984851",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/7bef947444204aebbb2ccc3e5921c9d1/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": null,
+      "created_at": 1768091615,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176809161516984851_0.jpg"
+    },
+    {
+      "message_id": "176808705691967141",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/4f9c740eabff44218258c1132474486b/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": null,
+      "created_at": 1768087056,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808705691967141_0.jpg"
+    },
+    {
+      "message_id": "176808672175561045",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ad01d0d8f1e64f57b9e1a2e9a5fad9c8/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768086721,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808672175561045_0.jpg"
+    },
+    {
+      "message_id": "176808653817197377",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/eb8a2e9f2d814a1789f02bd7cb675fc8/1000x1333.original.jpg",
+      "user_id": "6774790",
+      "user_name": "Patrick Jolicoeur",
+      "text": null,
+      "created_at": 1768086538,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808653817197377_0.jpg"
+    },
+    {
+      "message_id": "176808461736261223",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/3c4d1fce0ec44780a321d4511b8fb3a1/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768084617,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808461736261223_0.jpg"
+    },
+    {
+      "message_id": "176808344222298213",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/2fa438d3a15e4b499f783c8c10b379c4/3024x4032.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1768083442,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808344222298213_0.jpg"
+    },
+    {
+      "message_id": "176808186535911844",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/dd071034de534311a7791961d467e9f3/3024x4032.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": "oddly generous veuve pour",
+      "created_at": 1768081865,
+      "favorited_by": [
+        "3321628"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808186535911844_0.jpg"
+    },
+    {
+      "message_id": "176808116646881044",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/816b9e26f3834d359086411ee056c7b8/480x480.original.gif",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1768081166,
+      "favorited_by": [
+        "2325793",
+        "6774793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808116646881044_0.jpg"
+    },
+    {
+      "message_id": "176808011032986229",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/aa11dbac5c6e44d9a252562715c1f4ce/720x959.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1768080110,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808011032986229_0.jpg"
+    },
+    {
+      "message_id": "176808003454749256",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/f7970cc612ea416ca5d3c13eec006569/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768080034,
+      "favorited_by": [
+        "6774793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176808003454749256_0.jpg"
+    },
+    {
+      "message_id": "176807991838899735",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ad3a4d445b814d11a855bdebbdc5b940/719x1280.original.jpeg",
+      "user_id": "6774793",
+      "user_name": "Avada Balenciaga",
+      "text": null,
+      "created_at": 1768079918,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176807991838899735_0.jpg"
+    },
+    {
+      "message_id": "176807711953838706",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/a7b2dea4195f43ceb00b2daf4acc196d/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768077119,
+      "favorited_by": [
+        "22258407",
+        "2325793",
+        "465739"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176807711953838706_0.jpg"
+    },
+    {
+      "message_id": "176807682314232740",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/d51999ae889d46a99ffcd8d5ac1b6b1b/719x1280.original.jpeg",
+      "user_id": "22258407",
+      "user_name": "Matt Vollenweider",
+      "text": null,
+      "created_at": 1768076823,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176807682314232740_0.jpg"
+    },
     {
       "message_id": "176807565238584546",
       "attachment_index": 0,
