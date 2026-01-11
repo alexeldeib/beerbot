@@ -2928,5 +2928,105 @@
     "message_id": "176809243629169648",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176811772553983770_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811772553983770",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176811662551955883_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811662551955883",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176811325756074546_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811325756074546",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176811252031322239_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811252031322239",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176811190486129235_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811190486129235",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176811186221220045_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176811186221220045",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176810970446056229_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176810970446056229",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176810969695745369_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176810969695745369",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176810733010975431_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176810733010975431",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176810647575795823_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176810647575795823",
+    "user_name": "Avada Balenciaga",
+    "text": null
   }
 }
