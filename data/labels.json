@@ -3088,5 +3088,35 @@
     "message_id": "176815612698475883",
     "user_name": "Krishnan Ramanujan",
     "text": null
+  },
+  "msg_176817747022932911_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176817747022932911",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176816555063377010_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176816555063377010",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176816345235551083_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176816345235551083",
+    "user_name": "Matt Vollenweider",
+    "text": null
   }
 }
