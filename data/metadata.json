@@ -1,9 +1,20 @@
 {
-  "scraped_at": "2026-01-12T00:32:32.692809",
+  "scraped_at": "2026-01-12T04:27:29.568130",
   "group_id": "112172155",
-  "total_images": 295,
-  "last_message_id": "176817748394952262",
+  "total_images": 296,
+  "last_message_id": "176819059355325986",
   "images": [
+    {
+      "message_id": "176818521122603063",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/5d1b39d0be264ec88dc0a0455f453c99/4284x5712.original.jpeg",
+      "user_id": "106027951",
+      "user_name": "Aidan Pesce",
+      "text": null,
+      "created_at": 1768185211,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176818521122603063_0.jpg"
+    },
     {
       "message_id": "176817747022932911",
       "attachment_index": 0,

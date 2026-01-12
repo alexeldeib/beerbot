@@ -3118,5 +3118,15 @@
     "message_id": "176816345235551083",
     "user_name": "Matt Vollenweider",
     "text": null
+  },
+  "msg_176818521122603063_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176818521122603063",
+    "user_name": "Aidan Pesce",
+    "text": null
   }
 }
