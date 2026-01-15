@@ -1,9 +1,53 @@
 {
-  "scraped_at": "2026-01-14T20:08:02.318154",
+  "scraped_at": "2026-01-15T00:28:39.092860",
   "group_id": "112172155",
-  "total_images": 298,
-  "last_message_id": "176836019726088848",
+  "total_images": 302,
+  "last_message_id": "176843452628297286",
   "images": [
+    {
+      "message_id": "176843451836839619",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ada879d790914f0bb5cc7af481fed96a/4284x5712.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768434518,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176843451836839619_0.jpg"
+    },
+    {
+      "message_id": "176843140039938299",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/98ac7a1b8d89467286ad53daa8d1fd02/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768431400,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176843140039938299_0.jpg"
+    },
+    {
+      "message_id": "176842666182707432",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/116a3e020fa644b4be0cc99df0cdfb1e/4284x5712.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768426661,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176842666182707432_0.jpg"
+    },
+    {
+      "message_id": "176842519210184005",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/54ce16890ae3493693d756411d7bae9c/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768425192,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176842519210184005_0.jpg"
+    },
     {
       "message_id": "176827052851688540",
       "attachment_index": 0,
