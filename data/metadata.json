@@ -1,9 +1,119 @@
 {
-  "scraped_at": "2026-01-16T00:30:52.992519",
+  "scraped_at": "2026-01-16T04:22:20.751103",
   "group_id": "112172155",
-  "total_images": 310,
-  "last_message_id": "176852229755767789",
+  "total_images": 320,
+  "last_message_id": "176853605014232836",
   "images": [
+    {
+      "message_id": "176853410888624246",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/9800ad0ee65a4afdb14388507f1e0035/719x1280.original.jpeg",
+      "user_id": "22258407",
+      "user_name": "Matt Vollenweider",
+      "text": null,
+      "created_at": 1768534108,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176853410888624246_0.jpg"
+    },
+    {
+      "message_id": "176853322054849619",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ccb80f23511f4baca6a6603381a73cf2/3024x4032.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": "+3 not franzia",
+      "created_at": 1768533220,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176853322054849619_0.jpg"
+    },
+    {
+      "message_id": "176853199173842987",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/2a26eeaed74d40b1ada24f06684f1d0f/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768531991,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176853199173842987_0.jpg"
+    },
+    {
+      "message_id": "176853118200376219",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/636e388e1de44db6bdd966a9942a84d1/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768531182,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176853118200376219_0.jpg"
+    },
+    {
+      "message_id": "176852982272158584",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/560db470d6f2445fa9c7cd581ec88b3c/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768529822,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852982272158584_0.jpg"
+    },
+    {
+      "message_id": "176852780449492987",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/ae86026fa13540ee8aca313f8e784074/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768527804,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852780449492987_0.jpg"
+    },
+    {
+      "message_id": "176852644032598421",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/6f1673d60c32430b8f040b40947ae39f/720x1280.original.jpeg",
+      "user_id": "106027951",
+      "user_name": "Aidan Pesce",
+      "text": null,
+      "created_at": 1768526440,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852644032598421_0.jpg"
+    },
+    {
+      "message_id": "176852575498069753",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/d8b97c56cbd749df976c9468b0b5863d/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1768525754,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852575498069753_0.jpg"
+    },
+    {
+      "message_id": "176852492528257766",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/b72e8719f6994e7883d943f3f45de0f1/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1768524925,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852492528257766_0.jpg"
+    },
+    {
+      "message_id": "176852462762683000",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/640dd48945ef428db681fb5b104e4a9e/3024x4032.original.jpeg",
+      "user_id": "8297325",
+      "user_name": "Jacob Lynch",
+      "text": null,
+      "created_at": 1768524627,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176852462762683000_0.jpg"
+    },
     {
       "message_id": "176851969576955983",
       "attachment_index": 0,
