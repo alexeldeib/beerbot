@@ -3478,5 +3478,35 @@
     "message_id": "176861517234175801",
     "user_name": "Jacob Lynch",
     "text": null
+  },
+  "msg_176863142531987482_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176863142531987482",
+    "user_name": "Ani Srinivasan",
+    "text": null
+  },
+  "msg_176862394135916013_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176862394135916013",
+    "user_name": "Jerry Austen",
+    "text": null
+  },
+  "msg_176862382709685919_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176862382709685919",
+    "user_name": "Ani Srinivasan",
+    "text": "+1 elevator beer"
   }
 }
