@@ -3508,5 +3508,55 @@
     "message_id": "176862382709685919",
     "user_name": "Ani Srinivasan",
     "text": "+1 elevator beer"
+  },
+  "msg_176869604071044005_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869604071044005",
+    "user_name": "Jacob Lynch",
+    "text": null
+  },
+  "msg_176869510513058421_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869510513058421",
+    "user_name": "Avada Balenciaga",
+    "text": null
+  },
+  "msg_176869415744342085_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869415744342085",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176869264641067363_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869264641067363",
+    "user_name": "Jerry Austen",
+    "text": null
+  },
+  "msg_176869055522884839_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869055522884839",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
