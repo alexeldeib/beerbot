@@ -3558,5 +3558,35 @@
     "message_id": "176869055522884839",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176870465620382085_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176870465620382085",
+    "user_name": "Krishnan Ramanujan",
+    "text": "Yes sir"
+  },
+  "msg_176870194811312085_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": true,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176870194811312085",
+    "user_name": "Aidan Pesce",
+    "text": null
+  },
+  "msg_176869782823247491_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176869782823247491",
+    "user_name": "Bryan Otero Gilmer",
+    "text": null
   }
 }
