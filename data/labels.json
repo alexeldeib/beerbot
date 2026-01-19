@@ -3728,5 +3728,35 @@
     "message_id": "176879794408572501",
     "user_name": "Burke Hall",
     "text": null
+  },
+  "msg_176882153264534882_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176882153264534882",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176881347725821970_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176881347725821970",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176881092286788022_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176881092286788022",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
