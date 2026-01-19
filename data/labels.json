@@ -3758,5 +3758,15 @@
     "message_id": "176881092286788022",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176882673933833375_0.jpg": {
+    "drink_type": "claw",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176882673933833375",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
