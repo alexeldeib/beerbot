@@ -3678,5 +3678,55 @@
     "message_id": "176878427993696013",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176880887107428504_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176880887107428504",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176880354382745837_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176880354382745837",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176880139338345932_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176880139338345932",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176879978236849533_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176879978236849533",
+    "user_name": "Burke Hall",
+    "text": null
+  },
+  "msg_176879794408572501_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176879794408572501",
+    "user_name": "Burke Hall",
+    "text": null
   }
 }
