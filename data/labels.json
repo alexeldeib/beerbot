@@ -3588,5 +3588,15 @@
     "message_id": "176869782823247491",
     "user_name": "Bryan Otero Gilmer",
     "text": null
+  },
+  "msg_176877349985746267_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176877349985746267",
+    "user_name": "Matt Vollenweider",
+    "text": null
   }
 }
