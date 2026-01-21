@@ -1,9 +1,31 @@
 {
-  "scraped_at": "2026-01-21T16:13:54.600172",
+  "scraped_at": "2026-01-21T20:12:56.339779",
   "group_id": "112172155",
-  "total_images": 366,
-  "last_message_id": "176898229650499533",
+  "total_images": 368,
+  "last_message_id": "176902602389848069",
   "images": [
+    {
+      "message_id": "176902570786364683",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/78f186b909f346bc88e38342dfad2983/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1769025707,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176902570786364683_0.jpg"
+    },
+    {
+      "message_id": "176902339643418584",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/fb6dfadd688949ecbe22f5370a1ee08f/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1769023396,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176902339643418584_0.jpg"
+    },
     {
       "message_id": "176896426166576013",
       "attachment_index": 0,

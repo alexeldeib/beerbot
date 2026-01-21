@@ -3828,5 +3828,25 @@
     "message_id": "176896426166576013",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176902570786364683_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176902570786364683",
+    "user_name": "Burke Hall",
+    "text": null
+  },
+  "msg_176902339643418584_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176902339643418584",
+    "user_name": "Burke Hall",
+    "text": null
   }
 }
