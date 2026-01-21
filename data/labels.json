@@ -3818,5 +3818,15 @@
     "message_id": "176888325857574882",
     "user_name": "Celena Tyler",
     "text": null
+  },
+  "msg_176896426166576013_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176896426166576013",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
