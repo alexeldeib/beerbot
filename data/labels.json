@@ -3858,5 +3858,15 @@
     "message_id": "176904165652106415",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176904922124153328_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176904922124153328",
+    "user_name": "Burke Hall",
+    "text": null
   }
 }
