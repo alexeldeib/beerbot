@@ -3868,5 +3868,15 @@
     "message_id": "176904922124153328",
     "user_name": "Burke Hall",
     "text": null
+  },
+  "msg_176912226166455005_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176912226166455005",
+    "user_name": "Krishnan Ramanujan",
+    "text": null
   }
 }
