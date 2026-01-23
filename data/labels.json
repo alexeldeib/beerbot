@@ -3878,5 +3878,15 @@
     "message_id": "176912226166455005",
     "user_name": "Krishnan Ramanujan",
     "text": null
+  },
+  "msg_176919215469510721_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176919215469510721",
+    "user_name": "Ace Eldeib",
+    "text": null
   }
 }
