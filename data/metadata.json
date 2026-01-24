@@ -1,9 +1,64 @@
 {
-  "scraped_at": "2026-01-23T20:09:20.880740",
+  "scraped_at": "2026-01-24T00:29:59.352149",
   "group_id": "112172155",
-  "total_images": 372,
-  "last_message_id": "176919873196506013",
+  "total_images": 377,
+  "last_message_id": "176921136136377766",
   "images": [
+    {
+      "message_id": "176921136136377766",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/c8a5ff81c4cb4c3ebdff3c7c60c1a69d/245x161.original.gif",
+      "user_id": "14279296",
+      "user_name": "Toby Roper",
+      "text": null,
+      "created_at": 1769211361,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176921136136377766_0.jpg"
+    },
+    {
+      "message_id": "176920972569378380",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/4c4e3005d534402bb50dd0c2db75d7c0/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769209725,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176920972569378380_0.jpg"
+    },
+    {
+      "message_id": "176920554873007635",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/709bcecff1e94320b0264c8e7502ee06/720x1280.original.jpeg",
+      "user_id": "14279296",
+      "user_name": "Toby Roper",
+      "text": null,
+      "created_at": 1769205548,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176920554873007635_0.jpg"
+    },
+    {
+      "message_id": "176920402525573375",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/2c208dcfcd4547adb2b252784cba7274/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1769204025,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176920402525573375_0.jpg"
+    },
+    {
+      "message_id": "176919948748682916",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/16ab4175363b45669a68cd348166bc70/719x1280.original.jpeg",
+      "user_id": "2325793",
+      "user_name": "Burke Hall",
+      "text": null,
+      "created_at": 1769199487,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176919948748682916_0.jpg"
+    },
     {
       "message_id": "176919215469510721",
       "attachment_index": 0,
