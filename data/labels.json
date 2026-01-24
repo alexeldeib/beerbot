@@ -3938,5 +3938,75 @@
     "message_id": "176919948748682916",
     "user_name": "Burke Hall",
     "text": null
+  },
+  "msg_176922602648694005_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176922602648694005",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176922345800934855_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176922345800934855",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176922247677754839_0.jpg": {
+    "drink_type": null,
+    "drink_count": 0,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176922247677754839",
+    "user_name": "Aidan Pesce",
+    "text": "Undergrads representing"
+  },
+  "msg_176922179177291551_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176922179177291551",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176921918027989861_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176921918027989861",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176921810412446117_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176921810412446117",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176921685389388504_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176921685389388504",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
