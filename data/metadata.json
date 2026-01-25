@@ -1,9 +1,55 @@
 {
-  "scraped_at": "2026-01-24T20:08:13.498820",
+  "scraped_at": "2026-01-25T00:34:36.372696",
   "group_id": "112172155",
-  "total_images": 398,
-  "last_message_id": "176927977110146139",
+  "total_images": 402,
+  "last_message_id": "176929904925364005",
   "images": [
+    {
+      "message_id": "176929724050930524",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/6a984757ae054009b65065d7e5bd02d6/719x1280.original.jpeg",
+      "user_id": "22258407",
+      "user_name": "Matt Vollenweider",
+      "text": null,
+      "created_at": 1769297240,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176929724050930524_0.jpg"
+    },
+    {
+      "message_id": "176929093677156588",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/e47396a6916c4fe09f001b06404c5f8b/719x1280.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1769290936,
+      "favorited_by": [
+        "6774793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176929093677156588_0.jpg"
+    },
+    {
+      "message_id": "176929017146056588",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/75a153a6cd7e41cc8cf323dadeb9d1f9/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769290171,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176929017146056588_0.jpg"
+    },
+    {
+      "message_id": "176928705902181970",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/f51945a7bb3a41019f5932d992d8adb9/720x1280.original.jpeg",
+      "user_id": "14279296",
+      "user_name": "Toby Roper",
+      "text": null,
+      "created_at": 1769287059,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176928705902181970_0.jpg"
+    },
     {
       "message_id": "176927976412024005",
       "attachment_index": 0,
