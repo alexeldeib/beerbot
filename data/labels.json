@@ -4198,5 +4198,15 @@
     "message_id": "176930325029091970",
     "user_name": "Jacob Lynch",
     "text": "lol too alcoholic for GroupMe ai"
+  },
+  "msg_176937117168196694_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176937117168196694",
+    "user_name": "Matt Vollenweider",
+    "text": null
   }
 }
