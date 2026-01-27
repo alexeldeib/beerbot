@@ -4228,5 +4228,15 @@
     "message_id": "176946890480085005",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176948516895947482_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176948516895947482",
+    "user_name": "John Russell",
+    "text": null
   }
 }

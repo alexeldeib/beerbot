@@ -1,9 +1,20 @@
 {
-  "scraped_at": "2026-01-27T00:33:45.895066",
+  "scraped_at": "2026-01-27T04:26:21.033339",
   "group_id": "112172155",
-  "total_images": 406,
-  "last_message_id": "176947288848923999",
+  "total_images": 407,
+  "last_message_id": "176948697126719861",
   "images": [
+    {
+      "message_id": "176948516895947482",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/badeaca7ffcd4dc6b16a747b1a9d8c26/2160x3840.original.jpeg",
+      "user_id": "105036038",
+      "user_name": "John Russell",
+      "text": null,
+      "created_at": 1769485168,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176948516895947482_0.jpg"
+    },
     {
       "message_id": "176947232575892836",
       "attachment_index": 0,
