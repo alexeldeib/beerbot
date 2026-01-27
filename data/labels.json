@@ -4238,5 +4238,15 @@
     "message_id": "176948516895947482",
     "user_name": "John Russell",
     "text": null
+  },
+  "msg_176949418219185005_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176949418219185005",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
