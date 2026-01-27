@@ -4208,5 +4208,25 @@
     "message_id": "176937117168196694",
     "user_name": "Matt Vollenweider",
     "text": null
+  },
+  "msg_176947232575892836_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176947232575892836",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176946890480085005_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176946890480085005",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
