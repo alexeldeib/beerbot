@@ -4258,5 +4258,35 @@
     "message_id": "176955036537291551",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176956460588178572_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176956460588178572",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_176956184237844005_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176956184237844005",
+    "user_name": "Ashmit Singh",
+    "text": null
+  },
+  "msg_176956165668415983_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176956165668415983",
+    "user_name": "Ashmit Singh",
+    "text": null
   }
 }
