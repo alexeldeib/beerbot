@@ -4288,5 +4288,15 @@
     "message_id": "176956165668415983",
     "user_name": "Ashmit Singh",
     "text": null
+  },
+  "msg_176957823616963999_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176957823616963999",
+    "user_name": "Burke Hall",
+    "text": null
   }
 }
