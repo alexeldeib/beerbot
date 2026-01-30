@@ -4328,5 +4328,15 @@
     "message_id": "176965106028520765",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176972886951786117_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176972886951786117",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
