@@ -1,9 +1,53 @@
 {
-  "scraped_at": "2026-01-30T20:10:35.423245",
+  "scraped_at": "2026-01-31T00:34:01.510144",
   "group_id": "112172155",
-  "total_images": 421,
-  "last_message_id": "176977428257434567",
+  "total_images": 425,
+  "last_message_id": "176981950181762489",
   "images": [
+    {
+      "message_id": "176981950181762489",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/21ff2274ab894cd59b2610f29b0a8d54/480x480.original.gif",
+      "user_id": "6774793",
+      "user_name": "HNNY",
+      "text": null,
+      "created_at": 1769819501,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176981950181762489_0.jpg"
+    },
+    {
+      "message_id": "176981608438149619",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/fd545e7571bf4d4f939b5d0e21b9206f/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769816084,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176981608438149619_0.jpg"
+    },
+    {
+      "message_id": "176981603320762814",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/1a3c3bf6c48c420d89715fdf05d3e706/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769816033,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176981603320762814_0.jpg"
+    },
+    {
+      "message_id": "176981512648609175",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/1cc81934ca2f44b6a77548c84d1f098e/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769815126,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176981512648609175_0.jpg"
+    },
     {
       "message_id": "176976329534620524",
       "attachment_index": 0,
