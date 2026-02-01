@@ -4668,5 +4668,25 @@
     "message_id": "176990671271442613",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_176992844878272493_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": true,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176992844878272493",
+    "user_name": "Joe L",
+    "text": null
+  },
+  "msg_176992838207191354_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "176992838207191354",
+    "user_name": "Jason Solis",
+    "text": null
   }
 }
