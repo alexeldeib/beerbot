@@ -1,9 +1,64 @@
 {
-  "scraped_at": "2026-02-02T00:37:38.195093",
+  "scraped_at": "2026-02-02T04:46:41.473074",
   "group_id": "112172155",
-  "total_images": 455,
-  "last_message_id": "176999066266285727",
+  "total_images": 460,
+  "last_message_id": "177000553780951333",
   "images": [
+    {
+      "message_id": "177000553243418584",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/72cc82cfe04946a4b953a3c80ea577e8/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1770005532,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_177000553243418584_0.jpg"
+    },
+    {
+      "message_id": "177000310391463999",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/07c15f63e87e40b7865cc87fd82fe633/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1770003103,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_177000310391463999_0.jpg"
+    },
+    {
+      "message_id": "176999994376669175",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/382fdc19c7bc491a9ea58593da2866c1/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769999943,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176999994376669175_0.jpg"
+    },
+    {
+      "message_id": "176999736853914850",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/75b4ac477e4746e7a1aa75d5c594e3cc/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769997368,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176999736853914850_0.jpg"
+    },
+    {
+      "message_id": "176999328697442814",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/cc74ea103a54434c9c7d1c25670455f9/719x1280.original.jpeg",
+      "user_id": "9241774",
+      "user_name": "Desmond G.",
+      "text": null,
+      "created_at": 1769993286,
+      "favorited_by": [],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_176999328697442814_0.jpg"
+    },
     {
       "message_id": "176998809279682836",
       "attachment_index": 0,
