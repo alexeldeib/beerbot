@@ -4798,5 +4798,15 @@
     "message_id": "177000832041320361",
     "user_name": "Desmond G.",
     "text": null
+  },
+  "msg_177004657167656013_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177004657167656013",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
