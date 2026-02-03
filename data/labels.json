@@ -4808,5 +4808,35 @@
     "message_id": "177004657167656013",
     "user_name": "Celena Tyler",
     "text": null
+  },
+  "msg_177008673442135251_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177008673442135251",
+    "user_name": "Jay Iyer",
+    "text": null
+  },
+  "msg_177007992823929603_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177007992823929603",
+    "user_name": "Aidan Pesce",
+    "text": null
+  },
+  "msg_177007991100870524_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177007991100870524",
+    "user_name": "John Russell",
+    "text": null
   }
 }
