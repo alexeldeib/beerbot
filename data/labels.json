@@ -4868,5 +4868,45 @@
     "message_id": "177021266233532062",
     "user_name": "Celena Tyler",
     "text": null
+  },
+  "msg_177025773784746543_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177025773784746543",
+    "user_name": "Ani Srinivasan",
+    "text": null
+  },
+  "msg_177025372716001186_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177025372716001186",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_177025310361050011_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177025310361050011",
+    "user_name": "Bryan Otero Gilmer",
+    "text": null
+  },
+  "msg_177025191723418598_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177025191723418598",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
