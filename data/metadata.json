@@ -1,9 +1,24 @@
 {
-  "scraped_at": "2026-02-05T16:21:35.971647",
+  "scraped_at": "2026-02-05T20:13:29.657284",
   "group_id": "112172155",
-  "total_images": 474,
-  "last_message_id": "177030459108866939",
+  "total_images": 475,
+  "last_message_id": "177031540067204628",
   "images": [
+    {
+      "message_id": "177030919147515301",
+      "attachment_index": 0,
+      "url": "https://m.groupme.com/uploads/50004d4f70b8467eb39e8d55c2b8ef9d/760x720.original.jpeg",
+      "user_id": "3321628",
+      "user_name": "Celena Tyler",
+      "text": null,
+      "created_at": 1770309191,
+      "favorited_by": [
+        "13190085",
+        "13419729",
+        "6774793"
+      ],
+      "local_path": "/home/runner/work/beerbot/beerbot/data/images/msg_177030919147515301_0.jpg"
+    },
     {
       "message_id": "177025773784746543",
       "attachment_index": 0,
