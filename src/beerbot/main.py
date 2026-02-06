@@ -7,51 +7,36 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .agent import beer_agent
 from .config import settings
+from .database import close_pool, init_db
+from .groupme_client import groupme_client
+from .models import GroupMeMessage
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-# Set DEBUG for vision module to see image fetch details
-logging.getLogger("src.beerbot.vision").setLevel(logging.DEBUG)
-from .database import close_pool, init_db
-from .groupme_client import groupme_client
-from .models import DrinkType, GroupMeMessage, VisionResult
-from .services import (
-    extract_mentioned_user_ids,
-    extract_mentioned_users,
-    message_parser,
-    stats_service,
-)
-from .vision import (
-    unified_beer_bot,
-    vision_service,
-)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
-    # Startup
     await init_db()
     yield
-    # Shutdown
     await close_pool()
 
 
 app = FastAPI(
     title="Beerbot",
     description="GroupMe bot for tracking beer consumption",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for deployment platforms."""
     return {"status": "healthy"}
 
 
@@ -64,282 +49,41 @@ async def groupme_callback(request: Request):
     except Exception:
         return JSONResponse({"error": "Invalid message format"}, status_code=400)
 
-    # Ignore messages from bots to prevent loops
     if message.sender_type == "bot":
         return {"status": "ignored", "reason": "bot message"}
 
-    # Check for commands first
-    command = message_parser.parse_command(message.text)
-    if command:
-        response_text = await handle_command(command, message)
-        if response_text:
-            await groupme_client.send_message(response_text, group_id=message.group_id)
-        return {"status": "ok", "action": "command", "command": command}
+    reply = await beer_agent.process_message(message)
 
-    # Check for drink removal (-N drinks syntax) - still use regex for removals
-    removal = message_parser.parse_drink_removal(message.text)
-    if removal:
-        removal_count, removal_type = removal
-        # Check for mentioned user in attachments (remove from them, not sender)
-        target_user_id = None
-        for attachment in message.attachments:
-            if attachment.type == "mentions" and attachment.user_ids:
-                target_user_id = attachment.user_ids[0]
-                break
-        response_text = await stats_service.remove_drinks_by_type(
-            message, removal_count, removal_type, target_user_id
-        )
-        await groupme_client.send_message(response_text, group_id=message.group_id)
-        return {"status": "ok", "action": "removed", "drinks": removal_count, "drink_type": removal_type.value}
+    if reply:
+        await groupme_client.send_message(reply, group_id=message.group_id)
+        return {"status": "ok", "action": "replied"}
 
-    # Text drink detection is handled by UnifiedBeerBot AI
-    text_drink_count, text_drink_type = 0, DrinkType.BEER
-
-    # Check for drink logging (image analysis)
-    vision_result = VisionResult()
-    if settings.image_analysis_enabled:
-        vision_result = await vision_service.analyze_attachments(message.attachments)
-
-    # Use the higher of text or image count (they represent the same drinks)
-    # Prefer image drink type if image detected a drink, otherwise use text
-    if vision_result.drink_count > 0:
-        drink_count = max(text_drink_count, vision_result.drink_count)
-        drink_type = vision_result.drink_type
-    else:
-        drink_count = text_drink_count
-        drink_type = text_drink_type
-
-    split_the_g = vision_result.split_the_g_count  # Only from images
-
-    # Check if images were analyzed but no drinks found
-    has_images = any(a.type == "image" for a in message.attachments)
-    if has_images and drink_count == 0 and vision_result.analyzed:
-        quip = await vision_service.generate_no_beer_quip()
-        await groupme_client.send_message(quip, group_id=message.group_id)
-        return {"status": "ok", "action": "quip", "reason": "no_drinks_in_image"}
-
-    # If image detected drinks, log them
-    if drink_count > 0:
-        # Extract mentioned users with their names
-        mentioned_users = extract_mentioned_users(message.text, message.attachments)
-
-        # Determine if sender should be included:
-        # - If explicit assignment (+N beers) with mentions, only log for mentioned users
-        # - Otherwise, include the sender (emoji, "cheers", etc.)
-        is_assignment = message_parser.is_explicit_assignment(message.text)
-        include_sender = not (is_assignment and mentioned_users)
-
-        # Log drinks (returns None if duplicate message - idempotency)
-        response_text = await stats_service.log_beers_for_users(
-            message, drink_count, mentioned_users, include_sender, split_the_g, drink_type
-        )
-        if response_text:
-            await groupme_client.send_message(response_text, group_id=message.group_id)
-            return {"status": "ok", "action": "logged", "drinks": drink_count, "drink_type": drink_type.value, "split_the_g": split_the_g}
-        else:
-            return {"status": "ok", "action": "duplicate", "message_id": message.id}
-
-    # Use UnifiedBeerBot for all text classification + response
-    if message.text:
-        # Record incoming message to conversation history (before processing)
-        unified_beer_bot.record_message(
-            message.group_id, message.text, message.name, is_bot=False
-        )
-
-        bot_response = await unified_beer_bot.respond(
-            message.text,
-            message.name,
-            group_id=message.group_id,
-            user_id=message.user_id,
-            image_result=vision_result if vision_result.analyzed else None,
-        )
-
-        if bot_response["action"] == "log_drink" and bot_response["drink"]:
-            # AI detected a drink
-            ai_count = bot_response["drink"]["count"]
-            ai_type = DrinkType.from_string(bot_response["drink"]["type"])
-
-            logging.getLogger(__name__).info(
-                "UnifiedBeerBot detected drink: text=%r count=%d type=%s",
-                message.text[:50], ai_count, ai_type.value
-            )
-
-            # Handle negative counts as removals
-            if ai_count < 0:
-                # Check for mentioned user in attachments (remove from them, not sender)
-                target_user_id = None
-                for attachment in message.attachments:
-                    if attachment.type == "mentions" and attachment.user_ids:
-                        target_user_id = attachment.user_ids[0]
-                        break
-                response_text = await stats_service.remove_drinks_by_type(
-                    message, abs(ai_count), ai_type, target_user_id
-                )
-                await groupme_client.send_message(response_text, group_id=message.group_id)
-                return {"status": "ok", "action": "removed", "drinks": abs(ai_count), "drink_type": ai_type.value, "source": "unified_bot"}
-
-            # Log the drink (positive count)
-            mentioned_users = extract_mentioned_users(message.text, message.attachments)
-            is_assignment = message_parser.is_explicit_assignment(message.text)
-            include_sender = not (is_assignment and mentioned_users)
-
-            response_text = await stats_service.log_beers_for_users(
-                message, ai_count, mentioned_users, include_sender, 0, ai_type
-            )
-            if response_text:
-                # Combine stats message with witty reply if present
-                if bot_response["reply"]:
-                    full_response = f"{response_text}\n{bot_response['reply']}"
-                else:
-                    full_response = response_text
-                await groupme_client.send_message(full_response, group_id=message.group_id)
-                unified_beer_bot.record_message(message.group_id, full_response, "Beerius", is_bot=True)
-                return {"status": "ok", "action": "logged", "drinks": ai_count, "drink_type": ai_type.value, "source": "unified_bot"}
-            else:
-                return {"status": "ok", "action": "duplicate", "message_id": message.id}
-
-        elif bot_response["action"] in ("answer", "respond") and bot_response["reply"]:
-            # Bot has a reply (answer to question or witty response)
-            await groupme_client.send_message(bot_response["reply"], group_id=message.group_id)
-            unified_beer_bot.record_message(message.group_id, bot_response["reply"], "Beerius", is_bot=True)
-            return {"status": "ok", "action": bot_response["action"], "reason": bot_response["reasoning"]}
-
-        # action == "ignore" - no action needed
-        return {"status": "ok", "action": "none", "source": "unified_bot"}
-
-    # No text message - no action needed
     return {"status": "ok", "action": "none"}
-
-
-async def handle_command(command: str, message: GroupMeMessage) -> str | None:
-    """Handle a command and return response text."""
-    import logging
-    logger = logging.getLogger(__name__)
-
-    try:
-        return await _handle_command_inner(command, message)
-    except Exception:
-        logger.exception("Error handling command: %s", command)
-        return "Oops! Something went wrong processing that command."
-
-
-async def _handle_command_inner(command: str, message: GroupMeMessage) -> str | None:
-    """Inner command handler (separated for error handling)."""
-    match command:
-        case "stats":
-            return await stats_service.get_group_stats(message.group_id)
-        case "mystats":
-            return await stats_service.get_user_stats(message)
-        case "leaderboard":
-            # Parse optional drink type filter
-            drink_filter = message_parser.parse_stats_filter(message.text, "leaderboard")
-            return await stats_service.get_leaderboard(message.group_id, drink_filter)
-        case "today":
-            # Parse optional drink type filter
-            drink_filter = message_parser.parse_stats_filter(message.text, "today")
-            return await stats_service.get_today_stats(message.group_id, drink_filter)
-        case "week":
-            # Parse optional drink type filter
-            drink_filter = message_parser.parse_stats_filter(message.text, "week")
-            return await stats_service.get_week_stats(message.group_id, drink_filter)
-        case "undo":
-            # Check for mentioned user in attachments
-            target_user_id = None
-            for attachment in message.attachments:
-                if attachment.type == "mentions" and attachment.user_ids:
-                    target_user_id = attachment.user_ids[0]
-                    break
-            return await stats_service.undo_beer(message, target_user_id)
-        case "unbeer":
-            # Parse the quantity to remove (defaults to 1)
-            quantity = message_parser.parse_unbeer_count(message.text)
-            # Check for mentioned user in attachments
-            target_user_id = None
-            for attachment in message.attachments:
-                if attachment.type == "mentions" and attachment.user_ids:
-                    target_user_id = attachment.user_ids[0]
-                    break
-            return await stats_service.unbeer(message, quantity, target_user_id)
-        case "million":
-            # Parse optional drink type filter
-            drink_filter = message_parser.parse_million_filter(message.text)
-            return await stats_service.get_million_countdown(message.group_id, drink_filter)
-        case "splitg":
-            return await stats_service.get_split_g_leaderboard(message.group_id)
-        case "split":
-            # Check for mentioned user
-            mentioned = extract_mentioned_users(message.text, message.attachments)
-            if mentioned:
-                target_user_id, target_name = mentioned[0]
-                return await stats_service.add_split(message, target_user_id, target_name)
-            return await stats_service.add_split(message)
-        case "unsplit":
-            # Parse the quantity to remove (defaults to 1)
-            quantity = message_parser.parse_unsplit_count(message.text)
-            # Check for mentioned user in attachments
-            target_user_id = None
-            for attachment in message.attachments:
-                if attachment.type == "mentions" and attachment.user_ids:
-                    target_user_id = attachment.user_ids[0]
-                    break
-            return await stats_service.unsplit(message, quantity, target_user_id)
-        case "owe":
-            # Parse the amount (defaults to 1) and get mentioned user with name
-            amount = message_parser.parse_debt_amount(message.text)
-            mentioned = extract_mentioned_users(message.text, message.attachments)
-            if not mentioned:
-                return "Please mention who owes: !owe @user or !owe N @user"
-            debtor_user_id, debtor_name = mentioned[0]
-            return await stats_service.add_debt(message, amount, debtor_user_id, debtor_name)
-        case "forgive":
-            # Parse the amount (defaults to 1) and get mentioned user (defaults to sender)
-            amount = message_parser.parse_debt_amount(message.text)
-            mentioned = extract_mentioned_users(message.text, message.attachments)
-            if mentioned:
-                debtor_user_id, debtor_name = mentioned[0]
-            else:
-                debtor_user_id, debtor_name = message.user_id, message.name
-            return await stats_service.forgive_debt(message, amount, debtor_user_id, debtor_name)
-        case "debts":
-            return await stats_service.get_debt_leaderboard(message.group_id)
-        case "help":
-            return stats_service.get_help()
-        case "toast":
-            return await vision_service.generate_toast()
-        case _:
-            return None
 
 
 # --- Admin Endpoints ---
 
-class GroupRegistration(BaseModel):
-    """Request body for registering a group."""
 
+class GroupRegistration(BaseModel):
     group_id: str
     bot_id: str
     name: str | None = None
 
 
 async def verify_admin_token(authorization: str | None = Header(None)) -> None:
-    """Verify the admin token from Authorization header."""
     if not settings.admin_token:
         raise HTTPException(status_code=503, detail="Admin endpoints not configured")
-
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
-
-    # Expect "Bearer <token>" format
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=401, detail="Invalid authorization format")
-
     if parts[1] != settings.admin_token:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
 @app.post("/admin/groups", dependencies=[Depends(verify_admin_token)])
 async def register_group(registration: GroupRegistration):
-    """Register a new group with its bot_id mapping."""
     from .repositories import group_repo
 
     group = await group_repo.register(
@@ -347,8 +91,6 @@ async def register_group(registration: GroupRegistration):
         bot_id=registration.bot_id,
         name=registration.name,
     )
-
-    # Clear cache so new bot_id is used immediately
     groupme_client.clear_cache(registration.group_id)
 
     return {
@@ -364,11 +106,9 @@ async def register_group(registration: GroupRegistration):
 
 @app.get("/admin/groups", dependencies=[Depends(verify_admin_token)])
 async def list_groups():
-    """List all registered groups."""
     from .repositories import group_repo
 
     groups = await group_repo.list_all()
-
     return {
         "status": "ok",
         "groups": [
@@ -385,15 +125,30 @@ async def list_groups():
 
 @app.delete("/admin/groups/{group_id}", dependencies=[Depends(verify_admin_token)])
 async def delete_group(group_id: str):
-    """Delete a group registration."""
     from .repositories import group_repo
 
     deleted = await group_repo.delete(group_id)
-
     if not deleted:
         raise HTTPException(status_code=404, detail="Group not found")
-
-    # Clear cache
     groupme_client.clear_cache(group_id)
-
     return {"status": "ok", "deleted": group_id}
+
+
+@app.post("/admin/weekly-recap", dependencies=[Depends(verify_admin_token)])
+async def trigger_weekly_recap():
+    """Generate and send weekly recaps for all active groups."""
+    if not settings.weekly_recap_enabled:
+        return {"status": "disabled"}
+
+    from .repositories import group_repo
+
+    groups = await group_repo.list_all()
+    sent = []
+
+    for group in groups:
+        recap = await beer_agent.generate_weekly_recap(group.group_id)
+        if recap:
+            await groupme_client.send_message(recap, group_id=group.group_id)
+            sent.append(group.group_id)
+
+    return {"status": "ok", "recaps_sent": len(sent), "groups": sent}

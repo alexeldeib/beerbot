@@ -3,10 +3,19 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import asyncpg
 
 from .database import get_pool
-from .models import Beer, DebtLeaderboardEntry, DrinkType, Group, GroupStats, SplitGGroupStats, SplitGUserStats, User, UserDebt, UserStats
+from .models import (
+    Beer,
+    DebtLeaderboardEntry,
+    DrinkType,
+    Group,
+    GroupStats,
+    SplitGGroupStats,
+    SplitGUserStats,
+    User,
+    UserStats,
+)
 
 # Use Eastern time for all date calculations
 EASTERN = ZoneInfo("America/New_York")
@@ -787,7 +796,9 @@ class DebtRepository:
             )
             return result or 0
 
-    async def get_debt_leaderboard(self, group_id: str, limit: int = 10) -> list[DebtLeaderboardEntry]:
+    async def get_debt_leaderboard(
+        self, group_id: str, limit: int = 10
+    ) -> list[DebtLeaderboardEntry]:
         """Get leaderboard of who owes the most beers."""
         pool = await get_pool()
 
@@ -805,10 +816,7 @@ class DebtRepository:
                 limit,
             )
 
-            return [
-                DebtLeaderboardEntry(name=row["name"], amount=row["amount"])
-                for row in rows
-            ]
+            return [DebtLeaderboardEntry(name=row["name"], amount=row["amount"]) for row in rows]
 
 
 class GroupRepository:
@@ -866,9 +874,7 @@ class GroupRepository:
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM groups ORDER BY created_at DESC"
-            )
+            rows = await conn.fetch("SELECT * FROM groups ORDER BY created_at DESC")
             return [Group(**dict(row)) for row in rows]
 
     async def delete(self, group_id: str) -> bool:

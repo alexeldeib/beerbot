@@ -1,0 +1,119 @@
+# Beerbot
+
+GroupMe bot that tracks alcoholic drink consumption (beer, wine, cocktails, hard seltzers) with AI-powered image analysis, leaderboards, and witty responses.
+
+## Tech Stack
+
+- **Python 3.11+** with FastAPI, asyncpg, Pydantic v2
+- **Google Gemini** (2.5-flash) with automatic function calling (AFC)
+- **PostgreSQL** with async connection pooling
+- **uv** for dependency management
+- **Fly.io** for deployment
+
+## Commands
+
+```bash
+# Install dependencies
+uv sync
+
+# Run local server
+uv run uvicorn src.beerbot.main:app --reload --port 8080
+
+# Run tests
+uv run pytest
+
+# Run specific test with verbose output
+uv run pytest tests/test_tools.py -v
+
+# Lint and format
+uv run ruff check src tests
+uv run ruff format src tests
+
+# Deploy
+fly deploy
+```
+
+## Vision Pipeline
+
+```bash
+# Scrape images from GroupMe
+uv run scripts/scrape_images.py --scrape --incremental
+
+# Auto-label with Gemini
+uv run scripts/scrape_images.py --label
+
+# Review labels interactively
+uv run scripts/review_labels.py
+
+# Evaluate prompt accuracy
+uv run scripts/eval_prompt.py --reviewed-only
+```
+
+## Architecture
+
+Single AI agent processes every message via Gemini function calling:
+
+```
+GroupMe Webhook → main.py (parse, skip bots) → BeerAgent.process_message()
+    → Build system prompt (personality + context)
+    → Build contents (text + images as multimodal parts)
+    → Create tool closures (group_id/sender bound via closure)
+    → client.aio.models.generate_content() with automatic function calling
+    → Rate limit check → send reply if any
+```
+
+## Project Structure
+
+```
+src/beerbot/
+├── main.py           # FastAPI app, webhook handler, admin endpoints
+├── agent.py          # BeerAgent: system prompt, AFC, rate limiting, conversation history
+├── tools.py          # Tool factory: 15 async closures (7 write, 8 read) with validation
+├── config.py         # Pydantic Settings for env vars
+├── models.py         # Pydantic models (GroupMeMessage, User, DrinkType enum)
+├── database.py       # asyncpg pool and schema management
+├── repositories.py   # Data access layer (unchanged)
+└── groupme_client.py # GroupMe API wrapper (unchanged)
+```
+
+## Key Patterns
+
+- **Single agent**: One Gemini call with function calling replaces regex + command routing + separate AI
+- **Closure-based tools**: Tools bind group_id/message_id/sender via closure — AI never sees security-sensitive IDs
+- **Async-first**: All I/O uses asyncpg and httpx; AFC uses native async tool callables
+- **Idempotency**: Message deduplication via unique index on `(message_id, user_id)`
+- **Timezone**: Eastern time (America/New_York) for "today"/"week" calculations
+- **Rate limiting**: TokenBucket per group — tool-call replies always sent, personality replies rate-limited
+- **Multi-group**: Single bot instance serves multiple GroupMe groups
+
+## Issue Tracking
+
+Uses beads (`bd` CLI) for task management. Issues stored in `.beads/issues.jsonl`.
+
+```bash
+bd ready --json        # View ready work
+bd create "Title" -t feature -p 1  # Create issue
+bd update bb-123 --status in_progress  # Claim task
+bd close bb-123        # Complete task
+```
+
+## Environment Variables
+
+Required:
+- `BEERBOT_BOT_ID` - GroupMe bot ID
+- `DATABASE_URL` - PostgreSQL connection string
+- `GEMINI_API_KEY` - Google Gemini API key
+
+Optional:
+- `ENABLE_IMAGE_ANALYSIS` - Enable/disable image analysis (default: true)
+- `AGENT_MAX_TOOL_CALLS` - Max AFC tool calls per message (default: 5)
+- `WEEKLY_RECAP_ENABLED` - Enable weekly recap generation (default: true)
+- `ADMIN_TOKEN` - Bearer token for admin endpoints
+
+## Coding Conventions
+
+- Line length: 100 characters (ruff)
+- Type hints on all functions
+- Conventional commits: `feat:`, `fix:`, `refactor:`, `chore:`
+- Tests in `tests/` mirroring src structure
+- Logger per module: `logger = logging.getLogger(__name__)`
