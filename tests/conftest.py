@@ -15,6 +15,6 @@ def sample_groupme_message():
         "name": "Test User",
         "sender_id": "user-001",
         "sender_type": "user",
-        "text": "🍺",
+        "text": "+1 beer",
         "user_id": "user-001",
     }

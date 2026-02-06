@@ -1,6 +1,5 @@
 """Pydantic models for GroupMe messages and internal data."""
 
-from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
@@ -32,21 +31,6 @@ class DrinkType(str, Enum):
             "seltzers": cls.CLAW,
         }
         return mapping.get(s.lower(), cls.BEER)
-
-
-@dataclass
-class VisionResult:
-    """Result from image analysis."""
-
-    drink_count: int = 0
-    drink_type: DrinkType = DrinkType.BEER
-    split_the_g_count: int = 0
-    analyzed: bool = False
-
-    @property
-    def beer_count(self) -> int:
-        """Backward compatibility."""
-        return self.drink_count
 
 
 class GroupMeAttachment(BaseModel):
