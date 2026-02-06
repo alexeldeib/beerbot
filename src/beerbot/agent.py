@@ -59,8 +59,19 @@ When the message mentions other users with "+N drinks @user1 @user2":
 When the message is casual like "cheers" or an emoji WITH mentions:
 - Log for BOTH the sender AND mentioned users.
 
+=== CORRECTIONS ===
+When someone corrects a previous log ("that was a wine not a cocktail", "actually 2 not 1"):
+1. Remove the wrong entry: call remove_drinks with the WRONG type/count.
+2. Log the correct entry: call log_drinks with the RIGHT type/count.
+For simple undos ("undo that", "take that back"): call undo_last_drink.
+CRITICAL: If the context shows "Replying to [Name] (id: X)", the correction targets user X — use their ID as target_user_id. Do NOT correct the sender unless they are correcting their own message.
+Otherwise, corrections apply to the sender unless they mention someone else.
+
 === RESPONSE FORMAT ===
 When logging drinks: always confirm what was logged and new totals using tool result data.
+"new_total" is type-specific (e.g. beers only), "overall_total" is all types combined.
+Compare type-to-type OR overall-to-overall — never mix them.
+When showing breakdowns: include ALL non-zero drink types so the numbers add up to the total.
 When answering questions: use tool data, present with personality.
 When being witty: keep it short and sharp. No emojis unless truly warranted.
 Do NOT start replies with "Cheers" (that's for logging confirmations with data).
@@ -111,6 +122,8 @@ class ChatMessage:
     user_name: str
     is_bot: bool
     timestamp: float = field(default_factory=time.time)
+    message_id: str | None = None
+    user_id: str | None = None
 
 
 def extract_mentioned_users(
@@ -169,12 +182,24 @@ class BeerAgent:
         return self._message_history[group_id]
 
     def record_message(
-        self, group_id: str, text: str, user_name: str, is_bot: bool = False
+        self,
+        group_id: str,
+        text: str,
+        user_name: str,
+        is_bot: bool = False,
+        message_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         if not group_id or not text:
             return
         self._get_history(group_id).append(
-            ChatMessage(text=text, user_name=user_name, is_bot=is_bot)
+            ChatMessage(
+                text=text,
+                user_name=user_name,
+                is_bot=is_bot,
+                message_id=message_id,
+                user_id=user_id,
+            )
         )
 
     def _build_context_lines(self, message: GroupMeMessage) -> str:
@@ -188,7 +213,21 @@ class BeerAgent:
             mentions_str = ", ".join(f"{name} (id: {uid})" for uid, name in mentioned)
             lines.append(f"Mentioned: [{mentions_str}]")
 
+        # Resolve reply-to context from attachments
         history = self._get_history(message.group_id)
+        reply_id = None
+        for att in message.attachments:
+            if att.type == "reply" and att.reply_id:
+                reply_id = att.reply_id
+                break
+        if reply_id and history:
+            for msg in history:
+                if msg.message_id == reply_id:
+                    who = "Beerius" if msg.is_bot else msg.user_name
+                    id_hint = f" (id: {msg.user_id})" if msg.user_id else ""
+                    lines.append(f"Replying to [{who}]{id_hint}: {msg.text[:200]}")
+                    break
+
         if history:
             lines.append("Recent messages:")
             for msg in history:
@@ -234,12 +273,33 @@ class BeerAgent:
             logger.warning("Agent skipped: no Gemini API key")
             return None
 
-        # Record incoming message
-        if message.text:
-            self.record_message(message.group_id, message.text, message.name, is_bot=False)
+        # Record incoming message (always, so reply-to lookup works for image-only messages)
+        self.record_message(
+            message.group_id,
+            message.text or "(image)",
+            message.name,
+            is_bot=False,
+            message_id=message.id,
+            user_id=message.user_id,
+        )
 
         # Build tool context
         mentioned = extract_mentioned_users(message.text, message.attachments)
+
+        # Resolve replied-to user from history
+        replied_to_user = None
+        reply_id = None
+        for att in message.attachments:
+            if att.type == "reply" and att.reply_id:
+                reply_id = att.reply_id
+                break
+        if reply_id:
+            history = self._get_history(message.group_id)
+            for msg in history:
+                if msg.message_id == reply_id and msg.user_id and not msg.is_bot:
+                    replied_to_user = (msg.user_id, msg.user_name)
+                    break
+
         ctx = ToolContext(
             group_id=message.group_id,
             message_id=message.id,
@@ -247,6 +307,7 @@ class BeerAgent:
             sender_name=message.name,
             sender_avatar_url=message.avatar_url,
             mentioned_users=mentioned,
+            replied_to_user=replied_to_user,
         )
         tools = create_tools(ctx)
 
