@@ -43,6 +43,8 @@ class GroupMeAttachment(BaseModel):
     name: Optional[str] = None
     user_ids: list[str] = Field(default_factory=list)  # For mentions
     loci: list[list[int]] = Field(default_factory=list)  # For mentions: [[start, length], ...]
+    reply_id: Optional[str] = None  # For reply attachments: direct parent message ID
+    base_reply_id: Optional[str] = None  # For reply attachments: root of thread
 
 
 class GroupMeMessage(BaseModel):

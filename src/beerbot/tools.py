@@ -28,6 +28,7 @@ class ToolContext:
     sender_name: str
     sender_avatar_url: str | None
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
+    replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
     tools_called: bool = field(default=False, init=False)
 
 
@@ -36,6 +37,8 @@ def _validate_user_id(ctx: ToolContext, user_id: str | None) -> str:
     if user_id is None:
         return ctx.sender_id
     allowed = {ctx.sender_id} | {uid for uid, _ in ctx.mentioned_users}
+    if ctx.replied_to_user:
+        allowed.add(ctx.replied_to_user[0])
     if user_id not in allowed:
         raise ValueError(f"Cannot target user {user_id}: not sender or mentioned")
     return user_id
@@ -48,6 +51,8 @@ def _resolve_name(ctx: ToolContext, user_id: str) -> str:
     for uid, name in ctx.mentioned_users:
         if uid == user_id:
             return name
+    if ctx.replied_to_user and ctx.replied_to_user[0] == user_id:
+        return ctx.replied_to_user[1]
     return f"User {user_id[-4:]}"
 
 
@@ -65,6 +70,23 @@ async def _get_or_create_user(ctx: ToolContext, user_id: str):
         name=_resolve_name(ctx, user_id),
         avatar_url=_resolve_avatar(ctx, user_id),
     )
+
+
+async def _get_next_ahead(
+    user_name: str, group_id: str, drink_type: DrinkType | None = None
+) -> dict | None:
+    """Find the person one rank above user_name on the leaderboard.
+
+    Returns {"name": ..., "total": ...} or None if user is #1 or not found.
+    """
+    entries = await beer_repo.get_leaderboard_with_breakdown(group_id, drink_type, 50)
+    for i, (name, total, _breakdown) in enumerate(entries):
+        if name == user_name:
+            if i > 0:
+                ahead_name, ahead_total, _ = entries[i - 1]
+                return {"name": ahead_name, "total": ahead_total}
+            return None  # already #1
+    return None  # user not found on leaderboard
 
 
 def create_tools(ctx: ToolContext) -> list[Callable]:
@@ -120,6 +142,9 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                 continue
 
             total = await beer_repo.get_user_total_by_type(user.id, ctx.group_id, dt)
+            overall_total = await beer_repo.get_user_total(user.id, ctx.group_id)
+            next_ahead_by_type = await _get_next_ahead(user.name, ctx.group_id, dt)
+            next_ahead_overall = await _get_next_ahead(user.name, ctx.group_id, None)
 
             # Auto-reduce debt
             debt_reduced = await debt_repo.reduce_debt(user.id, ctx.group_id, count)
@@ -134,6 +159,9 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                     "count": count,
                     "drink_type": dt.value,
                     "new_total": total,
+                    "overall_total": overall_total,
+                    "next_ahead_by_type": next_ahead_by_type,
+                    "next_ahead_overall": next_ahead_overall,
                     "debt_reduced": debt_reduced,
                     "remaining_debt": remaining_debt,
                 }
