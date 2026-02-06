@@ -4978,5 +4978,15 @@
     "message_id": "177038806349221392",
     "user_name": "Ani Srinivasan",
     "text": null
+  },
+  "msg_177040824255086436_0.jpg": {
+    "drink_type": "wine",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177040824255086436",
+    "user_name": "Toby Roper",
+    "text": null
   }
 }
