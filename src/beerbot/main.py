@@ -1,7 +1,10 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -19,11 +22,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+EASTERN = ZoneInfo("America/New_York")
+
+
+async def _recap_scheduler() -> None:
+    """Background loop: fires recap on Sunday after WEEKLY_RECAP_HOUR ET."""
+    from .repositories import group_repo, recap_repo
+
+    while True:
+        await asyncio.sleep(300)  # 5 min tick
+        now = datetime.now(EASTERN)
+        if now.weekday() != 6 or now.hour < settings.weekly_recap_hour:
+            continue
+        if not settings.weekly_recap_enabled:
+            continue
+
+        week_start = (now - timedelta(days=now.weekday())).date()
+        groups = await group_repo.list_all()
+        for group in groups:
+            if await recap_repo.has_sent(group.group_id, week_start):
+                continue
+            recap = await beer_agent.generate_weekly_recap(group.group_id)
+            if recap and await recap_repo.try_claim(group.group_id, week_start):
+                await groupme_client.send_message(recap, group_id=group.group_id)
+                logger.info("Sent weekly recap for group %s", group.group_id)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    task = asyncio.create_task(_recap_scheduler())
     yield
+    task.cancel()
     await close_pool()
 
 

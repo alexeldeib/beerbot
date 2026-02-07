@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users
 from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 
@@ -494,3 +496,115 @@ class TestBeerAgentImageFetching:
         agent = BeerAgent()
         part = await agent._fetch_image("https://example.com/beer.jpg")
         assert part is None
+
+
+class TestGenerateWeeklyRecap:
+    @pytest.mark.asyncio
+    @patch("src.beerbot.agent.beer_repo")
+    @patch("src.beerbot.agent.settings")
+    @patch("src.beerbot.agent.genai")
+    async def test_enriched_recap_includes_fun_facts(
+        self, mock_genai, mock_settings, mock_beer_repo
+    ):
+        mock_settings.gemini_api_key = "test-key"
+
+        mock_response = MagicMock()
+        mock_response.text = "Weekly recap text!"
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_genai.Client.return_value = mock_client
+
+        # Mock basic stats
+        week_stats = MagicMock()
+        week_stats.total_beers = 42
+        week_stats.unique_drinkers = 5
+        week_stats.drink_type_counts = {"beer": 30, "wine": 12}
+        week_stats.user_stats = []
+
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
+        mock_beer_repo.get_leaderboard_with_breakdown = AsyncMock(return_value=[])
+        mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))
+
+        # Mock fun stats
+        mock_beer_repo.get_period_total = AsyncMock(return_value=35)
+        mock_beer_repo.get_biggest_day = AsyncMock(return_value=("Saturday", 18))
+        mock_beer_repo.get_type_champions = AsyncMock(
+            return_value=[("beer", "Bryan", 15), ("wine", "Celena", 8)]
+        )
+        mock_beer_repo.get_milestones = AsyncMock(return_value=[("Bryan", 200)])
+
+        agent = BeerAgent()
+        result = await agent.generate_weekly_recap("group-1")
+
+        assert result == "Weekly recap text!"
+
+        # Verify the prompt sent to Gemini includes fun facts
+        call_args = mock_client.aio.models.generate_content.call_args
+        prompt = call_args.kwargs["contents"][0]
+        assert "FUN FACTS" in prompt
+        assert "Saturday" in prompt
+        assert "Bryan" in prompt
+        assert "Milestones" in prompt
+        assert "35 last week" in prompt
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.agent.beer_repo")
+    @patch("src.beerbot.agent.settings")
+    @patch("src.beerbot.agent.genai")
+    async def test_recap_no_fun_facts_when_empty(self, mock_genai, mock_settings, mock_beer_repo):
+        mock_settings.gemini_api_key = "test-key"
+
+        mock_response = MagicMock()
+        mock_response.text = "Quiet week."
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_genai.Client.return_value = mock_client
+
+        week_stats = MagicMock()
+        week_stats.total_beers = 3
+        week_stats.unique_drinkers = 1
+        week_stats.drink_type_counts = {"beer": 3}
+        week_stats.user_stats = []
+
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
+        mock_beer_repo.get_leaderboard_with_breakdown = AsyncMock(return_value=[])
+        mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))
+        mock_beer_repo.get_period_total = AsyncMock(return_value=0)
+        mock_beer_repo.get_biggest_day = AsyncMock(return_value=None)
+        mock_beer_repo.get_type_champions = AsyncMock(return_value=[])
+        mock_beer_repo.get_milestones = AsyncMock(return_value=[])
+
+        agent = BeerAgent()
+        result = await agent.generate_weekly_recap("group-1")
+
+        assert result == "Quiet week."
+        call_args = mock_client.aio.models.generate_content.call_args
+        prompt = call_args.kwargs["contents"][0]
+        assert "FUN FACTS" not in prompt
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.agent.beer_repo")
+    @patch("src.beerbot.agent.settings")
+    async def test_recap_returns_none_without_client(self, mock_settings, mock_beer_repo):
+        mock_settings.gemini_api_key = None
+        agent = BeerAgent()
+        result = await agent.generate_weekly_recap("group-1")
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.agent.beer_repo")
+    @patch("src.beerbot.agent.settings")
+    @patch("src.beerbot.agent.genai")
+    async def test_recap_returns_none_when_no_activity(
+        self, mock_genai, mock_settings, mock_beer_repo
+    ):
+        mock_settings.gemini_api_key = "test-key"
+        mock_genai.Client.return_value = MagicMock()
+
+        week_stats = MagicMock()
+        week_stats.total_beers = 0
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
+
+        agent = BeerAgent()
+        result = await agent.generate_weekly_recap("group-1")
+        assert result is None

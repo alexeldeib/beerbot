@@ -1,7 +1,10 @@
 """Tests for FastAPI endpoints."""
 
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
+
 import pytest
-from unittest.mock import AsyncMock, patch
 
 
 @pytest.fixture
@@ -123,3 +126,163 @@ class TestWeeklyRecap:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "disabled"
+
+
+class TestRecapScheduler:
+    """Tests for the _recap_scheduler background loop logic."""
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.main.groupme_client")
+    @patch("src.beerbot.main.beer_agent")
+    @patch("src.beerbot.main.settings")
+    async def test_sends_recap_on_sunday(self, mock_settings, mock_agent, mock_groupme):
+        """Scheduler sends recap when it's Sunday after recap hour."""
+        from src.beerbot.main import _recap_scheduler
+
+        mock_settings.weekly_recap_enabled = True
+        mock_settings.weekly_recap_hour = 21
+
+        # Fake Sunday 9 PM ET
+        sunday_9pm = datetime(2025, 1, 5, 21, 5, tzinfo=ZoneInfo("America/New_York"))
+
+        mock_group = MagicMock()
+        mock_group.group_id = "group-1"
+
+        mock_recap_repo = AsyncMock()
+        mock_recap_repo.has_sent = AsyncMock(return_value=False)
+        mock_recap_repo.try_claim = AsyncMock(return_value=True)
+
+        mock_group_repo = AsyncMock()
+        mock_group_repo.list_all = AsyncMock(return_value=[mock_group])
+
+        mock_agent.generate_weekly_recap = AsyncMock(return_value="Great week!")
+        mock_groupme.send_message = AsyncMock(return_value=True)
+
+        call_count = 0
+
+        async def tick_then_stop(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise asyncio.CancelledError
+
+        import asyncio
+
+        with (
+            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
+            patch("src.beerbot.main.datetime") as mock_dt,
+            patch("src.beerbot.main.recap_repo", mock_recap_repo, create=True),
+            patch("src.beerbot.main.group_repo", mock_group_repo, create=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "src.beerbot.repositories": MagicMock(
+                        group_repo=mock_group_repo, recap_repo=mock_recap_repo
+                    )
+                },
+            ),
+        ):
+            mock_dt.now.return_value = sunday_9pm
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            # Patch the repos at the import location inside _recap_scheduler
+            with (
+                patch("src.beerbot.repositories.group_repo", mock_group_repo),
+                patch("src.beerbot.repositories.recap_repo", mock_recap_repo),
+            ):
+                with pytest.raises(asyncio.CancelledError):
+                    await _recap_scheduler()
+
+        mock_agent.generate_weekly_recap.assert_called_once_with("group-1")
+        mock_groupme.send_message.assert_called_once_with("Great week!", group_id="group-1")
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.main.groupme_client")
+    @patch("src.beerbot.main.beer_agent")
+    @patch("src.beerbot.main.settings")
+    async def test_skips_when_already_sent(self, mock_settings, mock_agent, mock_groupme):
+        """Scheduler skips groups that already have a recap for this week."""
+        from src.beerbot.main import _recap_scheduler
+
+        mock_settings.weekly_recap_enabled = True
+        mock_settings.weekly_recap_hour = 21
+
+        sunday_9pm = datetime(2025, 1, 5, 21, 5, tzinfo=ZoneInfo("America/New_York"))
+
+        mock_group = MagicMock()
+        mock_group.group_id = "group-1"
+
+        mock_recap_repo = AsyncMock()
+        mock_recap_repo.has_sent = AsyncMock(return_value=True)  # Already sent
+
+        mock_group_repo = AsyncMock()
+        mock_group_repo.list_all = AsyncMock(return_value=[mock_group])
+
+        call_count = 0
+
+        async def tick_then_stop(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise asyncio.CancelledError
+
+        import asyncio
+
+        with (
+            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
+            patch("src.beerbot.main.datetime") as mock_dt,
+            patch.dict(
+                "sys.modules",
+                {
+                    "src.beerbot.repositories": MagicMock(
+                        group_repo=mock_group_repo, recap_repo=mock_recap_repo
+                    )
+                },
+            ),
+        ):
+            mock_dt.now.return_value = sunday_9pm
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            with (
+                patch("src.beerbot.repositories.group_repo", mock_group_repo),
+                patch("src.beerbot.repositories.recap_repo", mock_recap_repo),
+            ):
+                with pytest.raises(asyncio.CancelledError):
+                    await _recap_scheduler()
+
+        mock_agent.generate_weekly_recap.assert_not_called()
+        mock_groupme.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.main.groupme_client")
+    @patch("src.beerbot.main.beer_agent")
+    @patch("src.beerbot.main.settings")
+    async def test_skips_non_sunday(self, mock_settings, mock_agent, mock_groupme):
+        """Scheduler does nothing on non-Sunday days."""
+        from src.beerbot.main import _recap_scheduler
+
+        mock_settings.weekly_recap_enabled = True
+        mock_settings.weekly_recap_hour = 21
+
+        # Tuesday
+        tuesday = datetime(2025, 1, 7, 21, 5, tzinfo=ZoneInfo("America/New_York"))
+
+        call_count = 0
+
+        async def tick_then_stop(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise asyncio.CancelledError
+
+        import asyncio
+
+        with (
+            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
+            patch("src.beerbot.main.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = tuesday
+            with pytest.raises(asyncio.CancelledError):
+                await _recap_scheduler()
+
+        mock_agent.generate_weekly_recap.assert_not_called()

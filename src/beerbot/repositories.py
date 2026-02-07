@@ -732,6 +732,99 @@ class BeerRepository:
 
             return results
 
+    async def get_period_total(self, group_id: str, start: datetime, end: datetime) -> int:
+        """Get total drinks for a group in a time range."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(quantity), 0)
+                FROM beers WHERE group_id = $1 AND logged_at >= $2 AND logged_at < $3
+                """,
+                group_id,
+                start,
+                end,
+            )
+            return int(result)
+
+    async def get_biggest_day(self, group_id: str, since: datetime) -> tuple[str, int] | None:
+        """Get the day with the most drinks since a given time.
+
+        Returns (day_name, total) or None if no activity.
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT DATE(logged_at AT TIME ZONE 'America/New_York') as day,
+                       SUM(quantity) as total
+                FROM beers WHERE group_id = $1 AND logged_at >= $2
+                GROUP BY day ORDER BY total DESC LIMIT 1
+                """,
+                group_id,
+                since,
+            )
+            if not row or row["total"] is None:
+                return None
+            # Format date as day-of-week name
+            day_name = row["day"].strftime("%A")
+            return (day_name, int(row["total"]))
+
+    async def get_type_champions(
+        self, group_id: str, since: datetime
+    ) -> list[tuple[str, str, int]]:
+        """Get the top drinker per drink type since a given time.
+
+        Returns list of (drink_type, user_name, total) tuples.
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (b.drink_type) b.drink_type, u.name, SUM(b.quantity) as total
+                FROM beers b JOIN users u ON b.user_id = u.id
+                WHERE b.group_id = $1 AND b.logged_at >= $2
+                GROUP BY b.drink_type, u.name
+                ORDER BY b.drink_type, total DESC
+                """,
+                group_id,
+                since,
+            )
+            return [(row["drink_type"], row["name"], int(row["total"])) for row in rows]
+
+    async def get_milestones(
+        self, group_id: str, since: datetime, step: int = 50
+    ) -> list[tuple[str, int]]:
+        """Find users who crossed a milestone (e.g. 50, 100, 150) this week.
+
+        Returns list of (user_name, milestone_value) tuples.
+        """
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH user_totals AS (
+                    SELECT u.name,
+                           SUM(b.quantity) as all_time,
+                           SUM(CASE WHEN b.logged_at >= $2 THEN b.quantity ELSE 0 END) as this_week
+                    FROM beers b JOIN users u ON b.user_id = u.id
+                    WHERE b.group_id = $1
+                    GROUP BY u.id, u.name
+                )
+                SELECT name, (all_time / $3) * $3 as milestone
+                FROM user_totals
+                WHERE all_time / $3 > (all_time - this_week) / $3
+                """,
+                group_id,
+                since,
+                step,
+            )
+            return [(row["name"], int(row["milestone"])) for row in rows]
+
 
 class DebtRepository:
     """Repository for simple debt tracking (beers owed to the group)."""
@@ -889,8 +982,45 @@ class GroupRepository:
             return result == "DELETE 1"
 
 
+class RecapRepository:
+    """Repository for weekly recap idempotency tracking."""
+
+    async def has_sent(self, group_id: str, week_start: str) -> bool:
+        """Check if a recap has already been sent for this group/week."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM weekly_recaps
+                    WHERE group_id = $1 AND week_start = $2
+                )
+                """,
+                group_id,
+                week_start,
+            )
+
+    async def try_claim(self, group_id: str, week_start: str) -> bool:
+        """Atomically claim a recap slot. Returns True if we won the race."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO weekly_recaps (group_id, week_start)
+                VALUES ($1, $2)
+                ON CONFLICT (group_id, week_start) DO NOTHING
+                """,
+                group_id,
+                week_start,
+            )
+            return result == "INSERT 0 1"
+
+
 # Singleton instances
 user_repo = UserRepository()
 beer_repo = BeerRepository()
 debt_repo = DebtRepository()
 group_repo = GroupRepository()
+recap_repo = RecapRepository()
