@@ -30,6 +30,7 @@ class ToolContext:
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
     replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
     tools_called: bool = field(default=False, init=False)
+    reply_text: str | None = field(default=None, init=False)
 
 
 def _validate_user_id(ctx: ToolContext, user_id: str | None) -> str:
@@ -70,23 +71,6 @@ async def _get_or_create_user(ctx: ToolContext, user_id: str):
         name=_resolve_name(ctx, user_id),
         avatar_url=_resolve_avatar(ctx, user_id),
     )
-
-
-async def _get_next_ahead(
-    user_name: str, group_id: str, drink_type: DrinkType | None = None
-) -> dict | None:
-    """Find the person one rank above user_name on the leaderboard.
-
-    Returns {"name": ..., "total": ...} or None if user is #1 or not found.
-    """
-    entries = await beer_repo.get_leaderboard_with_breakdown(group_id, drink_type, 50)
-    for i, (name, total, _breakdown) in enumerate(entries):
-        if name == user_name:
-            if i > 0:
-                ahead_name, ahead_total, _ = entries[i - 1]
-                return {"name": ahead_name, "total": ahead_total}
-            return None  # already #1
-    return None  # user not found on leaderboard
 
 
 def create_tools(ctx: ToolContext) -> list[Callable]:
@@ -142,9 +126,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                 continue
 
             total = await beer_repo.get_user_total_by_type(user.id, ctx.group_id, dt)
-            overall_total = await beer_repo.get_user_total(user.id, ctx.group_id)
-            next_ahead_by_type = await _get_next_ahead(user.name, ctx.group_id, dt)
-            next_ahead_overall = await _get_next_ahead(user.name, ctx.group_id, None)
 
             # Auto-reduce debt
             debt_reduced = await debt_repo.reduce_debt(user.id, ctx.group_id, count)
@@ -159,9 +140,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                     "count": count,
                     "drink_type": dt.value,
                     "new_total": total,
-                    "overall_total": overall_total,
-                    "next_ahead_by_type": next_ahead_by_type,
-                    "next_ahead_overall": next_ahead_overall,
                     "debt_reduced": debt_reduced,
                     "remaining_debt": remaining_debt,
                 }
@@ -492,6 +470,16 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
 
         return result
 
+    async def reply(message: str) -> dict:
+        """Send a reply to the group chat. You MUST call this to respond.
+        If you have nothing to say, don't call this tool.
+
+        Args:
+            message: Your reply message.
+        """
+        ctx.reply_text = message
+        return {"status": "queued"}
+
     return [
         # Write tools
         log_drinks,
@@ -510,4 +498,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         get_debt_leaderboard,
         get_split_g_leaderboard,
         get_million_countdown,
+        # Meta tools
+        reply,
     ]
