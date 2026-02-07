@@ -124,3 +124,14 @@ async def init_db() -> None:
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+
+        # Weekly recap idempotency tracking
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_recaps (
+                id SERIAL PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                week_start DATE NOT NULL,
+                sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(group_id, week_start)
+            )
+        """)

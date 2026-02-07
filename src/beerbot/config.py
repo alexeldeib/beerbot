@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # Weekly recap
     weekly_recap_enabled: bool = True
+    weekly_recap_hour: int = 21  # 9 PM ET
 
     # Admin (optional - required for admin endpoints)
     admin_token: str | None = None

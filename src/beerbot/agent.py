@@ -94,6 +94,12 @@ Focus on THIS WEEK's activity first: total drinks, weekly MVP (top drinker THIS 
 type breakdown if interesting. Then show the overall all-time top 5 rankings.
 Mention close races or ranking changes if any.
 
+Include 2-3 of these fun facts if the data is interesting (skip any that are boring):
+- Pace trend vs last week
+- Biggest single day
+- Type champions (who dominated each drink type)
+- Milestones crossed this week
+
 IMPORTANT: Weekly numbers and all-time numbers are SEPARATE sections below. Do NOT mix them.
 Use drink emojis: 🍺 beer, 🍸 cocktail, 🍷 wine, 🥤 seltzer.
 
@@ -393,6 +399,13 @@ class BeerAgent:
         leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, 5)
         split_stats = await beer_repo.get_split_g_stats(group_id)
 
+        # Fun stats
+        last_week_start = start_of_week - timedelta(days=7)
+        last_week_total = await beer_repo.get_period_total(group_id, last_week_start, start_of_week)
+        biggest_day = await beer_repo.get_biggest_day(group_id, start_of_week)
+        type_champions = await beer_repo.get_type_champions(group_id, start_of_week)
+        milestones = await beer_repo.get_milestones(group_id, start_of_week)
+
         data_lines = [
             "=== THIS WEEK ===",
             f"Total drinks: {week_stats.total_beers}",
@@ -409,6 +422,30 @@ class BeerAgent:
             data_lines.append(f"  {i}. {name}: {total} ({breakdown})")
         if split_stats.total_splits > 0:
             data_lines.append(f"Split the G (all time): {split_stats.total_splits}")
+
+        # Append fun facts section
+        fun_facts: list[str] = []
+        if last_week_total > 0:
+            diff = week_stats.total_beers - last_week_total
+            direction = "up" if diff > 0 else "down" if diff < 0 else "flat"
+            fun_facts.append(
+                f"Pace vs last week: {direction} ({last_week_total} last week → "
+                f"{week_stats.total_beers} this week)"
+            )
+        if biggest_day:
+            day_name, day_total = biggest_day
+            fun_facts.append(f"Biggest day: {day_name} with {day_total} drinks")
+        if type_champions:
+            champs = ", ".join(f"{dt}: {name} ({total})" for dt, name, total in type_champions)
+            fun_facts.append(f"Type champions: {champs}")
+        if milestones:
+            ms = ", ".join(f"{name} hit {val}" for name, val in milestones)
+            fun_facts.append(f"Milestones: {ms}")
+
+        if fun_facts:
+            data_lines.append("")
+            data_lines.append("=== FUN FACTS ===")
+            data_lines.extend(fun_facts)
 
         data_str = "\n".join(data_lines)
         prompt = RECAP_PROMPT.format(data=data_str)
