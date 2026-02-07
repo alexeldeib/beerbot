@@ -5048,5 +5048,25 @@
     "message_id": "177044339674564161",
     "user_name": "Celena Tyler",
     "text": null
+  },
+  "msg_177047664071223281_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177047664071223281",
+    "user_name": "Desmond G.",
+    "text": null
+  },
+  "msg_177047379528473281_0.jpg": {
+    "drink_type": "cocktail",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177047379528473281",
+    "user_name": "Desmond G.",
+    "text": null
   }
 }
