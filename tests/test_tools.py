@@ -29,10 +29,10 @@ def _find_tool(tools: list, name: str):
 
 
 class TestToolFactory:
-    def test_create_tools_returns_15(self):
+    def test_create_tools_returns_16(self):
         ctx = _make_ctx()
         tools = create_tools(ctx)
-        assert len(tools) == 15
+        assert len(tools) == 16
 
     def test_all_tools_are_async(self):
         import asyncio
@@ -68,6 +68,7 @@ class TestToolFactory:
             "get_debt_leaderboard",
             "get_split_g_leaderboard",
             "get_million_countdown",
+            "reply",
         }
         assert names == expected
 
@@ -84,8 +85,6 @@ class TestLogDrinks:
         mock_user.get_or_create = AsyncMock(return_value=user_mock)
         mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
         mock_beer.get_user_total_by_type = AsyncMock(return_value=5)
-        mock_beer.get_user_total = AsyncMock(return_value=5)
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(return_value=[("Alice", 5, {})])
         mock_debt.reduce_debt = AsyncMock(return_value=0)
 
         ctx = _make_ctx()
@@ -111,8 +110,6 @@ class TestLogDrinks:
         mock_user.get_or_create = AsyncMock(return_value=user_mock)
         mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
         mock_beer.get_user_total_by_type = AsyncMock(return_value=25)
-        mock_beer.get_user_total = AsyncMock(return_value=25)
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(return_value=[("Alice", 25, {})])
         mock_debt.reduce_debt = AsyncMock(return_value=0)
 
         ctx = _make_ctx()
@@ -137,8 +134,6 @@ class TestLogDrinks:
         mock_user.get_or_create = AsyncMock(side_effect=[bob, carol])
         mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
         mock_beer.get_user_total_by_type = AsyncMock(return_value=1)
-        mock_beer.get_user_total = AsyncMock(return_value=1)
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(return_value=[])
         mock_debt.reduce_debt = AsyncMock(return_value=0)
 
         ctx = _make_ctx(mentioned_users=[("user-002", "Bob"), ("user-003", "Carol")])
@@ -214,8 +209,6 @@ class TestLogDrinks:
         mock_user.get_or_create = AsyncMock(return_value=user_mock)
         mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
         mock_beer.get_user_total_by_type = AsyncMock(return_value=5)
-        mock_beer.get_user_total = AsyncMock(return_value=5)
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(return_value=[("Alice", 5, {})])
         mock_debt.reduce_debt = AsyncMock(return_value=2)
         mock_debt.get_debt = AsyncMock(return_value=3)
 
@@ -228,140 +221,21 @@ class TestLogDrinks:
         assert result["results"][0]["remaining_debt"] == 3
 
 
-class TestLogDrinksEnriched:
-    """Tests for enriched log_drinks return data (overall_total, next_ahead)."""
-
+class TestReply:
     @pytest.mark.asyncio
-    @patch("src.beerbot.tools.debt_repo")
-    @patch("src.beerbot.tools.beer_repo")
-    @patch("src.beerbot.tools.user_repo")
-    async def test_includes_overall_total(self, mock_user, mock_beer, mock_debt):
-        user_mock = MagicMock()
-        user_mock.id = 1
-        user_mock.name = "Alice"
-        mock_user.get_or_create = AsyncMock(return_value=user_mock)
-        mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
-        mock_beer.get_user_total_by_type = AsyncMock(return_value=5)
-        mock_beer.get_user_total = AsyncMock(return_value=20)
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Alice", 20, {"beer": 5}),
-            ]
-        )
-        mock_debt.reduce_debt = AsyncMock(return_value=0)
-
+    async def test_sets_reply_text(self):
         ctx = _make_ctx()
         tools = create_tools(ctx)
-        log_drinks = _find_tool(tools, "log_drinks")
+        reply = _find_tool(tools, "reply")
 
-        result = await log_drinks(count=1, drink_type="beer")
-        entry = result["results"][0]
-        assert entry["new_total"] == 5  # type-specific
-        assert entry["overall_total"] == 20  # all types
+        result = await reply(message="Nice one!")
+        assert result == {"status": "queued"}
+        assert ctx.reply_text == "Nice one!"
 
     @pytest.mark.asyncio
-    @patch("src.beerbot.tools.debt_repo")
-    @patch("src.beerbot.tools.beer_repo")
-    @patch("src.beerbot.tools.user_repo")
-    async def test_includes_next_ahead(self, mock_user, mock_beer, mock_debt):
-        user_mock = MagicMock()
-        user_mock.id = 1
-        user_mock.name = "Alice"
-        mock_user.get_or_create = AsyncMock(return_value=user_mock)
-        mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
-        mock_beer.get_user_total_by_type = AsyncMock(return_value=5)
-        mock_beer.get_user_total = AsyncMock(return_value=20)
-        # Alice is #2 behind Celena in both type and overall
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Celena", 30, {"beer": 10}),
-                ("Alice", 20, {"beer": 5}),
-            ]
-        )
-        mock_debt.reduce_debt = AsyncMock(return_value=0)
-
+    async def test_reply_text_default_none(self):
         ctx = _make_ctx()
-        tools = create_tools(ctx)
-        log_drinks = _find_tool(tools, "log_drinks")
-
-        result = await log_drinks(count=1, drink_type="beer")
-        entry = result["results"][0]
-        assert entry["next_ahead_by_type"] == {"name": "Celena", "total": 30}
-        assert entry["next_ahead_overall"] == {"name": "Celena", "total": 30}
-
-    @pytest.mark.asyncio
-    @patch("src.beerbot.tools.debt_repo")
-    @patch("src.beerbot.tools.beer_repo")
-    @patch("src.beerbot.tools.user_repo")
-    async def test_next_ahead_none_when_first(self, mock_user, mock_beer, mock_debt):
-        user_mock = MagicMock()
-        user_mock.id = 1
-        user_mock.name = "Alice"
-        mock_user.get_or_create = AsyncMock(return_value=user_mock)
-        mock_beer.create = AsyncMock(return_value=MagicMock(id=10))
-        mock_beer.get_user_total_by_type = AsyncMock(return_value=50)
-        mock_beer.get_user_total = AsyncMock(return_value=100)
-        # Alice is #1
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Alice", 100, {"beer": 50}),
-                ("Bob", 30, {"beer": 20}),
-            ]
-        )
-        mock_debt.reduce_debt = AsyncMock(return_value=0)
-
-        ctx = _make_ctx()
-        tools = create_tools(ctx)
-        log_drinks = _find_tool(tools, "log_drinks")
-
-        result = await log_drinks(count=1, drink_type="beer")
-        entry = result["results"][0]
-        assert entry["next_ahead_by_type"] is None
-        assert entry["next_ahead_overall"] is None
-
-
-class TestGetNextAhead:
-    @pytest.mark.asyncio
-    @patch("src.beerbot.tools.beer_repo")
-    async def test_returns_person_ahead(self, mock_beer):
-        from src.beerbot.tools import _get_next_ahead
-
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Celena", 145, {}),
-                ("Alice", 46, {}),
-                ("Bob", 30, {}),
-            ]
-        )
-        result = await _get_next_ahead("Alice", "group-1", None)
-        assert result == {"name": "Celena", "total": 145}
-
-    @pytest.mark.asyncio
-    @patch("src.beerbot.tools.beer_repo")
-    async def test_returns_none_when_first(self, mock_beer):
-        from src.beerbot.tools import _get_next_ahead
-
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Alice", 100, {}),
-                ("Bob", 50, {}),
-            ]
-        )
-        result = await _get_next_ahead("Alice", "group-1", None)
-        assert result is None
-
-    @pytest.mark.asyncio
-    @patch("src.beerbot.tools.beer_repo")
-    async def test_returns_none_when_not_found(self, mock_beer):
-        from src.beerbot.tools import _get_next_ahead
-
-        mock_beer.get_leaderboard_with_breakdown = AsyncMock(
-            return_value=[
-                ("Bob", 50, {}),
-            ]
-        )
-        result = await _get_next_ahead("Alice", "group-1", None)
-        assert result is None
+        assert ctx.reply_text is None
 
 
 class TestRemoveDrinks:

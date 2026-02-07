@@ -109,37 +109,56 @@ class TestBeerAgentProcessMessage:
         result = await agent.process_message(_make_message())
         assert result is None
 
+    @patch("src.beerbot.agent.create_tools")
     @patch("src.beerbot.agent.settings")
     @patch("src.beerbot.agent.genai")
-    async def test_returns_reply(self, mock_genai, mock_settings):
+    async def test_returns_reply_via_tool(self, mock_genai, mock_settings, mock_create_tools):
         mock_settings.gemini_api_key = "test-key"
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
         mock_response = MagicMock()
-        mock_response.text = "Cheers, Alice! +1 beer logged. Total: 5."
+        mock_response.text = ""
 
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
+
+        # Simulate the reply tool setting ctx.reply_text during AFC
+        def setup_tools(ctx):
+            ctx.reply_text = "+1🍺 for Alice. 5🍺 total."
+            ctx.tools_called = True
+            return []
+
+        mock_create_tools.side_effect = setup_tools
 
         agent = BeerAgent()
         result = await agent.process_message(_make_message())
-        assert result == "Cheers, Alice! +1 beer logged. Total: 5."
+        assert result == "+1🍺 for Alice. 5🍺 total."
 
+    @patch("src.beerbot.agent.create_tools")
     @patch("src.beerbot.agent.settings")
     @patch("src.beerbot.agent.genai")
-    async def test_suppresses_personality_when_rate_limited(self, mock_genai, mock_settings):
+    async def test_suppresses_personality_when_rate_limited(
+        self, mock_genai, mock_settings, mock_create_tools
+    ):
         mock_settings.gemini_api_key = "test-key"
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
         mock_response = MagicMock()
-        mock_response.text = "Nice weather we're having!"
+        mock_response.text = ""
 
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
+
+        # Model calls reply but no data tools
+        def setup_tools(ctx):
+            ctx.reply_text = "Nice weather we're having!"
+            return []
+
+        mock_create_tools.side_effect = setup_tools
 
         agent = BeerAgent()
         # Drain the rate limiter
@@ -165,18 +184,26 @@ class TestBeerAgentProcessMessage:
         result = await agent.process_message(_make_message())
         assert result is None
 
+    @patch("src.beerbot.agent.create_tools")
     @patch("src.beerbot.agent.settings")
     @patch("src.beerbot.agent.genai")
-    async def test_records_conversation_history(self, mock_genai, mock_settings):
+    async def test_records_conversation_history(self, mock_genai, mock_settings, mock_create_tools):
         mock_settings.gemini_api_key = "test-key"
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
         mock_response = MagicMock()
-        mock_response.text = "Nice one!"
+        mock_response.text = ""
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
+
+        def setup_tools(ctx):
+            ctx.reply_text = "Nice one!"
+            ctx.tools_called = True
+            return []
+
+        mock_create_tools.side_effect = setup_tools
 
         agent = BeerAgent()
         await agent.process_message(_make_message(text="cheers"))
@@ -273,18 +300,28 @@ class TestReplyContext:
         context = agent._build_context_lines(msg)
         assert "Replying to" not in context
 
+    @patch("src.beerbot.agent.create_tools")
     @patch("src.beerbot.agent.settings")
     @patch("src.beerbot.agent.genai")
-    async def test_process_message_passes_message_id_to_history(self, mock_genai, mock_settings):
+    async def test_process_message_passes_message_id_to_history(
+        self, mock_genai, mock_settings, mock_create_tools
+    ):
         mock_settings.gemini_api_key = "test-key"
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
         mock_response = MagicMock()
-        mock_response.text = "Got it!"
+        mock_response.text = ""
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
+
+        def setup_tools(ctx):
+            ctx.reply_text = "Got it!"
+            ctx.tools_called = True
+            return []
+
+        mock_create_tools.side_effect = setup_tools
 
         agent = BeerAgent()
         await agent.process_message(_make_message(id="msg-123", text="cheers"))
