@@ -5038,5 +5038,15 @@
     "message_id": "177042586291398326",
     "user_name": "Jerry Austen",
     "text": null
+  },
+  "msg_177044339674564161_0.jpg": {
+    "drink_type": "beer",
+    "drink_count": 1,
+    "split_the_g": false,
+    "auto_labeled": true,
+    "reviewed": false,
+    "message_id": "177044339674564161",
+    "user_name": "Celena Tyler",
+    "text": null
   }
 }
