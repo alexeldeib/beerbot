@@ -1,9 +1,9 @@
 name: Scrape New Images
 
 on:
-  schedule:
-    # Run every 4 hours
-    - cron: '0 */4 * * *'
+  # schedule:
+  #   # Run every 4 hours
+  #   - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
       skip_label:
