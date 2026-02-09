@@ -361,6 +361,65 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
         }
 
+    async def get_recent_drinks(
+        since: str | None = None,
+        until: str | None = None,
+        drink_type: str | None = None,
+        target_user_id: str | None = None,
+    ) -> dict:
+        """Get drink stats for a custom time range.
+        Use for questions about 'last N days', 'yesterday', a specific date, etc.
+        Do NOT use get_today_stats or get_week_stats for these — use this tool instead.
+
+        Args:
+            since: Start of the time range as an ISO 8601 timestamp in Eastern time,
+                e.g. '2026-02-07T00:00:00'. Defaults to 7 days ago at midnight.
+            until: End of the time range (exclusive) as an ISO 8601 timestamp in
+                Eastern time, e.g. '2026-02-08T00:00:00'. Defaults to now.
+                For a single day like 'Feb 7', set since to midnight and until to
+                the next midnight.
+            drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
+            target_user_id: Specific user to query, or null for the whole group.
+        """
+        ctx.tools_called = True
+        dt = DrinkType.from_string(drink_type) if drink_type else None
+        now = datetime.now(EASTERN)
+
+        if since:
+            since_dt = datetime.fromisoformat(since).replace(tzinfo=EASTERN)
+        else:
+            since_dt = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        until_dt = None
+        if until:
+            until_dt = datetime.fromisoformat(until).replace(tzinfo=EASTERN)
+
+        stats = await beer_repo.get_group_stats(
+            ctx.group_id, since=since_dt, until=until_dt, drink_type=dt
+        )
+
+        if target_user_id:
+            uid = _validate_user_id(ctx, target_user_id)
+            user = await _get_or_create_user(ctx, uid)
+            user_stat = next((u for u in stats.user_stats if u.name == user.name), None)
+            return {
+                "since": since_dt.isoformat(),
+                "until": until_dt.isoformat() if until_dt else "now",
+                "filter": dt.value if dt else "all",
+                "user": user.name,
+                "total": user_stat.total_beers if user_stat else 0,
+            }
+
+        return {
+            "since": since_dt.isoformat(),
+            "until": until_dt.isoformat() if until_dt else "now",
+            "filter": dt.value if dt else "all",
+            "total": stats.total_beers,
+            "drinkers": stats.unique_drinkers,
+            "type_breakdown": stats.drink_type_counts,
+            "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
+        }
+
     async def get_user_stats(target_user_id: str | None = None) -> dict:
         """Get detailed stats for a specific user.
 
@@ -493,6 +552,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         get_leaderboard,
         get_today_stats,
         get_week_stats,
+        get_recent_drinks,
         get_user_stats,
         get_group_stats,
         get_debt_leaderboard,

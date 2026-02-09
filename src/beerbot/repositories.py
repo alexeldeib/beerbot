@@ -154,9 +154,10 @@ class BeerRepository:
         self,
         group_id: str,
         since: datetime | None = None,
+        until: datetime | None = None,
         drink_type: DrinkType | None = None,
     ) -> GroupStats:
-        """Get statistics for a group, optionally filtered by drink type."""
+        """Get statistics for a group, optionally filtered by time range and drink type."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -168,6 +169,11 @@ class BeerRepository:
             if since:
                 where_parts.append(f"b.logged_at >= ${param_idx}")
                 params.append(since)
+                param_idx += 1
+
+            if until:
+                where_parts.append(f"b.logged_at < ${param_idx}")
+                params.append(until)
                 param_idx += 1
 
             if drink_type:
@@ -207,9 +213,15 @@ class BeerRepository:
             # Get drink type breakdown (always unfiltered by type to show full breakdown)
             breakdown_params: list = [group_id]
             breakdown_where = "group_id = $1"
+            bp_idx = 2
             if since:
-                breakdown_where += " AND logged_at >= $2"
+                breakdown_where += f" AND logged_at >= ${bp_idx}"
                 breakdown_params.append(since)
+                bp_idx += 1
+            if until:
+                breakdown_where += f" AND logged_at < ${bp_idx}"
+                breakdown_params.append(until)
+                bp_idx += 1
 
             type_query = f"""
                 SELECT drink_type, COALESCE(SUM(quantity), 0) as count
