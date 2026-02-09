@@ -394,6 +394,14 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         if until:
             until_dt = datetime.fromisoformat(until).replace(tzinfo=EASTERN)
 
+        logger.info(
+            "get_recent_drinks: since=%s until=%s type=%s user=%s",
+            since_dt.isoformat(),
+            until_dt.isoformat() if until_dt else "now",
+            drink_type,
+            target_user_id,
+        )
+
         stats = await beer_repo.get_group_stats(
             ctx.group_id, since=since_dt, until=until_dt, drink_type=dt
         )
