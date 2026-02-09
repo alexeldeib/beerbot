@@ -225,9 +225,14 @@ class BeerAgent:
 
     def _build_context_lines(self, message: GroupMeMessage) -> str:
         """Build context section for system prompt."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now_et = datetime.now(ZoneInfo("America/New_York"))
         mentioned = extract_mentioned_users(message.text, message.attachments)
         lines = [
             "\n=== CONTEXT ===",
+            f"Current time: {now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}",
             f"Sender: {message.name} (id: {message.user_id})",
         ]
         if mentioned:
