@@ -29,10 +29,10 @@ def _find_tool(tools: list, name: str):
 
 
 class TestToolFactory:
-    def test_create_tools_returns_16(self):
+    def test_create_tools_returns_17(self):
         ctx = _make_ctx()
         tools = create_tools(ctx)
-        assert len(tools) == 16
+        assert len(tools) == 17
 
     def test_all_tools_are_async(self):
         import asyncio
@@ -63,6 +63,7 @@ class TestToolFactory:
             "get_leaderboard",
             "get_today_stats",
             "get_week_stats",
+            "get_recent_drinks",
             "get_user_stats",
             "get_group_stats",
             "get_debt_leaderboard",
@@ -236,6 +237,92 @@ class TestReply:
     async def test_reply_text_default_none(self):
         ctx = _make_ctx()
         assert ctx.reply_text is None
+
+
+class TestGetRecentDrinks:
+    @pytest.mark.asyncio
+    @patch("src.beerbot.tools.beer_repo")
+    async def test_returns_group_stats_default(self, mock_beer):
+        stats = MagicMock()
+        stats.total_beers = 25
+        stats.unique_drinkers = 4
+        stats.drink_type_counts = {"beer": 20, "wine": 5}
+        stats.user_stats = [MagicMock(name="Alice", total_beers=10)]
+        mock_beer.get_group_stats = AsyncMock(return_value=stats)
+
+        ctx = _make_ctx()
+        tools = create_tools(ctx)
+        recent = _find_tool(tools, "get_recent_drinks")
+
+        result = await recent()
+        assert result["total"] == 25
+        assert result["until"] == "now"
+        assert ctx.tools_called is True
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.tools.beer_repo")
+    async def test_with_since_and_until(self, mock_beer):
+        stats = MagicMock()
+        stats.total_beers = 18
+        stats.unique_drinkers = 3
+        stats.drink_type_counts = {"beer": 18}
+        stats.user_stats = []
+        mock_beer.get_group_stats = AsyncMock(return_value=stats)
+
+        ctx = _make_ctx()
+        tools = create_tools(ctx)
+        recent = _find_tool(tools, "get_recent_drinks")
+
+        result = await recent(since="2026-02-07T00:00:00", until="2026-02-08T00:00:00")
+        assert result["total"] == 18
+        # Verify both timestamps were passed to repo
+        call_kwargs = mock_beer.get_group_stats.call_args
+        assert call_kwargs.kwargs["since"] is not None
+        assert call_kwargs.kwargs["until"] is not None
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.tools.beer_repo")
+    @patch("src.beerbot.tools.user_repo")
+    async def test_returns_user_specific_stats(self, mock_user, mock_beer):
+        user_mock = MagicMock()
+        user_mock.id = 1
+        user_mock.name = "Alice"
+        mock_user.get_or_create = AsyncMock(return_value=user_mock)
+
+        user_stat = MagicMock()
+        user_stat.name = "Alice"
+        user_stat.total_beers = 7
+        stats = MagicMock()
+        stats.user_stats = [user_stat]
+        mock_beer.get_group_stats = AsyncMock(return_value=stats)
+
+        ctx = _make_ctx()
+        tools = create_tools(ctx)
+        recent = _find_tool(tools, "get_recent_drinks")
+
+        result = await recent(target_user_id="user-001")
+        assert result["user"] == "Alice"
+        assert result["total"] == 7
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.tools.beer_repo")
+    @patch("src.beerbot.tools.user_repo")
+    async def test_user_not_in_period_returns_zero(self, mock_user, mock_beer):
+        user_mock = MagicMock()
+        user_mock.id = 1
+        user_mock.name = "Alice"
+        mock_user.get_or_create = AsyncMock(return_value=user_mock)
+
+        stats = MagicMock()
+        stats.user_stats = []
+        mock_beer.get_group_stats = AsyncMock(return_value=stats)
+
+        ctx = _make_ctx()
+        tools = create_tools(ctx)
+        recent = _find_tool(tools, "get_recent_drinks")
+
+        result = await recent(since="2026-02-07T00:00:00", target_user_id="user-001")
+        assert result["total"] == 0
 
 
 class TestRemoveDrinks:
