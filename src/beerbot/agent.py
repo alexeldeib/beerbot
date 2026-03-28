@@ -1,5 +1,6 @@
 """Core agent that processes every GroupMe message via Gemini function calling."""
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -31,6 +32,7 @@ SYSTEM_PROMPT = """You are Beerius, a witty bartender-bookkeeper in a GroupMe gr
 
 === WHEN TO ACT ===
 LOG DRINKS: "+1 beer", "beer me", "cheers", drink emojis (🍺🍷🍸🍹🥃), brand names, images of drinks.
+CRITICAL: Only log drinks for the CURRENT message you are processing. Messages in "Recent messages" history have ALREADY been handled — do NOT re-log them. If you see an unconfirmed drink message in history, ignore it.
 DO NOT LOG: future plans ("gonna get a beer"), past events ("had 5 beers yesterday"), jokes, numbers without drink context ("21 21 21" is slang), someone ELSE drinking, metaphors/idioms.
 ANSWER QUESTIONS: stats queries, "who's winning?", "how many?", "am I in the lead?"
 For time-range questions ("last N days", "yesterday", "past 2 weeks", a specific date), use get_recent_drinks with ISO timestamps — NOT get_today_stats or get_week_stats. For a single day, set since=midnight and until=next midnight.
@@ -192,6 +194,7 @@ class BeerAgent:
         self._rate_limiters: dict[str, TokenBucket] = {}
         self._message_history: dict[str, deque[ChatMessage]] = {}
         self._history_max_len = 10
+        self._group_locks: dict[str, asyncio.Lock] = {}
 
     def _get_bucket(self, group_id: str) -> TokenBucket:
         if group_id not in self._rate_limiters:
@@ -292,8 +295,16 @@ class BeerAgent:
 
         return parts if parts else ["(empty message)"]
 
+    def _get_lock(self, group_id: str) -> asyncio.Lock:
+        if group_id not in self._group_locks:
+            self._group_locks[group_id] = asyncio.Lock()
+        return self._group_locks[group_id]
+
     async def process_message(self, message: GroupMeMessage) -> str | None:
         """Process a GroupMe message and return an optional reply.
+
+        Uses a per-group lock to serialize processing, preventing the model
+        from seeing unacknowledged messages in history and double-logging.
 
         Returns None if the agent decides to stay silent.
         """
@@ -301,6 +312,11 @@ class BeerAgent:
             logger.warning("Agent skipped: no Gemini API key")
             return None
 
+        async with self._get_lock(message.group_id):
+            return await self._process_message_unlocked(message)
+
+    async def _process_message_unlocked(self, message: GroupMeMessage) -> str | None:
+        """Inner message processing, called under per-group lock."""
         # Record incoming message (always, so reply-to lookup works for image-only messages)
         self.record_message(
             message.group_id,
