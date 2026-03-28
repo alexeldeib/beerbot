@@ -38,6 +38,7 @@ class GroupMeAttachment(BaseModel):
 
     type: str
     url: Optional[str] = None
+    preview_url: Optional[str] = None
     lat: Optional[str] = None
     lng: Optional[str] = None
     name: Optional[str] = None

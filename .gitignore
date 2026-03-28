@@ -57,3 +57,6 @@ data/results/sassy_test_results.json
 data/results/ai_detections.json
 data/results/comparison_results.json
 data/results/comparison_report.md
+
+# Test video files
+data/videos/
