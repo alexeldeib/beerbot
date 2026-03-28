@@ -52,11 +52,16 @@ When images are present, analyze them for alcoholic drinks:
 - Check for non-alcoholic variants (0.0%, Cero, NA)
 - Identify container type: beer glass/can/bottle, wine glass, cocktail glass, seltzer can
 - Identify liquid: golden with foam = beer, red/pale = wine, mixed/layered = cocktail
-- Check for Split the G: Guinness glass with beer level at the G in the logo
+- Split the G detection (STRICT — most Guinness photos are NOT splits):
+  A Split the G means someone drank a Guinness down so the beer/foam line sits exactly at
+  the top of the letter "G" in "GUINNESS" printed on the glass. The glass should be roughly
+  half empty. A full or nearly full Guinness is NEVER a split — that's just a fresh pint.
+  Only call log_split_the_g when the beer line clearly bisects the G. When in doubt, don't.
 - NOT alcoholic: iced coffee, water, soft drinks, empty glasses
 - Green/blue rimmed shot glass = cocktail (Mexican tequila glass)
 
 When images show drinks: call log_drinks. If Split the G detected: call log_split_the_g.
+When images show a Guinness but NOT a valid split: call log_drinks (beer), NOT log_split_the_g.
 When images show NO drinks: you may make a brief witty comment, or stay silent.
 
 === VIDEO ANALYSIS ===
