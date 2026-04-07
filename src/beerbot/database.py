@@ -70,10 +70,15 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_users_groupme_user_id ON users(groupme_user_id)
         """)
 
-        # Unique constraint for idempotency: same message can't log beers twice for same user
+        # Unique constraint for idempotency: same message can't log the same drink type
+        # twice for the same user, but ALLOWS different types from one message
+        # (e.g. "+1 beer +1 shot" creates two entries with different drink_types)
         await conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_beers_message_user
-            ON beers(message_id, user_id)
+            DROP INDEX IF EXISTS idx_beers_message_user
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_beers_message_user_type
+            ON beers(message_id, user_id, drink_type)
             WHERE message_id IS NOT NULL
         """)
 

@@ -88,8 +88,9 @@ class BeerRepository:
     ) -> Beer | None:
         """Log a drink entry.
 
-        Returns the created Beer/Drink, or None if this was a duplicate (same message_id + user_id).
-        This provides idempotency - processing the same message twice won't double-count.
+        Returns the created Beer/Drink, or None if this was a duplicate
+        (same message_id + user_id + drink_type). Allows different drink types
+        from the same message (e.g. "+1 beer +1 shot").
         """
         pool = await get_pool()
 
@@ -98,7 +99,7 @@ class BeerRepository:
                 """
                 INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (message_id, user_id) WHERE message_id IS NOT NULL
+                ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                 DO NOTHING
                 RETURNING *
                 """,
