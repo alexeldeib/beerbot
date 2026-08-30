@@ -88,8 +88,9 @@ class BeerRepository:
     ) -> Beer | None:
         """Log a drink entry.
 
-        Returns the created Beer/Drink, or None if this was a duplicate (same message_id + user_id).
-        This provides idempotency - processing the same message twice won't double-count.
+        Returns the created Beer/Drink, or None if this was a duplicate
+        (same message_id + user_id + drink_type). Allows different drink types
+        from the same message (e.g. "+1 beer +1 shot").
         """
         pool = await get_pool()
 
@@ -98,7 +99,7 @@ class BeerRepository:
                 """
                 INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (message_id, user_id) WHERE message_id IS NOT NULL
+                ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                 DO NOTHING
                 RETURNING *
                 """,
@@ -154,9 +155,10 @@ class BeerRepository:
         self,
         group_id: str,
         since: datetime | None = None,
+        until: datetime | None = None,
         drink_type: DrinkType | None = None,
     ) -> GroupStats:
-        """Get statistics for a group, optionally filtered by drink type."""
+        """Get statistics for a group, optionally filtered by time range and drink type."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -168,6 +170,11 @@ class BeerRepository:
             if since:
                 where_parts.append(f"b.logged_at >= ${param_idx}")
                 params.append(since)
+                param_idx += 1
+
+            if until:
+                where_parts.append(f"b.logged_at < ${param_idx}")
+                params.append(until)
                 param_idx += 1
 
             if drink_type:
@@ -207,9 +214,15 @@ class BeerRepository:
             # Get drink type breakdown (always unfiltered by type to show full breakdown)
             breakdown_params: list = [group_id]
             breakdown_where = "group_id = $1"
+            bp_idx = 2
             if since:
-                breakdown_where += " AND logged_at >= $2"
+                breakdown_where += f" AND logged_at >= ${bp_idx}"
                 breakdown_params.append(since)
+                bp_idx += 1
+            if until:
+                breakdown_where += f" AND logged_at < ${bp_idx}"
+                breakdown_params.append(until)
+                bp_idx += 1
 
             type_query = f"""
                 SELECT drink_type, COALESCE(SUM(quantity), 0) as count
@@ -1016,6 +1029,17 @@ class RecapRepository:
                 week_start,
             )
             return result == "INSERT 0 1"
+
+    async def release_claim(self, group_id: str, week_start: str) -> None:
+        """Release a claim after an outbound delivery failure so it can retry."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM weekly_recaps WHERE group_id = $1 AND week_start = $2",
+                group_id,
+                week_start,
+            )
 
 
 # Singleton instances

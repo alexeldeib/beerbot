@@ -22,7 +22,7 @@ class GroupMeClient:
         self.default_bot_id = default_bot_id or settings.beerbot_bot_id
         self._bot_id_cache: dict[str, str] = {}
 
-    async def _get_bot_id(self, group_id: str | None) -> str:
+    async def _get_bot_id(self, group_id: str | None) -> str | None:
         """Get the bot_id for a group, with caching.
 
         Falls back to default if group not registered.
@@ -43,8 +43,11 @@ class GroupMeClient:
             self._bot_id_cache[group_id] = bot_id
             return bot_id
 
-        # Fall back to default
-        logger.debug("Group %s not registered, using default bot_id", group_id)
+        if settings.require_registered_groups:
+            logger.warning("Refusing outbound message for unregistered group %s", group_id)
+            return None
+
+        logger.warning("Group %s not registered; using legacy default bot_id", group_id)
         return self.default_bot_id
 
     def clear_cache(self, group_id: str | None = None) -> None:
@@ -67,6 +70,8 @@ class GroupMeClient:
             True if successful, False otherwise.
         """
         bot_id = await self._get_bot_id(group_id)
+        if not bot_id:
+            return False
 
         async with httpx.AsyncClient() as client:
             try:
@@ -75,9 +80,17 @@ class GroupMeClient:
                     json={"bot_id": bot_id, "text": text},
                     timeout=10.0,
                 )
-                # GroupMe returns 202 on success
-                return response.status_code == 202
+                if 200 <= response.status_code < 300:
+                    return True
+                logger.error(
+                    "GroupMe send failed for group %s: status=%s body=%s",
+                    group_id,
+                    response.status_code,
+                    response.text[:500],
+                )
+                return False
             except httpx.RequestError:
+                logger.exception("GroupMe send request failed for group %s", group_id)
                 return False
 
 

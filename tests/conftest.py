@@ -1,6 +1,22 @@
 """Pytest configuration and fixtures."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_external_services(monkeypatch):
+    """Keep endpoint tests away from the developer's real database and gateways."""
+    from src.beerbot import main
+
+    monkeypatch.setattr(main, "init_db", AsyncMock())
+    monkeypatch.setattr(main, "close_pool", AsyncMock())
+    monkeypatch.setattr(
+        main.group_repo,
+        "get_by_group_id",
+        AsyncMock(return_value=MagicMock(group_id="12345")),
+    )
 
 
 @pytest.fixture
