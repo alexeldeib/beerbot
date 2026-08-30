@@ -87,7 +87,7 @@ Track drinks with your friends, compete on leaderboards, and let AI detect what 
 - **Python 3.11+** with type hints
 - **FastAPI** for async webhook handling
 - **asyncpg** for PostgreSQL with connection pooling
-- **Google Gemini** (gemini-2.0-flash) for vision
+- **Configurable LLM endpoint** (Google Gemini 3.6 Flash by default)
 - **GroupMe Bot API** for messaging
 - **Pydantic v2** for validation
 - **Fly.io** for hosting
@@ -137,7 +137,12 @@ uv run pytest
 |----------|----------|-------------|
 | `BEERBOT_BOT_ID` | Yes | Your GroupMe bot ID |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `GEMINI_API_KEY` | No | Google Gemini API key |
+| `GROUPME_WEBHOOK_SECRET` | Production | Random bearer token included in the callback URL |
+| `REQUIRE_REGISTERED_GROUPS` | No | Reject unknown GroupMe groups (default: `true`) |
+| `LLM_PROVIDER` | No | Runtime model adapter; currently `google` |
+| `LLM_MODEL` | No | Pinned model name (default: `gemini-3.6-flash`) |
+| `LLM_API_KEY` | No | Model endpoint credential; falls back to `GEMINI_API_KEY` |
+| `LLM_BASE_URL` | No | Reserved for an OpenAI-compatible/self-hosted adapter |
 | `ENABLE_IMAGE_ANALYSIS` | No | Set `false` to disable (default: `true`) |
 | `ENVIRONMENT` | No | `development` or `production` |
 | `ADMIN_TOKEN` | No | Bearer token for admin endpoints |
@@ -157,16 +162,18 @@ fly launch --no-deploy
 # Set secrets
 fly secrets set BEERBOT_BOT_ID=your_bot_id
 fly secrets set DATABASE_URL="postgresql://..."
-fly secrets set GEMINI_API_KEY=your_gemini_key
+fly secrets set GROUPME_WEBHOOK_SECRET=your_random_webhook_secret
+fly secrets set LLM_API_KEY=your_model_key
 fly secrets set ADMIN_TOKEN=your_admin_token
 
 # Deploy
-fly deploy
+fly deploy --build-arg GIT_SHA="$(git rev-parse HEAD)"
 ```
 
-Set your GroupMe bot callback URL to:
+Set a long random `GROUPME_WEBHOOK_SECRET`, register the group through the admin
+API, and set the GroupMe bot callback URL to:
 ```
-https://your-app.fly.dev/callback
+https://your-app.fly.dev/callback?token=YOUR_WEBHOOK_SECRET
 ```
 
 ---
@@ -194,101 +201,45 @@ curl https://your-app.fly.dev/admin/groups \
 ```
 src/beerbot/
 ├── main.py           # FastAPI app, webhook handler, routing
-├── services.py       # Message parsing, stats, business logic
+├── agent.py          # Beerius prompt, multimodal input, model orchestration
+├── tools.py          # Request-scoped, validated read/write tools
 ├── repositories.py   # Database operations
 ├── models.py         # Pydantic models and enums
-├── vision.py         # Gemini Vision integration
+├── llm.py            # Provider-neutral model profile and capabilities
 ├── groupme_client.py # GroupMe API with multi-group support
-├── database.py       # asyncpg pool and migrations
+├── database.py       # asyncpg pool and versioned migrations
 └── config.py         # Environment configuration
 ```
 
 **Key Design Decisions:**
-- **Idempotency**: Deduplicated by `(message_id, user_id)`
+- **Idempotency**: Deduplicated by `(message_id, user_id, drink_type)`
 - **Atomic transactions**: Batch logging uses PostgreSQL transactions
 - **Eastern timezone**: Consistent "today"/"this week" calculations
 - **Glass-based detection**: Vision identifies drinks by container, not color
+- **Registered groups only**: Inbound and outbound GroupMe traffic must map to a configured group
+- **No chat corpus in Git**: Production messages, media, and local evaluation data belong in private storage
 
 ---
 
-## 🔬 Vision Pipeline (for Development)
+## Direction of Travel
 
-Beerbot includes a vision prompt testing and optimization pipeline for improving drink detection accuracy.
+The current production adapter is GroupMe, but the target tenant boundary is a
+workspace rather than a messaging provider. A workspace may have multiple
+gateway connections—GroupMe, SMS, WhatsApp, web, or iOS—and each inbound
+conversation maps to exactly one workspace using gateway-owned identifiers such
+as a GroupMe group ID, receiving phone number plus sender/thread identity, or a
+native conversation ID. Multiple gateways can therefore contribute to one
+shared group ledger without sharing credentials or external IDs.
 
-### Directory Structure
+The model profile is also configuration-driven. Google is the implemented
+runtime today; the next explicit agent-loop iteration will add adapters for
+OpenAI-compatible endpoints, including self-hosted multimodal models, and will
+advertise image, video, and tool-calling capabilities independently.
 
-```
-data/
-├── images/          # Scraped GroupMe images
-├── labels.json      # Ground truth labels (reviewed: true/false)
-├── metadata.json    # Image metadata from scraping
-├── prompts/         # Vision prompt versions
-│   └── v12.txt      # Current production prompt
-└── results/
-    ├── baseline_latest.json  # Current best results
-    └── *.json                 # Historical evaluation results
-```
-
-### Local Workflow
-
-```bash
-# 1. Scrape new images from GroupMe (requires GROUPME_ACCESS_TOKEN)
-uv run scripts/scrape_images.py --scrape --incremental
-
-# 2. Auto-label with Gemini (requires GEMINI_API_KEY)
-uv run scripts/scrape_images.py --label
-
-# 3. Review labels interactively
-uv run scripts/review_labels.py
-
-# 4. Evaluate prompt accuracy
-uv run scripts/eval_prompt.py
-
-# 5. Evaluate specific prompt version
-uv run scripts/eval_prompt.py --prompt data/prompts/v12.txt
-
-# 6. CI-style evaluation with baseline comparison
-uv run scripts/eval_prompt.py --reviewed-only --ci --baseline data/results/baseline_latest.json
-```
-
-### GitHub Actions
-
-Two automated workflows help maintain vision accuracy:
-
-**1. Scrape Workflow** (`.github/workflows/scrape.yml`)
-- Runs weekly (or manually)
-- Scrapes new images from GroupMe
-- Auto-labels with Gemini
-- Creates PR with new images for review
-
-**2. Evaluate Workflow** (`.github/workflows/evaluate.yml`)
-- Triggers on changes to labels, prompts, or vision.py
-- Compares against baseline accuracy
-- Posts results as PR comment
-- Fails if accuracy drops below threshold
-
-### GitHub Secrets Required
-
-| Secret | Description |
-|--------|-------------|
-| `GROUPME_ACCESS_TOKEN` | GroupMe API token for scraping images |
-| `GEMINI_API_KEY` | Google Gemini API key for labeling and evaluation |
-
-To get these tokens:
-- **GroupMe**: Visit [dev.groupme.com](https://dev.groupme.com), click "Access Token"
-- **Gemini**: Visit [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-
-### Updating the Baseline
-
-After improving the prompt and verifying accuracy:
-
-```bash
-# Run full evaluation
-uv run scripts/eval_prompt.py --output data/results/new_baseline.json
-
-# If accuracy improved, update baseline
-cp data/results/new_baseline.json data/results/baseline_latest.json
-```
+General CI lives in `.github/workflows/ci.yml` and runs lint, formatting, tests,
+package build, and container build. Production-derived evaluation data must not
+be committed; a future replay suite should use sanitized fixtures or an
+access-controlled external store.
 
 ---
 
