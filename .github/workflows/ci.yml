@@ -47,3 +47,54 @@ jobs:
 
       - name: Build container
         run: docker build --build-arg GIT_SHA="${GITHUB_SHA}" .
+
+  deploy:
+    name: Deploy production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: beerbot-production
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check for a newer main revision
+        id: release
+        run: |
+          current_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "${current_sha}" = "${GITHUB_SHA}" ]; then
+            echo "current=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "current=false" >> "${GITHUB_OUTPUT}"
+            echo "Skipping superseded revision ${GITHUB_SHA}; current main is ${current_sha}."
+          fi
+
+      - name: Install flyctl
+        if: steps.release.outputs.current == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Deploy with blue-green replacement
+        if: steps.release.outputs.current == 'true'
+        run: >-
+          flyctl deploy
+          --app beerbot-groupme
+          --remote-only
+          --strategy bluegreen
+          --build-arg GIT_SHA="${GITHUB_SHA}"
+          --wait-timeout 10m
+
+      - name: Verify production health and revision
+        if: steps.release.outputs.current == 'true'
+        run: |
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            https://beerbot-groupme.fly.dev/health
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            https://beerbot-groupme.fly.dev/version \
+            | jq --exit-status --arg sha "${GITHUB_SHA}" '.git_sha == $sha'

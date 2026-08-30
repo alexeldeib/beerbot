@@ -237,8 +237,11 @@ OpenAI-compatible endpoints, including self-hosted multimodal models, and will
 advertise image, video, and tool-calling capabilities independently.
 
 General CI lives in `.github/workflows/ci.yml` and runs lint, formatting, tests,
-package build, and container build. Production-derived evaluation data must not
-be committed; a future replay suite should use sanitized fixtures or an
+package build, and container build. A successful push to `main` is deployed to
+Fly with a health-checked blue-green replacement; production deploys are
+serialized, superseded revisions are skipped, and `/health` plus `/version` are
+verified before the workflow succeeds. Production-derived evaluation data must
+not be committed; a future replay suite should use sanitized fixtures or an
 access-controlled external store.
 
 ---
