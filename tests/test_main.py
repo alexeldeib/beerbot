@@ -59,6 +59,56 @@ class TestCallback:
         assert data["action"] == "replied"
 
     @pytest.mark.asyncio
+    @patch("src.beerbot.main.groupme_client")
+    @patch("src.beerbot.main.beer_agent")
+    async def test_reports_delivery_failure(self, mock_agent, mock_groupme, sample_groupme_message):
+        mock_agent.process_message = AsyncMock(return_value="Reply")
+        mock_groupme.send_message = AsyncMock(return_value=False)
+
+        from fastapi.testclient import TestClient
+        from src.beerbot.main import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/callback", json=sample_groupme_message)
+
+        assert resp.status_code == 502
+        assert resp.json()["action"] == "delivery_failed"
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.main.group_repo")
+    @patch("src.beerbot.main.beer_agent")
+    async def test_rejects_unregistered_group(
+        self, mock_agent, mock_group_repo, sample_groupme_message
+    ):
+        mock_group_repo.get_by_group_id = AsyncMock(return_value=None)
+
+        from fastapi.testclient import TestClient
+        from src.beerbot.main import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/callback", json=sample_groupme_message)
+
+        assert resp.status_code == 403
+        mock_agent.process_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.beerbot.main.settings")
+    @patch("src.beerbot.main.beer_agent")
+    async def test_validates_configured_webhook_secret(
+        self, mock_agent, mock_settings, sample_groupme_message
+    ):
+        mock_settings.groupme_webhook_secret = "expected"
+
+        from fastapi.testclient import TestClient
+        from src.beerbot.main import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/callback?token=wrong", json=sample_groupme_message)
+
+        assert resp.status_code == 401
+        mock_agent.process_message.assert_not_called()
+
+    @pytest.mark.asyncio
     @patch("src.beerbot.main.beer_agent")
     async def test_ignores_bot_messages(self, mock_agent, bot_message):
         from fastapi.testclient import TestClient
@@ -106,6 +156,27 @@ class TestHealthCheck:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
+
+    @patch("src.beerbot.main.settings")
+    def test_version(self, mock_settings):
+        mock_settings.app_version = "1.2.3"
+        mock_settings.git_sha = "abc123"
+        mock_settings.llm_provider = "google"
+        mock_settings.llm_model = "gemini-3.6-flash"
+        mock_settings.llm_base_url = None
+        mock_settings.llm_supports_images = True
+        mock_settings.llm_supports_video = True
+        mock_settings.llm_supports_tools = True
+
+        from fastapi.testclient import TestClient
+        from src.beerbot.main import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.get("/version")
+
+        assert resp.status_code == 200
+        assert resp.json()["git_sha"] == "abc123"
+        assert resp.json()["llm"]["model"] == "gemini-3.6-flash"
 
 
 class TestWeeklyRecap:
@@ -231,6 +302,8 @@ class TestRecapScheduler:
         with (
             patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
             patch("src.beerbot.main.datetime") as mock_dt,
+            patch("src.beerbot.main.recap_repo", mock_recap_repo),
+            patch("src.beerbot.main.group_repo", mock_group_repo),
             patch.dict(
                 "sys.modules",
                 {

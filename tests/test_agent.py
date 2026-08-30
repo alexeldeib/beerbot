@@ -498,6 +498,91 @@ class TestBeerAgentImageFetching:
         assert part is None
 
 
+class TestBeerAgentVideoFetching:
+    @patch("src.beerbot.agent.httpx.AsyncClient")
+    async def test_fetches_video(self, mock_http_cls):
+        mock_resp = MagicMock()
+        mock_resp.content = b"fake-video-data"
+        mock_resp.headers = {"content-type": "video/mp4"}
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        agent = BeerAgent()
+        part = await agent._fetch_video("https://example.com/kegstand.mp4")
+        assert part is not None
+
+    @patch("src.beerbot.agent.httpx.AsyncClient")
+    async def test_returns_none_on_error(self, mock_http_cls):
+        import httpx
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(side_effect=httpx.RequestError("timeout"))
+        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        agent = BeerAgent()
+        part = await agent._fetch_video("https://example.com/kegstand.mp4")
+        assert part is None
+
+    @patch("src.beerbot.agent.httpx.AsyncClient")
+    async def test_rejects_oversized_video(self, mock_http_cls):
+        mock_resp = MagicMock()
+        mock_resp.content = b"x" * (101 * 1024 * 1024)  # 101 MB
+        mock_resp.headers = {"content-type": "video/mp4"}
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        agent = BeerAgent()
+        part = await agent._fetch_video("https://example.com/huge.mp4")
+        assert part is None
+
+
+class TestVideoOnlyMessageHistory:
+    @pytest.mark.asyncio
+    @patch("src.beerbot.agent.settings")
+    @patch("src.beerbot.agent.genai")
+    async def test_video_only_message_recorded_with_video_placeholder(
+        self, mock_genai, mock_settings
+    ):
+        """Video-only messages use '(video)' placeholder, not '(image)'."""
+        mock_settings.gemini_api_key = "test-key"
+        mock_settings.image_analysis_enabled = False
+        mock_settings.agent_max_tool_calls = 5
+
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=MagicMock())
+        mock_genai.Client.return_value = mock_client
+
+        agent = BeerAgent()
+        video_msg = _make_message(
+            id="msg-vid-1",
+            text=None,
+            name="Aidan",
+            user_id="user-aidan",
+            sender_id="user-aidan",
+            attachments=[
+                GroupMeAttachment(
+                    type="video",
+                    url="https://example.com/kegstand.mp4",
+                    preview_url="https://example.com/thumb.jpg",
+                )
+            ],
+        )
+        await agent.process_message(video_msg)
+
+        history = agent._get_history("group-1")
+        aidan_entry = next(m for m in history if m.user_id == "user-aidan")
+        assert aidan_entry.text == "(video)"
+
+
 class TestGenerateWeeklyRecap:
     @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
