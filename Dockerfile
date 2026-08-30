@@ -35,6 +35,10 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
+ARG GIT_SHA=unknown
+ENV APP_VERSION=0.2.0 \
+    GIT_SHA=${GIT_SHA}
+
 # Create non-root user for security
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --shell /bin/bash appuser

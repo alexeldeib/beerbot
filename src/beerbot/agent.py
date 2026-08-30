@@ -11,13 +11,12 @@ from google import genai
 from google.genai import types
 
 from .config import settings
+from .llm import model_profile
 from .models import GroupMeAttachment, GroupMeMessage
 from .repositories import beer_repo
 from .tools import ToolContext, create_tools
 
 logger = logging.getLogger(__name__)
-
-MODEL = "gemini-3-flash-preview"
 
 SYSTEM_PROMPT = """You are Beerius, a witty bartender-bookkeeper in a GroupMe group chat.
 
@@ -208,8 +207,19 @@ class BeerAgent:
 
     def __init__(self):
         self.client: genai.Client | None = None
-        if settings.gemini_api_key:
-            self.client = genai.Client(api_key=settings.gemini_api_key)
+        self.model_profile = model_profile(settings)
+        llm_api_key = settings.llm_api_key if isinstance(settings.llm_api_key, str) else None
+        gemini_api_key = (
+            settings.gemini_api_key if isinstance(settings.gemini_api_key, str) else None
+        )
+        api_key = llm_api_key or gemini_api_key
+        if api_key and self.model_profile.provider == "google":
+            self.client = genai.Client(api_key=api_key)
+        elif api_key:
+            logger.error(
+                "LLM provider %s is configured but not implemented by the transitional AFC runtime",
+                self.model_profile.provider,
+            )
         self._rate_limiters: dict[str, TokenBucket] = {}
         self._message_history: dict[str, deque[ChatMessage]] = {}
         self._history_max_len = 10
@@ -328,7 +338,7 @@ class BeerAgent:
                     img_part = await self._fetch_image(att.url)
                     if img_part:
                         parts.append(img_part)
-                elif att.type == "video" and att.url:
+                elif att.type == "video" and att.url and settings.video_analysis_enabled:
                     video_part = await self._fetch_video(att.url)
                     if video_part:
                         parts.append(video_part)
@@ -406,7 +416,7 @@ class BeerAgent:
 
         try:
             await self.client.aio.models.generate_content(
-                model=MODEL,
+                model=self.model_profile.model,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
@@ -414,7 +424,6 @@ class BeerAgent:
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(
                         maximum_remote_calls=settings.agent_max_tool_calls,
                     ),
-                    temperature=0.9,
                 ),
             )
         except Exception:
@@ -518,9 +527,9 @@ class BeerAgent:
 
         try:
             response = await self.client.aio.models.generate_content(
-                model=MODEL,
+                model=self.model_profile.model,
                 contents=[prompt],
-                config=types.GenerateContentConfig(temperature=1.0),
+                config=types.GenerateContentConfig(),
             )
             return response.text.strip() if response.text else None
         except Exception:

@@ -1030,6 +1030,17 @@ class RecapRepository:
             )
             return result == "INSERT 0 1"
 
+    async def release_claim(self, group_id: str, week_start: str) -> None:
+        """Release a claim after an outbound delivery failure so it can retry."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM weekly_recaps WHERE group_id = $1 AND week_start = $2",
+                group_id,
+                week_start,
+            )
+
 
 # Singleton instances
 user_repo = UserRepository()
