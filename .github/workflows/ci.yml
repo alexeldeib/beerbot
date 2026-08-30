@@ -83,7 +83,7 @@ jobs:
         run: >-
           flyctl deploy
           --app beerbot-groupme
-          --remote-only
+          --local-only
           --strategy bluegreen
           --build-arg GIT_SHA="${GITHUB_SHA}"
           --wait-timeout 10m
