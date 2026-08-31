@@ -64,3 +64,35 @@ async def test_applied_migration_is_skipped():
     assert not any(
         "CREATE TABLE IF NOT EXISTS beers" in statement for statement in connection.statements
     )
+
+
+async def test_workspace_gateway_migration_is_additive_and_backfills_groups():
+    connection = FakeConnection()
+    pool = FakePool(connection)
+
+    with patch("src.beerbot.database.get_pool", return_value=pool):
+        await init_db()
+
+    statements = connection.statements
+    workspace_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS workspaces" in statement
+    )
+    connection_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS gateway_connections" in statement
+    )
+    route_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS gateway_routes" in statement
+    )
+    workspace_backfill = next(
+        index for index, statement in enumerate(statements) if "INSERT INTO workspaces" in statement
+    )
+
+    assert workspace_table < connection_table < route_table < workspace_backfill
+    assert any("ALTER TABLE groups ADD COLUMN IF NOT EXISTS workspace_id" in s for s in statements)
+    assert any("INSERT INTO gateway_routes" in s for s in statements)

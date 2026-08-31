@@ -148,4 +148,53 @@ class Group(BaseModel):
     group_id: str
     bot_id: str
     name: Optional[str] = None
+    workspace_id: Optional[str] = None
     created_at: datetime
+
+
+class Workspace(BaseModel):
+    """Provider-independent tenant and data boundary."""
+
+    id: str
+    name: str
+    timezone: str = "America/New_York"
+    settings: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class GatewayConnection(BaseModel):
+    """Credentialed messaging-provider installation."""
+
+    id: str
+    gateway_type: str
+    name: Optional[str] = None
+    credential_ref: Optional[str] = None
+    config: dict[str, object] = Field(default_factory=dict)
+    status: str = "active"
+    created_at: datetime
+    updated_at: datetime
+
+
+class GatewayRoute(BaseModel):
+    """Opaque provider route mapped to a workspace and connection."""
+
+    id: str
+    gateway_type: str
+    route_key: str
+    workspace_id: str
+    gateway_connection_id: str
+    external_conversation_id: Optional[str] = None
+    name: Optional[str] = None
+    config: dict[str, object] = Field(default_factory=dict)
+    status: str = "active"
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceContext(BaseModel):
+    """Resolved tenant and gateway context for one inbound conversation."""
+
+    workspace: Workspace
+    connection: GatewayConnection
+    route: GatewayRoute

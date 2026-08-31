@@ -86,6 +86,120 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             """,
         ),
     ),
+    (
+        2,
+        "workspace_gateway_routing",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'America/New_York',
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS gateway_connections (
+                id TEXT PRIMARY KEY,
+                gateway_type TEXT NOT NULL,
+                name TEXT,
+                credential_ref TEXT,
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS gateway_routes (
+                id TEXT PRIMARY KEY,
+                gateway_type TEXT NOT NULL,
+                route_key TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                gateway_connection_id TEXT NOT NULL REFERENCES gateway_connections(id),
+                external_conversation_id TEXT,
+                name TEXT,
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(gateway_type, route_key)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_gateway_routes_workspace
+            ON gateway_routes(workspace_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_gateway_routes_connection
+            ON gateway_routes(gateway_connection_id)
+            """,
+            """
+            ALTER TABLE groups
+            ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id)
+            """,
+            """
+            INSERT INTO workspaces (id, name)
+            SELECT
+                'groupme:' || group_id,
+                COALESCE(NULLIF(name, ''), 'GroupMe ' || group_id)
+            FROM groups
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name,
+                updated_at = NOW()
+            """,
+            """
+            INSERT INTO gateway_connections (
+                id, gateway_type, name, credential_ref, config, status
+            )
+            SELECT
+                'groupme-bot:' || group_id,
+                'groupme',
+                COALESCE(NULLIF(name, ''), 'GroupMe bot ' || group_id),
+                'legacy:groups/' || group_id || '/bot_id',
+                jsonb_build_object('legacy_group_id', group_id),
+                'active'
+            FROM groups
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name,
+                credential_ref = EXCLUDED.credential_ref,
+                config = EXCLUDED.config,
+                status = 'active',
+                updated_at = NOW()
+            """,
+            """
+            INSERT INTO gateway_routes (
+                id, gateway_type, route_key, workspace_id,
+                gateway_connection_id, external_conversation_id, name, status
+            )
+            SELECT
+                'groupme-route:' || group_id,
+                'groupme',
+                group_id,
+                'groupme:' || group_id,
+                'groupme-bot:' || group_id,
+                group_id,
+                name,
+                'active'
+            FROM groups
+            ON CONFLICT (gateway_type, route_key) DO UPDATE
+            SET workspace_id = EXCLUDED.workspace_id,
+                gateway_connection_id = EXCLUDED.gateway_connection_id,
+                external_conversation_id = EXCLUDED.external_conversation_id,
+                name = EXCLUDED.name,
+                status = 'active',
+                updated_at = NOW()
+            """,
+            """
+            UPDATE groups
+            SET workspace_id = 'groupme:' || group_id
+            WHERE workspace_id IS DISTINCT FROM 'groupme:' || group_id
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_groups_workspace_id ON groups(workspace_id)",
+        ),
+    ),
 )
 
 

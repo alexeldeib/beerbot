@@ -206,6 +206,8 @@ src/beerbot/
 ├── repositories.py   # Database operations
 ├── models.py         # Pydantic models and enums
 ├── llm.py            # Provider-neutral model profile and capabilities
+├── gateways/         # Canonical transport contracts and shadow adapters
+├── routing.py        # Stable provider route identifiers
 ├── groupme_client.py # GroupMe API with multi-group support
 ├── database.py       # asyncpg pool and versioned migrations
 └── config.py         # Environment configuration
@@ -223,13 +225,24 @@ src/beerbot/
 
 ## Direction of Travel
 
-The current production adapter is GroupMe, but the target tenant boundary is a
-workspace rather than a messaging provider. A workspace may have multiple
-gateway connections—GroupMe, SMS, WhatsApp, web, or iOS—and each inbound
-conversation maps to exactly one workspace using gateway-owned identifiers such
-as a GroupMe group ID, receiving phone number plus sender/thread identity, or a
-native conversation ID. Multiple gateways can therefore contribute to one
-shared group ledger without sharing credentials or external IDs.
+GroupMe is the only production transport today and remains on its unchanged
+legacy callback, tool, and statistics path. New workspace, gateway connection,
+and gateway route records are maintained as a shadow model so additional
+functionality can be built and verified without changing existing user behavior.
+
+The first-party web/iOS application is intended to become the primary product
+surface for accounts, global personal history, settings, and rich activity UI.
+Messaging providers remain transport adapters: they normalize provider events
+into a common envelope and deliver replies or notifications, but do not own
+users, agent sessions, or activity semantics.
+
+The target tenant boundary is a workspace rather than a messaging provider. A
+workspace may have multiple gateway routes—GroupMe, SMS, WhatsApp, Discord, or
+other channels—and each route uses provider-owned identifiers such as a GroupMe
+group ID or receiving number plus sender/thread identity. Future global people
+and workspace memberships will be backfilled from the existing GroupMe users;
+that identity/activity cutover is intentionally separate from the shadow
+routing migration.
 
 The model profile is also configuration-driven. Google is the implemented
 runtime today; the next explicit agent-loop iteration will add adapters for

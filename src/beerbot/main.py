@@ -168,6 +168,7 @@ async def register_group(registration: GroupRegistration):
         "status": "ok",
         "group": {
             "group_id": group.group_id,
+            "workspace_id": group.workspace_id,
             "credential_configured": bool(group.bot_id),
             "name": group.name,
             "created_at": group.created_at.isoformat(),
@@ -183,6 +184,7 @@ async def list_groups():
         "groups": [
             {
                 "group_id": g.group_id,
+                "workspace_id": g.workspace_id,
                 "credential_configured": bool(g.bot_id),
                 "name": g.name,
                 "created_at": g.created_at.isoformat(),

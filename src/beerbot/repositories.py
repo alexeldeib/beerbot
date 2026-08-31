@@ -1,5 +1,6 @@
 """Data access layer for users and beers."""
 
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -9,12 +10,23 @@ from .models import (
     Beer,
     DebtLeaderboardEntry,
     DrinkType,
+    GatewayConnection,
+    GatewayRoute,
     Group,
     GroupStats,
     SplitGGroupStats,
     SplitGUserStats,
     User,
     UserStats,
+    Workspace,
+    WorkspaceContext,
+)
+from .routing import (
+    GROUPME_GATEWAY_TYPE,
+    groupme_connection_id,
+    groupme_route_id,
+    groupme_route_key,
+    groupme_workspace_id,
 )
 
 # Use Eastern time for all date calculations
@@ -958,21 +970,81 @@ class GroupRepository:
     ) -> Group:
         """Register a new group or update existing one."""
         pool = await get_pool()
+        workspace_id = groupme_workspace_id(group_id)
+        connection_id = groupme_connection_id(group_id)
+        route_id = groupme_route_id(group_id)
+        display_name = name or f"GroupMe {group_id}"
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO groups (group_id, bot_id, name)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (group_id) DO UPDATE
-                SET bot_id = EXCLUDED.bot_id,
-                    name = EXCLUDED.name
-                RETURNING *
-                """,
-                group_id,
-                bot_id,
-                name,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO workspaces (id, name)
+                    VALUES ($1, $2)
+                    ON CONFLICT (id) DO UPDATE
+                    SET name = EXCLUDED.name,
+                        updated_at = NOW()
+                    """,
+                    workspace_id,
+                    display_name,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO gateway_connections (
+                        id, gateway_type, name, credential_ref, config, status
+                    )
+                    VALUES ($1, $2, $3, $4, $5::jsonb, 'active')
+                    ON CONFLICT (id) DO UPDATE
+                    SET name = EXCLUDED.name,
+                        credential_ref = EXCLUDED.credential_ref,
+                        config = EXCLUDED.config,
+                        status = 'active',
+                        updated_at = NOW()
+                    """,
+                    connection_id,
+                    GROUPME_GATEWAY_TYPE,
+                    f"{display_name} bot",
+                    f"legacy:groups/{group_id}/bot_id",
+                    json.dumps({"legacy_group_id": group_id}),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO gateway_routes (
+                        id, gateway_type, route_key, workspace_id,
+                        gateway_connection_id, external_conversation_id, name, status
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+                    ON CONFLICT (gateway_type, route_key) DO UPDATE
+                    SET workspace_id = EXCLUDED.workspace_id,
+                        gateway_connection_id = EXCLUDED.gateway_connection_id,
+                        external_conversation_id = EXCLUDED.external_conversation_id,
+                        name = EXCLUDED.name,
+                        status = 'active',
+                        updated_at = NOW()
+                    """,
+                    route_id,
+                    GROUPME_GATEWAY_TYPE,
+                    groupme_route_key(group_id),
+                    workspace_id,
+                    connection_id,
+                    group_id,
+                    display_name,
+                )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO groups (group_id, bot_id, name, workspace_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (group_id) DO UPDATE
+                    SET bot_id = EXCLUDED.bot_id,
+                        name = EXCLUDED.name,
+                        workspace_id = EXCLUDED.workspace_id
+                    RETURNING *
+                    """,
+                    group_id,
+                    bot_id,
+                    name,
+                    workspace_id,
+                )
             return Group(**dict(row))
 
     async def list_all(self) -> list[Group]:
@@ -984,15 +1056,120 @@ class GroupRepository:
             return [Group(**dict(row)) for row in rows]
 
     async def delete(self, group_id: str) -> bool:
-        """Delete a group registration. Returns True if deleted."""
+        """Disable a GroupMe route and delete its legacy registration."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM groups WHERE group_id = $1",
-                group_id,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE gateway_routes
+                    SET status = 'inactive', updated_at = NOW()
+                    WHERE gateway_type = $1 AND route_key = $2
+                    """,
+                    GROUPME_GATEWAY_TYPE,
+                    groupme_route_key(group_id),
+                )
+                await conn.execute(
+                    """
+                    UPDATE gateway_connections
+                    SET status = 'inactive', updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    groupme_connection_id(group_id),
+                )
+                result = await conn.execute(
+                    "DELETE FROM groups WHERE group_id = $1",
+                    group_id,
+                )
             return result == "DELETE 1"
+
+
+class GatewayRouteRepository:
+    """Resolve provider-owned route keys into workspace context."""
+
+    async def resolve(self, gateway_type: str, route_key: str) -> WorkspaceContext | None:
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    w.id AS workspace_id,
+                    w.name AS workspace_name,
+                    w.timezone AS workspace_timezone,
+                    w.settings AS workspace_settings,
+                    w.created_at AS workspace_created_at,
+                    w.updated_at AS workspace_updated_at,
+                    c.id AS connection_id,
+                    c.gateway_type AS connection_gateway_type,
+                    c.name AS connection_name,
+                    c.credential_ref AS connection_credential_ref,
+                    c.config AS connection_config,
+                    c.status AS connection_status,
+                    c.created_at AS connection_created_at,
+                    c.updated_at AS connection_updated_at,
+                    r.id AS route_id,
+                    r.gateway_type AS route_gateway_type,
+                    r.route_key,
+                    r.external_conversation_id,
+                    r.name AS route_name,
+                    r.config AS route_config,
+                    r.status AS route_status,
+                    r.created_at AS route_created_at,
+                    r.updated_at AS route_updated_at
+                FROM gateway_routes r
+                JOIN workspaces w ON w.id = r.workspace_id
+                JOIN gateway_connections c ON c.id = r.gateway_connection_id
+                WHERE r.gateway_type = $1
+                  AND r.route_key = $2
+                  AND r.status = 'active'
+                  AND c.status = 'active'
+                """,
+                gateway_type,
+                route_key,
+            )
+            if not row:
+                return None
+
+            data = dict(row)
+
+            def json_value(key: str) -> dict[str, object]:
+                value = data[key]
+                return json.loads(value) if isinstance(value, str) else value
+
+            workspace = Workspace(
+                id=data["workspace_id"],
+                name=data["workspace_name"],
+                timezone=data["workspace_timezone"],
+                settings=json_value("workspace_settings"),
+                created_at=data["workspace_created_at"],
+                updated_at=data["workspace_updated_at"],
+            )
+            connection = GatewayConnection(
+                id=data["connection_id"],
+                gateway_type=data["connection_gateway_type"],
+                name=data["connection_name"],
+                credential_ref=data["connection_credential_ref"],
+                config=json_value("connection_config"),
+                status=data["connection_status"],
+                created_at=data["connection_created_at"],
+                updated_at=data["connection_updated_at"],
+            )
+            route = GatewayRoute(
+                id=data["route_id"],
+                gateway_type=data["route_gateway_type"],
+                route_key=data["route_key"],
+                workspace_id=data["workspace_id"],
+                gateway_connection_id=data["connection_id"],
+                external_conversation_id=data["external_conversation_id"],
+                name=data["route_name"],
+                config=json_value("route_config"),
+                status=data["route_status"],
+                created_at=data["route_created_at"],
+                updated_at=data["route_updated_at"],
+            )
+            return WorkspaceContext(workspace=workspace, connection=connection, route=route)
 
 
 class RecapRepository:
@@ -1047,4 +1224,5 @@ user_repo = UserRepository()
 beer_repo = BeerRepository()
 debt_repo = DebtRepository()
 group_repo = GroupRepository()
+gateway_route_repo = GatewayRouteRepository()
 recap_repo = RecapRepository()
