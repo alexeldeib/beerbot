@@ -239,10 +239,13 @@ users, agent sessions, or activity semantics.
 The target tenant boundary is a workspace rather than a messaging provider. A
 workspace may have multiple gateway routes—GroupMe, SMS, WhatsApp, Discord, or
 other channels—and each route uses provider-owned identifiers such as a GroupMe
-group ID or receiving number plus sender/thread identity. Future global people
-and workspace memberships will be backfilled from the existing GroupMe users;
-that identity/activity cutover is intentionally separate from the shadow
-routing migration.
+group ID or receiving number plus sender/thread identity. Global people,
+external identities, and workspace memberships are maintained as shadow state:
+each existing GroupMe user maps to one provisional global person, while
+memberships are inferred only from observed group-scoped activity or debt. The
+legacy `users`, `beers`, and `group_id` paths remain authoritative; no global
+stats or account behavior is exposed until shadow parity and the future activity
+model are verified.
 
 The model profile is also configuration-driven. Google is the implemented
 runtime today; the next explicit agent-loop iteration will add adapters for

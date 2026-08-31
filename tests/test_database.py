@@ -96,3 +96,37 @@ async def test_workspace_gateway_migration_is_additive_and_backfills_groups():
     assert workspace_table < connection_table < route_table < workspace_backfill
     assert any("ALTER TABLE groups ADD COLUMN IF NOT EXISTS workspace_id" in s for s in statements)
     assert any("INSERT INTO gateway_routes" in s for s in statements)
+
+
+async def test_shadow_identity_migration_backfills_people_and_memberships():
+    connection = FakeConnection()
+    pool = FakePool(connection)
+
+    with patch("src.beerbot.database.get_pool", return_value=pool):
+        await init_db()
+
+    statements = connection.statements
+    people_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS people" in statement
+    )
+    identities_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS external_identities" in statement
+    )
+    memberships_table = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TABLE IF NOT EXISTS workspace_memberships" in statement
+    )
+    people_backfill = next(
+        index for index, statement in enumerate(statements) if "INSERT INTO people" in statement
+    )
+
+    assert people_table < identities_table < memberships_table < people_backfill
+    assert any("ALTER TABLE users ADD COLUMN IF NOT EXISTS person_id" in s for s in statements)
+    assert any("INSERT INTO external_identities" in s for s in statements)
+    assert any("INSERT INTO workspace_memberships" in s for s in statements)
+    assert any("CREATE TABLE IF NOT EXISTS person_merges" in s for s in statements)

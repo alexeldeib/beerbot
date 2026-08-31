@@ -70,6 +70,7 @@ class User(BaseModel):
     groupme_user_id: str
     name: str
     avatar_url: Optional[str] = None
+    person_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -198,3 +199,66 @@ class WorkspaceContext(BaseModel):
     workspace: Workspace
     connection: GatewayConnection
     route: GatewayRoute
+
+
+class Person(BaseModel):
+    """Global activity subject, optionally claimed by a first-party account."""
+
+    id: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    status: str = "provisional"
+    canonical_person_id: Optional[str] = None
+    settings: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class Account(BaseModel):
+    """Optional first-party login attached to one global person."""
+
+    id: str
+    person_id: str
+    status: str = "active"
+    settings: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExternalIdentity(BaseModel):
+    """Provider identity linked to a global person."""
+
+    id: str
+    gateway_type: str
+    issuer_key: str
+    subject_key: str
+    person_id: str
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    assurance: str = "gateway_asserted"
+    status: str = "active"
+    metadata: dict[str, object] = Field(default_factory=dict)
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+
+class WorkspaceMembership(BaseModel):
+    """A global person's contextual identity and permissions in a workspace."""
+
+    id: str
+    workspace_id: str
+    person_id: str
+    display_name: str
+    role: str = "member"
+    status: str = "active"
+    settings: dict[str, object] = Field(default_factory=dict)
+    joined_at: datetime
+    updated_at: datetime
+
+
+class IdentityContext(BaseModel):
+    """Read-only shadow resolution of a gateway identity in one workspace."""
+
+    person: Person
+    external_identity: ExternalIdentity
+    membership: WorkspaceMembership
