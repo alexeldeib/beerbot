@@ -75,6 +75,7 @@ src/beerbot/
 - **Future gateways**: Multiple gateway conversations may map to one workspace; gateways do not define the tenant
 - **Compatibility first**: GroupMe remains the live source of truth while workspace/gateway records are shadow state
 - **First-party product**: Web/iOS will own accounts and global personal history; messaging integrations are adapters
+- **Shadow identities**: People, external identities, and memberships are not used for live authorization or stats
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 
 No repository-local issue tracker is configured.

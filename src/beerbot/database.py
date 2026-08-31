@@ -200,6 +200,160 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             "CREATE INDEX IF NOT EXISTS idx_groups_workspace_id ON groups(workspace_id)",
         ),
     ),
+    (
+        3,
+        "shadow_global_identities",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS people (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                avatar_url TEXT,
+                status TEXT NOT NULL DEFAULT 'provisional',
+                canonical_person_id TEXT REFERENCES people(id),
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                person_id TEXT NOT NULL UNIQUE REFERENCES people(id),
+                status TEXT NOT NULL DEFAULT 'active',
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS external_identities (
+                id TEXT PRIMARY KEY,
+                gateway_type TEXT NOT NULL,
+                issuer_key TEXT NOT NULL,
+                subject_key TEXT NOT NULL,
+                person_id TEXT NOT NULL REFERENCES people(id),
+                display_name TEXT,
+                avatar_url TEXT,
+                assurance TEXT NOT NULL DEFAULT 'gateway_asserted',
+                status TEXT NOT NULL DEFAULT 'active',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                first_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(gateway_type, issuer_key, subject_key)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS workspace_memberships (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                person_id TEXT NOT NULL REFERENCES people(id),
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member',
+                status TEXT NOT NULL DEFAULT 'active',
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                joined_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(workspace_id, person_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS person_merges (
+                id BIGSERIAL PRIMARY KEY,
+                source_person_id TEXT NOT NULL REFERENCES people(id),
+                target_person_id TEXT NOT NULL REFERENCES people(id),
+                status TEXT NOT NULL DEFAULT 'proposed',
+                reason TEXT,
+                created_by_account_id TEXT REFERENCES accounts(id),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                applied_at TIMESTAMP WITH TIME ZONE,
+                reverted_at TIMESTAMP WITH TIME ZONE,
+                CHECK (source_person_id <> target_person_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_external_identities_person ON external_identities(person_id)",
+            "CREATE INDEX IF NOT EXISTS idx_workspace_memberships_person ON workspace_memberships(person_id)",
+            "CREATE INDEX IF NOT EXISTS idx_workspace_memberships_workspace ON workspace_memberships(workspace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_person_merges_source ON person_merges(source_person_id)",
+            "CREATE INDEX IF NOT EXISTS idx_person_merges_target ON person_merges(target_person_id)",
+            """
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES people(id)
+            """,
+            """
+            INSERT INTO people (id, display_name, avatar_url, status)
+            SELECT
+                'person:groupme:' || groupme_user_id,
+                name,
+                avatar_url,
+                'provisional'
+            FROM users
+            ON CONFLICT (id) DO UPDATE
+            SET display_name = EXCLUDED.display_name,
+                avatar_url = EXCLUDED.avatar_url,
+                updated_at = NOW()
+            """,
+            """
+            INSERT INTO external_identities (
+                id, gateway_type, issuer_key, subject_key, person_id,
+                display_name, avatar_url, assurance, status
+            )
+            SELECT
+                'identity:groupme:' || groupme_user_id,
+                'groupme',
+                'groupme',
+                groupme_user_id,
+                'person:groupme:' || groupme_user_id,
+                name,
+                avatar_url,
+                'gateway_asserted',
+                'active'
+            FROM users
+            ON CONFLICT (gateway_type, issuer_key, subject_key) DO UPDATE
+            SET person_id = EXCLUDED.person_id,
+                display_name = EXCLUDED.display_name,
+                avatar_url = EXCLUDED.avatar_url,
+                assurance = EXCLUDED.assurance,
+                status = 'active',
+                last_seen_at = NOW()
+            """,
+            """
+            UPDATE users
+            SET person_id = 'person:groupme:' || groupme_user_id
+            WHERE person_id IS DISTINCT FROM 'person:groupme:' || groupme_user_id
+            """,
+            """
+            WITH observed_memberships AS (
+                SELECT DISTINCT b.user_id, g.workspace_id
+                FROM beers b
+                JOIN groups g ON g.group_id = b.group_id
+                WHERE g.workspace_id IS NOT NULL
+                UNION
+                SELECT DISTINCT d.user_id, g.workspace_id
+                FROM user_debts d
+                JOIN groups g ON g.group_id = d.group_id
+                WHERE g.workspace_id IS NOT NULL
+            )
+            INSERT INTO workspace_memberships (
+                id, workspace_id, person_id, display_name, role, status
+            )
+            SELECT
+                'membership:' || observed.workspace_id || ':person:groupme:' || u.groupme_user_id,
+                observed.workspace_id,
+                'person:groupme:' || u.groupme_user_id,
+                u.name,
+                'member',
+                'active'
+            FROM observed_memberships observed
+            JOIN users u ON u.id = observed.user_id
+            ON CONFLICT (workspace_id, person_id) DO UPDATE
+            SET display_name = EXCLUDED.display_name,
+                status = 'active',
+                updated_at = NOW()
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)",
+        ),
+    ),
 )
 
 
