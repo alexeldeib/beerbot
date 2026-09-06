@@ -25,11 +25,6 @@ from .models import (
     WorkspaceContext,
     WorkspaceMembership,
 )
-from .identity import (
-    groupme_external_identity_id,
-    groupme_person_id,
-    workspace_membership_id,
-)
 from .routing import (
     GROUPME_GATEWAY_TYPE,
     groupme_connection_id,
@@ -454,7 +449,7 @@ class BeerRepository:
                         """
                         INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
                         VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (message_id, user_id) WHERE message_id IS NOT NULL
+                        ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                         DO NOTHING
                         RETURNING *
                         """,
@@ -1285,73 +1280,6 @@ class IdentityRepository:
                 external_identity=identity,
                 membership=membership,
             )
-
-    async def observe_groupme_user(self, user: User, workspace_id: str) -> None:
-        """Idempotently add a GroupMe user to shadow identity state.
-
-        This is not called by the live message path yet. It is provided for
-        explicit reconciliation while the shadow model is evaluated.
-        """
-        pool = await get_pool()
-        person_id = groupme_person_id(user.groupme_user_id)
-
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO people (id, display_name, avatar_url, status)
-                    VALUES ($1, $2, $3, 'provisional')
-                    ON CONFLICT (id) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        avatar_url = EXCLUDED.avatar_url,
-                        updated_at = NOW()
-                    """,
-                    person_id,
-                    user.name,
-                    user.avatar_url,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO external_identities (
-                        id, gateway_type, issuer_key, subject_key, person_id,
-                        display_name, avatar_url, assurance, status
-                    )
-                    VALUES ($1, 'groupme', 'groupme', $2, $3, $4, $5,
-                            'gateway_asserted', 'active')
-                    ON CONFLICT (gateway_type, issuer_key, subject_key) DO UPDATE
-                    SET person_id = EXCLUDED.person_id,
-                        display_name = EXCLUDED.display_name,
-                        avatar_url = EXCLUDED.avatar_url,
-                        status = 'active',
-                        last_seen_at = NOW()
-                    """,
-                    groupme_external_identity_id(user.groupme_user_id),
-                    user.groupme_user_id,
-                    person_id,
-                    user.name,
-                    user.avatar_url,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO workspace_memberships (
-                        id, workspace_id, person_id, display_name, role, status
-                    )
-                    VALUES ($1, $2, $3, $4, 'member', 'active')
-                    ON CONFLICT (workspace_id, person_id) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        status = 'active',
-                        updated_at = NOW()
-                    """,
-                    workspace_membership_id(workspace_id, person_id),
-                    workspace_id,
-                    person_id,
-                    user.name,
-                )
-                await conn.execute(
-                    "UPDATE users SET person_id = $1 WHERE id = $2",
-                    person_id,
-                    user.id,
-                )
 
 
 class RecapRepository:

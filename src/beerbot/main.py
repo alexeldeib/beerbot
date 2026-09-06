@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
 from .repositories import group_repo, recap_repo
+from .reconciliation import ReconciliationBusy, reconcile_identities
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,6 +154,21 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     if not hmac.compare_digest(parts[1], settings.admin_token):
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+@app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
+async def identity_parity(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+    return await reconcile_identities(after_id=after_id, limit=limit)
+
+
+@app.post("/admin/identities/reconcile", dependencies=[Depends(verify_admin_token)])
+async def identity_reconcile(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+    try:
+        return await reconcile_identities(apply=True, after_id=after_id, limit=limit)
+    except ReconciliationBusy:
+        raise HTTPException(
+            status_code=409, detail="Identity reconciliation already running"
+        ) from None
 
 
 @app.post("/admin/groups", dependencies=[Depends(verify_admin_token)])

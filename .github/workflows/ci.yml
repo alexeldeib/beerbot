@@ -12,10 +12,23 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: beerbot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d beerbot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       BEERBOT_BOT_ID: test-bot
       DATABASE_URL: postgresql://test:test@localhost/test
       ENVIRONMENT: development
+      BEERBOT_TEST_DATABASE_URL: postgresql://test:test@localhost:5432/beerbot_test
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
