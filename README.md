@@ -247,6 +247,28 @@ legacy `users`, `beers`, and `group_id` paths remain authoritative; no global
 stats or account behavior is exposed until shadow parity and the future activity
 model are verified.
 
+Identity maintenance is explicit and outside the message path. Authenticated
+admins can inspect `GET /admin/identities/parity` and repair missing records with
+`POST /admin/identities/reconcile`. Both accept `after_id` (default 0) and `limit`
+(default 100, maximum 500). Follow `next_after_id` until null for a complete pass.
+Reports contain counts and cursors only. Apply reports describe gaps repaired in
+that page; preview again to verify the result. Conflicting links and blocked
+identities are reported without modification. Existing names, roles, lifecycle
+states, and identity links are preserved. New historical memberships have status
+`observed`, which must never grant app access. Legacy migration-created active
+memberships remain shadow data and also require explicit authorization at app cutover.
+
+Repairs are atomic per page, serialized using a PostgreSQL advisory lock, and
+use short statement/lock timeouts. A busy repair returns HTTP 409; a database
+failure rolls the page back. Retry the same cursor after a failure. Reconciliation
+is intentionally not scheduled yet. Future linking writers must share its locking
+and transaction discipline. The old unconditional single-user observer was removed.
+
+CI runs real PostgreSQL migration and reconciliation regressions. To run these
+locally, set `BEERBOT_TEST_DATABASE_URL` to a disposable test database and run
+`uv run --extra dev pytest`. Each test creates and drops a unique schema there;
+the tests never use the application's `DATABASE_URL` for integration testing.
+
 The model profile is also configuration-driven. Google is the implemented
 runtime today; the next explicit agent-loop iteration will add adapters for
 OpenAI-compatible endpoints, including self-hosted multimodal models, and will
