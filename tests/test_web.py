@@ -209,3 +209,52 @@ async def test_unconfigured_email_and_static_security(browser, monkeypatch):
     assert "no-referrer" == response.headers["referrer-policy"]
     assert (await browser.get("/app/assets/app.js")).status_code == 200
     assert (await browser.get("/app/assets/web.py")).status_code == 404
+
+
+async def test_test_workspaces_excluded_everywhere_and_reversible(browser, pg, monkeypatch):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    async with pg.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO workspaces(id,name,settings) VALUES('sandbox','Sandbox','{\"other\":true}')"
+        )
+        await conn.execute("UPDATE groups SET workspace_id='sandbox' WHERE group_id='g2'")
+        await conn.execute("""INSERT INTO beers(user_id,group_id,quantity,drink_type,split_the_g)
+            SELECT id,'g1',2,'beer',0 FROM users WHERE person_id='ace'""")
+        await conn.execute("""INSERT INTO beers(user_id,group_id,quantity,drink_type,split_the_g)
+            SELECT id,'g2',10,'wine',3 FROM users WHERE person_id='ace'""")
+    await login(browser)
+    assert (await browser.get("/app/api/me")).json()["totals"]["drinks"] == 12
+    path = "/admin/workspaces/sandbox/environment"
+    assert (await browser.patch(path, json={"environment": "test"})).status_code == 401
+    headers = {"Authorization": "Bearer test-admin"}
+    assert (
+        await browser.patch(path, json={"environment": "test"}, headers=headers)
+    ).status_code == 200
+    result = (await browser.get("/app/api/me")).json()
+    assert result["totals"]["drinks"] == 2
+    assert result["totals"]["this_week"] == 2
+    assert result["totals"]["splits"] == 0
+    assert result["groups"] == [{"group_id": "g1", "name": "Friends"}]
+    assert result["breakdown"] == [{"drink_type": "beer", "drinks": 2}]
+    assert sum(row["drinks"] for row in result["trend"]) == 2
+    assert len(result["activity"]) == 1 and result["activity"][0]["drink_type"] == "beer"
+    assert (await browser.get("/app/api/me?group=g2")).status_code == 404
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM beers") == 2
+        assert (
+            await conn.fetchval("SELECT settings->>'other' FROM workspaces WHERE id='sandbox'")
+            == "true"
+        )
+        assert await conn.fetchval("SELECT person_id FROM users WHERE groupme_user_id='1'") == "ace"
+    assert (
+        await browser.patch(path, json={"environment": "production"}, headers=headers)
+    ).status_code == 200
+    assert (await browser.get("/app/api/me")).json()["totals"]["drinks"] == 12
+    assert (
+        await browser.patch(path, json={"environment": "unknown"}, headers=headers)
+    ).status_code == 422
+    assert (
+        await browser.patch(
+            "/admin/workspaces/missing/environment", json={"environment": "test"}, headers=headers
+        )
+    ).status_code == 404

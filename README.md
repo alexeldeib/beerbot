@@ -348,6 +348,17 @@ access-controlled external store.
 
 ## Personal dashboard (invite-only)
 
+Only registered production groups contribute to the personal dashboard. Classify
+a workspace with `PATCH /admin/workspaces/{workspace_id}/environment` (admin bearer
+token) and `{"environment":"test"}` to exclude every gateway group mapped to it
+from totals, charts, recent activity, and the group picker. Explicit requests for
+an excluded group return 404. The setting is stored in `workspaces.settings`,
+preserves other settings, and can be reversed with `{"environment":"production"}`.
+Unclassified legacy workspaces retain production visibility. This changes only
+personal-dashboard visibility: no identities, drink rows, group registrations,
+bot replies, or group-specific leaderboards/recaps are modified. It is not process,
+database, or credential isolation; use a separate deployment/database for risky tests.
+
 `/app` is the first-party, read-only personal view: this week and last week,
 all-time drinks, Split-G total, eight-week trend, drink breakdown, and the latest
 30 entries. It reads legacy `beers` through the explicitly linked `users.person_id`.
