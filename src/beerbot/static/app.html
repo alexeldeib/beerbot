@@ -9,7 +9,7 @@
   <script src="/app/assets/groups.js" defer></script>
 </head>
 <body>
-  <header class="masthead"><a href="/app" class="brand">beerbot<span class="brand-dot">.</span></a><span class="header-note">YOUR PERSONAL ROUNDUP</span><button id="logout" class="quiet" hidden>Sign out</button></header>
+  <header class="masthead"><a href="/app" class="brand" aria-label="Beerbot home"><span class="brand-mark" aria-hidden="true">✳</span>beerbot<span class="brand-dot">.</span></a><span class="header-note">your little drinks diary</span><button id="logout" class="quiet" hidden>Sign out</button></header>
   <main>
     <p id="status" role="status" aria-live="polite">Loading your history…</p>
     <button id="retry-save" class="quiet" hidden>Retry last save safely</button>
@@ -20,9 +20,9 @@
       <button id="dismiss-invitation" class="quiet" type="button">Dismiss invitation</button>
     </section>
     <section id="login" class="login" hidden>
-      <p class="eyebrow">SAME YOU. ALL YOUR GROUPS.</p>
-      <h1>Your history.<br>Your corner.</h1>
-      <p class="lede">Your drinks, trends, and recent rounds from Beerbot — together in one place.</p>
+      <p class="eyebrow">Same you. All your groups.</p>
+      <h1>Your rounds,<br>all together.</h1>
+      <p class="lede">A little place to log your drinks, keep your history, and bring your friends.</p>
       <form id="email-form">
         <label for="email">Email address</label>
         <div class="input-row"><input id="email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@example.com"><button type="submit">Send a code <span aria-hidden="true">↗</span></button></div>
@@ -37,7 +37,7 @@
       <div class="privacy-note">Only your own stats. No group chats or photos.<br>Keep logging in GroupMe, just like before.</div>
     </section>
     <section id="dashboard" hidden>
-      <div class="page-heading"><div><p class="eyebrow">YOUR PERSONAL ROUNDUP</p><h1 id="greeting">Your history</h1><p id="email-display" class="muted"></p></div><div class="filter"><label for="group">Show history from</label><select id="group"><option value="">All my groups</option></select></div></div>
+      <div class="page-heading"><div><p class="eyebrow">Your drinks diary</p><h1 id="greeting">Your history</h1><p id="email-display" class="muted"></p></div><div class="filter"><label for="group">Show history from</label><select id="group"><option value="">All my groups</option></select></div></div>
       <section id="logging" class="panel logging-panel" hidden>
         <div class="section-heading"><h2>Log a drink</h2><div class="group-actions"><button id="manage-groups" class="quiet">Manage app groups</button><button id="new-group" class="quiet">Create app group</button></div></div>
         <form id="drink-form" class="drink-form">
