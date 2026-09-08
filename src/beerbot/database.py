@@ -523,6 +523,37 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        7,
+        "native_group_invitations",
+        (
+            """CREATE TABLE app_group_events (
+                id BIGSERIAL PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                account_id TEXT NOT NULL REFERENCES accounts(id),
+                action TEXT NOT NULL,
+                details JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""",
+            """CREATE TABLE app_group_invitations (
+            id UUID PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            created_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+            email TEXT NOT NULL CHECK(email=lower(email)),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '7 days',
+            revoked_at TIMESTAMPTZ,
+            accepted_at TIMESTAMPTZ,
+            accepted_by_account_id TEXT REFERENCES accounts(id)
+        )""",
+            "CREATE INDEX app_group_invitations_workspace ON app_group_invitations(workspace_id,created_at)",
+            "CREATE INDEX app_group_invitations_creator ON app_group_invitations(created_by_account_id,created_at)",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():

@@ -20,10 +20,11 @@ isolation. Later gateways map to the same workspace and inherit its classificati
    the working Fly URL during migration, and redirect only browser app traffic.
    Do not redirect or change the GroupMe callback. Host-only sessions require a
    new sign-in on the new hostname. Add a useful root route to `/app`.
-2. **Account lifecycle:** keep invitations operator-approved. Add an auditable
-   invite/reinvite/revoke workflow and a documented correction path for mistaken
-   person/email mappings. Never permit claiming by name, an unverified email, or
-   inferred workspace membership. Review with a few volunteer users first.
+2. **Account lifecycle:** native group owners can now invite/reinvite/revoke with
+   an audit trail and matching-email proof. Keep linking existing GroupMe history
+   operator-approved, with a documented correction path for mistaken person/email
+   mappings. Never permit claiming by name, an unverified email, or inferred
+   workspace membership. Review with a few volunteer users first.
 3. **Webhook authenticity:** production has historically lacked the optional
    callback secret. Verify current configuration; stage a coordinated transition
    of callback URL and secret using an overlap/dual-acceptance period so valid

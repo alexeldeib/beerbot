@@ -36,7 +36,7 @@ async function saveCommand(path, values) {
 $("retry-save").addEventListener("click",async()=>{
   if(!pendingSave)return;
   const pending=pendingSave;
-  try { await saveCommand(pending.path,pending.values);for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();await loadDashboard();status("Your previous save is confirmed."); }catch(error){status(error.message);}
+  try { const result=await saveCommand(pending.path,pending.values);window.dispatchEvent(new CustomEvent('beerbot:save-confirmed',{detail:{path:pending.path,result}}));for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();await loadDashboard();status("Your previous save is confirmed."); }catch(error){status(error.message);}
 });
 document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>$(button.dataset.close).close()));
 $("new-group").addEventListener("click",()=>{$("group-error").textContent="";$("group-dialog").showModal();});
@@ -65,13 +65,14 @@ function renderEntry(row){
   node.append(detail,text("span",number(row.quantity),"activity-quantity"));return node;
 }
 $("email-form").addEventListener("submit",event=>{event.preventDefault();submit(event.currentTarget,async()=>{
+  if(typeof prepareGroupInvitation==='function')await prepareGroupInvitation($("email").value.trim());
   await api("login",{email:$("email").value.trim()}); $("email-form").hidden=true;$("code-form").hidden=false;$("code").value="";$("code").focus();
 });});
 $("code-form").addEventListener("submit",event=>{event.preventDefault();submit(event.currentTarget,async()=>{await api("verify",{code:$("code").value.trim()});await loadDashboard();});});
 $("back").addEventListener("click",()=>{$("email-form").hidden=false;$("code-form").hidden=true;status("");$("email").focus();});
 $("logout").addEventListener("click",async()=>{try{await api("logout",{});keepPending(null);location.reload();}catch(error){status(error.message);}});
 $("group").addEventListener("change",()=>loadDashboard($("group").value));
-function showLogin(){ $("dashboard").hidden=true;$("logout").hidden=true;$("login").hidden=false; }
+function showLogin(){ $("dashboard").hidden=true;$("logout").hidden=true;$("login").hidden=false;window.dispatchEvent(new CustomEvent('beerbot:signed-out')); }
 let requestGeneration=0;
 async function loadDashboard(group="") {
   const generation=++requestGeneration; status("Loading your history…");
@@ -90,6 +91,7 @@ async function loadDashboard(group="") {
     if((data.writable_workspaces||[]).some(w=>w.id===selectedWorkspace))$("log-workspace").value=selectedWorkspace;
     $("save-drink").disabled=!(data.writable_workspaces||[]).length;
     writableCatalog=data.writable_workspaces||[];loggingHint();
+    window.dispatchEvent(new CustomEvent('beerbot:signed-in',{detail:{email:data.person.email,enabled:data.logging_enabled}}));
     $("week-total").textContent=number(data.totals.this_week);$("last-total").textContent=number(data.totals.last_week);
     $("all-total").textContent=number(data.totals.drinks);$("split-total").textContent=number(data.totals.splits);
     $("group").replaceChildren(new Option("All my groups",""),...data.groups.map(g=>new Option(g.name||"GroupMe group",g.group_id)));$("group").value=group;

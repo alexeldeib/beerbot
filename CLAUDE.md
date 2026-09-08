@@ -85,6 +85,7 @@ src/beerbot/
 - **Shadow identities**: The GroupMe path does not use people, external identities, or memberships for live authorization or stats
 - **Web accounts**: `/app` uses explicit admin-approved person/email invitations plus email proof, never shadow membership as authorization. Never auto-claim by name or email alone.
 - **Native activity**: `activity.py` owns explicit app access and idempotent Log/Edit/Undo. A connected app log writes the real legacy row and app reference atomically. `personal_activity` reads legacy rows plus native-only entries, without double counting. Keep GroupMe repositories and tool behavior unchanged; never invent provider identities. Test with PostgreSQL and feature-gate app writes.
+- **App groups**: `app_groups.py` manages only native workspaces with no legacy group mapping. Invitations require a verified matching email and a live owner grant. Group membership shares names/roles, never another person's drink history. Keep workspace-before-membership and user-before-beer lock ordering when extending commands.
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 
 No repository-local issue tracker is configured.

@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
+from .activity import Command
+from . import app_groups
 
 router = APIRouter()
 STATIC = Path(__file__).with_name("static")
@@ -76,6 +78,10 @@ class InviteInput(EmailInput):
 
 class CodeInput(BaseModel):
     code: str = Field(pattern=r"^\d{8}$", max_length=8)
+
+
+class FriendInvitation(Command, EmailInput):
+    pass
 
 
 def email_configured() -> bool:
@@ -175,7 +181,7 @@ async def dashboard_page():
 
 @router.get("/app/assets/{name}")
 async def dashboard_asset(name: str):
-    if name not in ("app.css", "app.js"):
+    if name not in ("app.css", "app.js", "groups.js"):
         raise HTTPException(404)
     return FileResponse(STATIC / name)
 
@@ -421,3 +427,77 @@ async def edit_app_drink(entry_id: UUID, data: EditDrink, person: dict = Depends
 @router.post("/app/api/activity/{entry_id}/undo", dependencies=[Depends(check_origin)])
 async def undo_app_drink(entry_id: UUID, data: UndoDrink, person: dict = Depends(signed_in_person)):
     return await run_command(person, "undo", data, entry_id)
+
+
+@router.get("/app/api/groups")
+async def app_group_list(person: dict = Depends(signed_in_person)):
+    return await app_groups.list_app_groups(person)
+
+
+@router.get("/app/api/groups/{workspace_id}")
+async def app_group_details(workspace_id: str, person: dict = Depends(signed_in_person)):
+    return await app_groups.group_details(person, workspace_id)
+
+
+@router.post("/app/api/groups/{workspace_id}/rename", dependencies=[Depends(check_origin)])
+async def rename_app_group(
+    workspace_id: str, data: app_groups.RenameGroup, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "rename", data, workspace_id)
+
+
+@router.post("/app/api/groups/{workspace_id}/invite", dependencies=[Depends(check_origin)])
+async def invite_app_friend(
+    workspace_id: str, data: FriendInvitation, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "invite", data, workspace_id)
+
+
+@router.post(
+    "/app/api/groups/{workspace_id}/invitations/{invitation_id}/revoke",
+    dependencies=[Depends(check_origin)],
+)
+async def revoke_app_invitation(
+    workspace_id: str, invitation_id: UUID, data: Command, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "revoke", data, workspace_id, invitation_id)
+
+
+@router.post("/app/api/groups/{workspace_id}/remove", dependencies=[Depends(check_origin)])
+async def remove_app_member(
+    workspace_id: str, data: app_groups.MemberCommand, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "remove", data, workspace_id)
+
+
+@router.post("/app/api/groups/{workspace_id}/transfer", dependencies=[Depends(check_origin)])
+async def transfer_app_group(
+    workspace_id: str, data: app_groups.MemberCommand, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "transfer", data, workspace_id)
+
+
+@router.post("/app/api/groups/{workspace_id}/leave", dependencies=[Depends(check_origin)])
+async def leave_app_group(
+    workspace_id: str, data: Command, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "leave", data, workspace_id)
+
+
+@router.get("/app/api/invitations/{invitation_id}")
+async def invitation_preview(invitation_id: UUID):
+    return await app_groups.preview_invitation(invitation_id)
+
+
+@router.post("/app/api/invitations/{invitation_id}/prepare", dependencies=[Depends(check_origin)])
+async def prepare_friend_account(invitation_id: UUID, data: EmailInput):
+    if not email_configured():
+        raise HTTPException(503, "Email sign-in is not available yet")
+    return await app_groups.prepare_invitation(invitation_id, data.email)
+
+
+@router.post("/app/api/invitations/{invitation_id}/accept", dependencies=[Depends(check_origin)])
+async def accept_friend_invitation(
+    invitation_id: UUID, data: app_groups.JoinGroup, person: dict = Depends(signed_in_person)
+):
+    return await app_groups.group_command(person, "accept", data, invitation_id=invitation_id)
