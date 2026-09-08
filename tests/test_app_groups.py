@@ -93,7 +93,8 @@ async def test_native_join_name_proof_and_personal_history_isolation(owner, pg):
 
 
 @pytest.mark.parametrize(
-    "case", ["expired", "revoked", "owner_removed", "owner_disabled", "test_workspace"]
+    "case",
+    ["expired", "revoked", "owner_removed", "owner_disabled", "owner_unverified", "test_workspace"],
 )
 async def test_unavailable_invitation_cannot_create_account(owner, pg, case):
     invitation, _ = await invite(owner)
@@ -109,6 +110,8 @@ async def test_unavailable_invitation_cannot_create_account(owner, pg, case):
             await conn.execute("UPDATE app_workspace_access SET active=false")
         elif case == "owner_disabled":
             await conn.execute("UPDATE accounts SET status='disabled'")
+        elif case == "owner_unverified":
+            await conn.execute("UPDATE account_emails SET verified_at=NULL")
         else:
             await conn.execute(
                 "UPDATE workspaces SET settings=jsonb_set(settings,'{environment}','\"test\"') WHERE id=$1",

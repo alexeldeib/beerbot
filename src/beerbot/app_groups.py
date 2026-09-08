@@ -84,8 +84,9 @@ async def live_invitation(conn, invitation_id: UUID):
         """SELECT i.*,p.display_name AS inviter FROM app_group_invitations i
            JOIN app_workspace_access m ON m.account_id=i.created_by_account_id AND m.workspace_id=i.workspace_id
            JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
+           JOIN account_emails e ON e.account_id=a.id
            WHERE i.id=$1 AND i.revoked_at IS NULL AND i.expires_at>now()
-           AND m.active AND m.role='owner' AND a.status='active'
+           AND m.active AND m.role='owner' AND a.status='active' AND e.verified_at IS NOT NULL
            AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
            FOR UPDATE OF i""",
         invitation_id,
