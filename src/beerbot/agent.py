@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 
 from .config import settings
+from .database import execution_scope
 from .llm import model_profile
 from .models import GroupMeAttachment, GroupMeMessage
 from .repositories import beer_repo
@@ -359,6 +360,8 @@ class BeerAgent:
         Returns None if the agent decides to stay silent.
         """
         if not self.client:
+            if execution_scope.get():
+                raise RuntimeError("Model client unavailable")
             logger.warning("Agent skipped: no Gemini API key")
             return None
 
@@ -428,6 +431,8 @@ class BeerAgent:
             )
         except Exception:
             logger.exception("Gemini generate_content failed")
+            if execution_scope.get():
+                raise
             return None
 
         reply = ctx.reply_text  # None if model chose silence

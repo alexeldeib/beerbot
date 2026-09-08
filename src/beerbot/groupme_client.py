@@ -1,12 +1,21 @@
 """GroupMe API client for sending bot messages."""
 
 import logging
+from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    state: Literal["sent", "retry", "failed", "uncertain"]
+    code: str | None = None
+    retry_after: int = 0
 
 
 class GroupMeClient:
@@ -69,9 +78,13 @@ class GroupMeClient:
         Returns:
             True if successful, False otherwise.
         """
+        return (await self.deliver_message(text, group_id)).state == "sent"
+
+    async def deliver_message(self, text: str, group_id: str | None = None) -> DeliveryResult:
+        """Classify delivery without automatically repeating ambiguous sends."""
         bot_id = await self._get_bot_id(group_id)
         if not bot_id:
-            return False
+            return DeliveryResult("failed", "unregistered_group")
 
         async with httpx.AsyncClient() as client:
             try:
@@ -81,17 +94,21 @@ class GroupMeClient:
                     timeout=10.0,
                 )
                 if 200 <= response.status_code < 300:
-                    return True
-                logger.error(
-                    "GroupMe send failed for group %s: status=%s body=%s",
-                    group_id,
-                    response.status_code,
-                    response.text[:500],
-                )
-                return False
-            except httpx.RequestError:
-                logger.exception("GroupMe send request failed for group %s", group_id)
-                return False
+                    return DeliveryResult("sent")
+                code = f"http_{response.status_code}"
+                if response.status_code == 429:
+                    try:
+                        delay = min(86400, max(0, int(response.headers.get("retry-after", "60"))))
+                    except ValueError:
+                        delay = 60
+                    return DeliveryResult("retry", code, delay)
+                if response.status_code >= 500 or response.status_code == 408:
+                    return DeliveryResult("uncertain", code)
+                return DeliveryResult("failed", code)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                return DeliveryResult("retry", type(exc).__name__)
+            except httpx.RequestError as exc:
+                return DeliveryResult("uncertain", type(exc).__name__)
 
 
 # Singleton instance

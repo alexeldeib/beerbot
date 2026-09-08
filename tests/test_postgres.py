@@ -5,37 +5,14 @@ CI always supplies a disposable PostgreSQL service.
 """
 
 import asyncio
-import os
-from uuid import uuid4
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
 from src.beerbot import database
 from src.beerbot.models import DrinkType
 from src.beerbot.reconciliation import LOCK_KEY, ReconciliationBusy, reconcile_identities
 from src.beerbot.repositories import beer_repo
-
-
-@pytest_asyncio.fixture
-async def pg(monkeypatch):
-    dsn = os.environ.get("BEERBOT_TEST_DATABASE_URL")
-    if not dsn:
-        pytest.skip("Set BEERBOT_TEST_DATABASE_URL to a disposable PostgreSQL database")
-    schema = "test_" + uuid4().hex
-    admin = await asyncpg.connect(dsn)
-    await admin.execute(f'CREATE SCHEMA "{schema}"')
-    pool = await asyncpg.create_pool(
-        dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
-    )
-    monkeypatch.setattr(database, "_pool", pool)
-    try:
-        yield pool
-    finally:
-        await pool.close()
-        await admin.execute(f'DROP SCHEMA "{schema}" CASCADE')
-        await admin.close()
 
 
 async def seed(pool):

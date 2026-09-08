@@ -38,12 +38,14 @@ fly deploy
 Single AI agent processes every message via Gemini function calling:
 
 ```
-GroupMe Webhook → main.py (parse, skip bots) → BeerAgent.process_message()
+GroupMe Webhook → main.py (validate, persist inbox, acknowledge)
+    → delivery.py worker → transactional BeerAgent.process_message()
     → Build system prompt (personality + context)
     → Build contents (text + images as multimodal parts)
     → Create tool closures (group_id/sender bound via closure)
     → configured model endpoint with automatic function calling
-    → Rate limit check → send reply if any
+    → Rate limit check → commit tools/results/outbox together
+    → delivery.py sender → deliver stored reply independently
 ```
 
 ## Project Structure
@@ -52,6 +54,7 @@ GroupMe Webhook → main.py (parse, skip bots) → BeerAgent.process_message()
 src/beerbot/
 ├── main.py           # FastAPI app, webhook handler, admin endpoints
 ├── agent.py          # BeerAgent: system prompt, AFC, rate limiting, conversation history
+├── delivery.py       # Durable message execution, outbox, retries, retention and status
 ├── tools.py          # Tool factory: 15 async closures (7 write, 8 read) with validation
 ├── llm.py            # Provider-neutral model profile and capability metadata
 ├── gateways/         # Canonical inbound transport contracts and adapters
@@ -69,6 +72,9 @@ src/beerbot/
 - **Closure-based tools**: Tools bind group_id/message_id/sender via closure — AI never sees security-sensitive IDs
 - **Async-first**: All I/O uses asyncpg and httpx; AFC uses native async tool callables
 - **Idempotency**: Message deduplication via `(message_id, user_id, drink_type)`
+- **Durability**: Inbox `(group_id, message_id)` deduplication; message DB writes/results/outbox commit atomically
+- **Delivery**: Only connect failures and rate limits automatically retry; uncertain sends need explicit admin review
+- **Retention**: Inbox content, successful tool traces, and reply text expire after three days; IDs remain for deduplication
 - **Timezone**: Eastern time (America/New_York) for "today"/"week" calculations
 - **Rate limiting**: TokenBucket per group — tool-call replies always sent, personality replies rate-limited
 - **Multi-group**: Single bot instance serves registered GroupMe groups

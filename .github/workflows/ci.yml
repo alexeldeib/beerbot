@@ -109,5 +109,8 @@ jobs:
             https://beerbot-groupme.fly.dev/health
           curl --fail --silent --show-error \
             --retry 10 --retry-all-errors --retry-delay 3 \
+            https://beerbot-groupme.fly.dev/ready
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/version \
             | jq --exit-status --arg sha "${GITHUB_SHA}" '.git_sha == $sha'
