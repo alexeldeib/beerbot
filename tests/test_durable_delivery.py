@@ -343,3 +343,93 @@ def test_audited_tools_preserve_google_function_schemas():
         expected = types.FunctionDeclaration.from_callable(client=client, callable=original)
         actual = types.FunctionDeclaration.from_callable(client=client, callable=audited)
         assert expected == actual
+
+
+@pytest.mark.parametrize("finish", [True, False])
+async def test_explicit_google_loop_commits_or_rolls_back_as_one_message(pg, monkeypatch, finish):
+    from google import genai
+    from google.genai import types
+
+    await setup(pg)
+    client = genai.Client(api_key="synthetic")
+
+    def response(name, args):
+        return types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    finish_reason="STOP",
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(function_call=types.FunctionCall(name=name, args=args))],
+                    ),
+                )
+            ]
+        )
+
+    replies = [response("log_drinks", {"count": 1.0, "drink_type": "beer"})]
+    if finish:
+        replies.append(response("reply", {"message": "Logged"}))
+    client.aio.models.generate_content = AsyncMock(side_effect=replies)
+    agent = BeerAgent()
+    agent.client = client
+    monkeypatch.setattr("src.beerbot.agent.settings.agent_max_tool_calls", 2 if finish else 1)
+    await accept_message(message())
+    await execute_one(agent)
+    assert await pg.fetchval("SELECT COUNT(*) FROM beers") == int(finish)
+    assert await pg.fetchval("SELECT COUNT(*) FROM message_outbox") == int(finish)
+    assert await pg.fetchval("SELECT state FROM message_inbox") == (
+        "completed" if finish else "pending"
+    )
+
+
+async def test_compatible_adapter_uses_same_transactional_agent_tools(pg):
+    import json
+    import httpx
+    from dataclasses import replace
+    from openai import AsyncOpenAI
+
+    await setup(pg)
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        name, args = (
+            ("log_drinks", {"count": 1, "drink_type": "beer"})
+            if len(requests) == 1
+            else ("reply", {"message": "Logged"})
+        )
+        return httpx.Response(
+            200,
+            json={
+                "id": "r",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": str(len(requests)),
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": json.dumps(args)},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+
+    agent = BeerAgent()
+    agent.model_profile = replace(agent.model_profile, provider="openai_compatible", model="test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        agent.client = AsyncOpenAI(api_key="test", base_url="http://test/v1", http_client=http)
+        await accept_message(message())
+        await execute_one(agent)
+    assert await pg.fetchval("SELECT SUM(quantity) FROM beers") == 1
+    assert await pg.fetchval("SELECT body FROM message_outbox") == "Logged"
+    assert len(requests) == 2

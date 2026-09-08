@@ -3,9 +3,20 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
+from google.genai import types
 from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users
 from src.beerbot.models import GroupMeAttachment, GroupMeMessage
+
+
+def empty_response(text=""):
+    return types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(role="model", parts=[types.Part(text=text)]),
+                finish_reason="STOP",
+            )
+        ]
+    )
 
 
 def _make_message(**overrides) -> GroupMeMessage:
@@ -119,8 +130,7 @@ class TestBeerAgentProcessMessage:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = ""
+        mock_response = empty_response()
 
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
@@ -148,8 +158,7 @@ class TestBeerAgentProcessMessage:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = ""
+        mock_response = empty_response()
 
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
@@ -194,8 +203,7 @@ class TestBeerAgentProcessMessage:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = ""
+        mock_response = empty_response()
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -312,8 +320,7 @@ class TestReplyContext:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = ""
+        mock_response = empty_response()
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -344,8 +351,7 @@ class TestReplyContext:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = "Logged 1 beer!"
+        mock_response = empty_response()
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -376,8 +382,7 @@ class TestReplyContext:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = "Fixed!"
+        mock_response = empty_response()
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -425,8 +430,7 @@ class TestReplyContext:
         mock_settings.image_analysis_enabled = False
         mock_settings.agent_max_tool_calls = 5
 
-        mock_response = MagicMock()
-        mock_response.text = "Fixed!"
+        mock_response = empty_response()
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -558,7 +562,7 @@ class TestVideoOnlyMessageHistory:
         mock_settings.agent_max_tool_calls = 5
 
         mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=MagicMock())
+        mock_client.aio.models.generate_content = AsyncMock(return_value=empty_response())
         mock_genai.Client.return_value = mock_client
 
         agent = BeerAgent()
@@ -593,8 +597,7 @@ class TestGenerateWeeklyRecap:
     ):
         mock_settings.gemini_api_key = "test-key"
 
-        mock_response = MagicMock()
-        mock_response.text = "Weekly recap text!"
+        mock_response = empty_response("Weekly recap text!")
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -625,7 +628,7 @@ class TestGenerateWeeklyRecap:
 
         # Verify the prompt sent to Gemini includes fun facts
         call_args = mock_client.aio.models.generate_content.call_args
-        prompt = call_args.kwargs["contents"][0]
+        prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" in prompt
         assert "Saturday" in prompt
         assert "Bryan" in prompt
@@ -639,8 +642,7 @@ class TestGenerateWeeklyRecap:
     async def test_recap_no_fun_facts_when_empty(self, mock_genai, mock_settings, mock_beer_repo):
         mock_settings.gemini_api_key = "test-key"
 
-        mock_response = MagicMock()
-        mock_response.text = "Quiet week."
+        mock_response = empty_response("Quiet week.")
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
         mock_genai.Client.return_value = mock_client
@@ -664,7 +666,7 @@ class TestGenerateWeeklyRecap:
 
         assert result == "Quiet week."
         call_args = mock_client.aio.models.generate_content.call_args
-        prompt = call_args.kwargs["contents"][0]
+        prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" not in prompt
 
     @pytest.mark.asyncio

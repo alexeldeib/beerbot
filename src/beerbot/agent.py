@@ -8,11 +8,12 @@ from dataclasses import dataclass, field
 
 import httpx
 from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 
 from .config import settings
 from .database import execution_scope
 from .llm import model_profile
+from .model_runtime import Media, GoogleSession, CompatibleSession, run_tools
 from .models import GroupMeAttachment, GroupMeMessage
 from .repositories import beer_repo
 from .tools import ToolContext, create_tools
@@ -204,27 +205,48 @@ def extract_mentioned_users(
 
 
 class BeerAgent:
-    """Agent that processes messages via Gemini with automatic function calling."""
+    """Agent that processes messages through the bounded provider-neutral tool loop."""
 
     def __init__(self):
-        self.client: genai.Client | None = None
+        self.client: genai.Client | AsyncOpenAI | None = None
         self.model_profile = model_profile(settings)
         llm_api_key = settings.llm_api_key if isinstance(settings.llm_api_key, str) else None
         gemini_api_key = (
             settings.gemini_api_key if isinstance(settings.gemini_api_key, str) else None
         )
-        api_key = llm_api_key or gemini_api_key
+        api_key = llm_api_key or (
+            gemini_api_key if self.model_profile.provider == "google" else None
+        )
         if api_key and self.model_profile.provider == "google":
             self.client = genai.Client(api_key=api_key)
+        elif self.model_profile.provider == "openai_compatible" and self.model_profile.base_url:
+            self.client = AsyncOpenAI(
+                api_key=llm_api_key or "unused",
+                base_url=self.model_profile.base_url,
+                timeout=60,
+                max_retries=0,
+            )
         elif api_key:
             logger.error(
-                "LLM provider %s is configured but not implemented by the transitional AFC runtime",
+                "LLM provider %s is missing its endpoint configuration",
                 self.model_profile.provider,
             )
         self._rate_limiters: dict[str, TokenBucket] = {}
         self._message_history: dict[str, deque[ChatMessage]] = {}
         self._history_max_len = 10
         self._group_locks: dict[str, asyncio.Lock] = {}
+
+    def _session(self, system: str, contents: list, tools: list):
+        if self.model_profile.provider == "google":
+            return GoogleSession(self.client, self.model_profile.model, system, contents, tools)
+        return CompatibleSession(
+            self.client,
+            self.model_profile.model,
+            system,
+            contents,
+            tools,
+            video_format=settings.llm_video_format,
+        )
 
     def _get_bucket(self, group_id: str) -> TokenBucket:
         if group_id not in self._rate_limiters:
@@ -297,19 +319,19 @@ class BeerAgent:
 
         return "\n".join(lines)
 
-    async def _fetch_image(self, url: str) -> types.Part | None:
+    async def _fetch_image(self, url: str) -> Media | None:
         """Fetch an image URL and return a Gemini Part."""
         try:
             async with httpx.AsyncClient(follow_redirects=True) as http:
                 resp = await http.get(url, timeout=10.0)
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "image/jpeg")
-                return types.Part.from_bytes(data=resp.content, mime_type=content_type)
+                return Media(data=resp.content, mime_type=content_type)
         except Exception:
             logger.exception("Failed to fetch image: %s", url)
             return None
 
-    async def _fetch_video(self, url: str) -> types.Part | None:
+    async def _fetch_video(self, url: str) -> Media | None:
         """Fetch a video URL and return a Gemini Part for inline analysis."""
         try:
             async with httpx.AsyncClient(follow_redirects=True) as http:
@@ -321,14 +343,14 @@ class BeerAgent:
                     return None
                 logger.info("Fetched video (%.1f MB): %s", size_mb, url)
                 content_type = resp.headers.get("content-type", "video/mp4")
-                return types.Part(inline_data=types.Blob(data=resp.content, mime_type=content_type))
+                return Media(data=resp.content, mime_type=content_type)
         except Exception:
             logger.exception("Failed to fetch video: %s", url)
             return None
 
-    async def _build_contents(self, message: GroupMeMessage) -> list[types.Part | str]:
+    async def _build_contents(self, message: GroupMeMessage) -> list[Media | str]:
         """Build multimodal contents from message text and media attachments."""
-        parts: list[types.Part | str] = []
+        parts: list[Media | str] = []
 
         if message.text:
             parts.append(message.text)
@@ -362,7 +384,7 @@ class BeerAgent:
         if not self.client:
             if execution_scope.get():
                 raise RuntimeError("Model client unavailable")
-            logger.warning("Agent skipped: no Gemini API key")
+            logger.warning("Agent skipped: model client is not configured")
             return None
 
         async with self._get_lock(message.group_id):
@@ -418,19 +440,19 @@ class BeerAgent:
         contents = await self._build_contents(message)
 
         try:
-            await self.client.aio.models.generate_content(
-                model=self.model_profile.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=tools,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        maximum_remote_calls=settings.agent_max_tool_calls,
-                    ),
-                ),
+            if self.model_profile.capabilities.tools is False:
+                raise RuntimeError("Message processing requires tool calling")
+            session = self._session(system_prompt, contents, tools)
+            max_calls = settings.agent_max_executed_tools
+            await run_tools(
+                session,
+                tools,
+                max_rounds=settings.agent_max_tool_calls,
+                max_calls=max_calls if isinstance(max_calls, int) else 20,
+                terminal_tool="reply",
             )
         except Exception:
-            logger.exception("Gemini generate_content failed")
+            logger.exception("Model execution failed")
             if execution_scope.get():
                 raise
             return None
@@ -531,12 +553,8 @@ class BeerAgent:
         prompt = RECAP_PROMPT.format(data=data_str)
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_profile.model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(),
-            )
-            return response.text.strip() if response.text else None
+            turn = await self._session("", [prompt], []).next_turn()
+            return turn.text.strip() or None
         except Exception:
             logger.exception("Weekly recap generation failed for group %s", group_id)
             return None

@@ -5,7 +5,7 @@ GroupMe bot that tracks alcoholic drink consumption (beer, wine, cocktails, hard
 ## Tech Stack
 
 - **Python 3.11+** with FastAPI, asyncpg, Pydantic v2
-- **Configurable LLM profile** (Google Gemini 3.6 Flash by default) with AFC
+- **Explicit model loop** with Google Gemini 3.6 Flash by default and OpenAI-compatible adapters
 - **PostgreSQL** with async connection pooling
 - **uv** for dependency management
 - **Fly.io** for deployment
@@ -43,7 +43,7 @@ GroupMe Webhook → main.py (validate, persist inbox, acknowledge)
     → Build system prompt (personality + context)
     → Build contents (text + images as multimodal parts)
     → Create tool closures (group_id/sender bound via closure)
-    → configured model endpoint with automatic function calling
+    → explicit validated tool loop through the configured model adapter
     → Rate limit check → commit tools/results/outbox together
     → delivery.py sender → deliver stored reply independently
 ```
@@ -53,7 +53,8 @@ GroupMe Webhook → main.py (validate, persist inbox, acknowledge)
 ```
 src/beerbot/
 ├── main.py           # FastAPI app, webhook handler, admin endpoints
-├── agent.py          # BeerAgent: system prompt, AFC, rate limiting, conversation history
+├── agent.py          # BeerAgent: system prompt, rate limiting, conversation history
+├── model_runtime.py  # Bounded tool loop, Google and OpenAI-compatible sessions
 ├── delivery.py       # Durable message execution, outbox, retries, retention and status
 ├── tools.py          # Tool factory: 15 async closures (7 write, 8 read) with validation
 ├── llm.py            # Provider-neutral model profile and capability metadata
@@ -70,7 +71,7 @@ src/beerbot/
 
 - **Single agent**: One Gemini call with function calling replaces regex + command routing + separate AI
 - **Closure-based tools**: Tools bind group_id/message_id/sender via closure — AI never sees security-sensitive IDs
-- **Async-first**: All I/O uses asyncpg and httpx; AFC uses native async tool callables
+- **Async-first**: All I/O is async; the loop executes validated tool calls sequentially
 - **Idempotency**: Message deduplication via `(message_id, user_id, drink_type)`
 - **Durability**: Inbox `(group_id, message_id)` deduplication; message DB writes/results/outbox commit atomically
 - **Delivery**: Only connect failures and rate limits automatically retry; uncertain sends need explicit admin review
@@ -96,12 +97,14 @@ Required:
 Optional:
 - `GROUPME_WEBHOOK_SECRET` - callback bearer token in the callback URL
 - `REQUIRE_REGISTERED_GROUPS` - reject unknown GroupMe group IDs (default: true)
-- `LLM_PROVIDER` - model adapter name (currently `google`)
+- `LLM_PROVIDER` - `google` or `openai_compatible`
 - `LLM_MODEL` - pinned model name (default: `gemini-3.6-flash`)
-- `LLM_BASE_URL` - reserved for an OpenAI-compatible/self-hosted endpoint adapter
+- `LLM_BASE_URL` - required API prefix for an OpenAI-compatible/self-hosted endpoint
 - `LLM_SUPPORTS_IMAGES`, `LLM_SUPPORTS_VIDEO`, `LLM_SUPPORTS_TOOLS` - endpoint capabilities
 - `ENABLE_IMAGE_ANALYSIS` - Enable/disable image analysis (default: true)
-- `AGENT_MAX_TOOL_CALLS` - Max AFC tool calls per message (default: 5)
+- `AGENT_MAX_TOOL_CALLS` - Max model rounds per message (default: 5)
+- `AGENT_MAX_EXECUTED_TOOLS` - Max individual tools per message (default: 20)
+- `LLM_VIDEO_FORMAT` - `disabled` or explicit compatible-server `video_url` format
 - `WEEKLY_RECAP_ENABLED` - Enable weekly recap generation (default: true)
 - `ADMIN_TOKEN` - Bearer token for admin endpoints
 
