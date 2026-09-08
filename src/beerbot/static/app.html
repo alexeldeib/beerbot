@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Your Beerbot history, across your groups.">
+  <title>Your history · Beerbot</title>
+  <link rel="stylesheet" href="/app/assets/app.css">
+  <script src="/app/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><a href="/app" class="brand">beerbot<span class="brand-dot">.</span></a><span class="header-note">YOUR PERSONAL ROUNDUP</span><button id="logout" class="quiet" hidden>Sign out</button></header>
+  <main>
+    <p id="status" role="status" aria-live="polite">Loading your history…</p>
+    <section id="login" class="login" hidden>
+      <p class="eyebrow">SAME YOU. ALL YOUR GROUPS.</p>
+      <h1>Your history.<br>Your corner.</h1>
+      <p class="lede">Your drinks, trends, and recent rounds from Beerbot — together in one place.</p>
+      <form id="email-form">
+        <label for="email">Email address</label>
+        <div class="input-row"><input id="email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@example.com"><button type="submit">Send a code <span aria-hidden="true">↗</span></button></div>
+        <p class="hint">Invite-only for now. Use the email on your invitation. No password needed.</p>
+      </form>
+      <form id="code-form" hidden>
+        <label for="code">Your 8-digit email code</label>
+        <div class="input-row"><input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{8}" autocomplete="one-time-code" required maxlength="8"><button type="submit">Sign in <span aria-hidden="true">↗</span></button></div>
+        <p class="hint">If this email has an invitation, a code is on its way. Enter it here within 10 minutes. Check spam, too. Wait a minute before requesting another code.</p>
+        <button id="back" type="button" class="quiet">Use another email / request a new code</button>
+      </form>
+      <div class="privacy-note">Only your own stats. No group chats or photos.<br>Keep logging in GroupMe, just like before.</div>
+    </section>
+    <section id="dashboard" hidden>
+      <div class="page-heading"><div><p class="eyebrow">YOUR PERSONAL ROUNDUP</p><h1 id="greeting">Your history</h1><p id="email-display" class="muted"></p></div><div class="filter"><label for="group">Show history from</label><select id="group"><option value="">All my groups</option></select></div></div>
+      <div class="stats">
+        <article class="stat featured"><h2>This week</h2><p class="big-number" id="week-total">—</p><p id="week-context">Monday onward · Eastern time</p></article>
+        <article class="stat"><h2>Last week</h2><p class="big-number" id="last-total">—</p><p>Previous Monday–Sunday</p></article>
+        <article class="stat"><h2>All-time drinks</h2><p class="big-number" id="all-total">—</p><p>As recorded in Beerbot</p></article>
+        <article class="stat"><h2>Split the G</h2><p class="big-number" id="split-total">—</p><p>All-time successful splits</p></article>
+      </div>
+      <div class="middle-grid"><section class="panel"><div class="section-heading"><h2>The last eight weeks</h2><span class="muted">DRINKS LOGGED</span></div><div id="trend" class="trend" aria-label="Weekly drink totals"></div><p class="hint">Weeks start Monday, Eastern time. The current week is still in progress.</p></section><section class="panel"><h2>By drink</h2><div id="breakdown"></div></section></div>
+      <section class="panel activity-panel"><div class="section-heading"><h2>Recent activity</h2><span class="muted">LATEST 30 ENTRIES</span></div><div id="activity"></div></section>
+      <footer>Your personal records, read-only. Log or correct a drink in GroupMe.<br>Counts reflect recorded drinks, not standardized alcohol units.</footer>
+    </section>
+  </main>
+</body>
+</html>

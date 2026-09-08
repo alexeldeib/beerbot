@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # Admin (optional - required for admin endpoints)
     admin_token: str | None = None
 
+    # First-party dashboard. Email sign-in fails closed until SMTP is configured.
+    web_origin: str = "https://beerbot-groupme.fly.dev"
+    smtp_host: str | None = None
+    smtp_port: int = 465
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+
     # Build metadata
     app_version: str = "0.2.0"
     git_sha: str = "unknown"

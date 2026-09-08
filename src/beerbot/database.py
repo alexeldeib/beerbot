@@ -430,6 +430,40 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        5,
+        "invited_web_accounts",
+        (
+            """CREATE TABLE account_emails (
+                account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+                email TEXT NOT NULL UNIQUE CHECK(email=lower(email)),
+                invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                invite_expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '7 days',
+                verified_at TIMESTAMPTZ
+            )""",
+            """CREATE TABLE login_challenges (
+                token_hash TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id),
+                code_hash TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '10 minutes',
+                consumed_at TIMESTAMPTZ
+            )""",
+            "CREATE INDEX login_challenges_account ON login_challenges(account_id,created_at)",
+            """CREATE TABLE web_sessions (
+                token_hash TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '30 days'
+            )""",
+            "CREATE INDEX web_sessions_account ON web_sessions(account_id)",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():
