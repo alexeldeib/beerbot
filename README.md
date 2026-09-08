@@ -382,8 +382,8 @@ replace legacy drink rows, and does not modify the GroupMe agent/tools/repositor
 - Admin invitations accept either an existing `person_id`, or a `name` to create
   a new native person with no GroupMe identity. Normal email proof is still required.
 - App-only groups create an internal workspace and an explicit owner grant. They
-  do not register a GroupMe bot, create fake users, or send chat messages. Friend
-  invitations and group-management UI are subsequent increments.
+  do not register a GroupMe bot, create fake users, or send chat messages. Owners
+  can manage these groups and create email-specific invitation links in the app.
 - In a connected workspace, app writes require exactly one real legacy group and
   one real mapped legacy user. A log inserts both the authoritative legacy row
   and its app record in one transaction. No provider message ID is fabricated.
@@ -407,6 +407,52 @@ atomic failure rollback, concurrent retries, test-workspace exclusion, revoked
 access, mapping drift, and CSRF. Roll back by disabling the feature or redeploying
 the prior application; leave additive schema/data intact. Old app code may omit
 native-only history until rolled forward, but GroupMe remains on its legacy rows.
+
+### App group invitations and management
+
+Migration 7 adds `app_group_invitations` and `app_group_events`. Owners can rename
+an app-only group, create/revoke invitations, remove members, or transfer ownership
+to a current verified member. Members can leave after transferring ownership if
+they are the owner. Existing GroupMe groups cannot use these management endpoints,
+even if an operator grants an app owner role. Test workspaces remain excluded.
+
+Invitation flow:
+
+1. The owner chooses **Manage app groups**, enters a friend's email, and creates
+   a link. The owner shares it manually; creation sends no invitation email.
+2. The link contains a random UUID locator in the fragment. It is not an auth
+   credential: no membership is granted without proof of the exact invited email.
+   Public previews expose only the group and inviter names, never recipient emails.
+3. An unregistered recipient can prepare a pending native account through the
+   valid invitation, then complete the existing email-code flow. A display name
+   is set only after email proof. Existing accounts/person mappings are reused
+   without name-based matching, reassignment, or renaming.
+4. The recipient explicitly chooses **Join group**. Acceptance rechecks expiry,
+   revocation, matching verified email, current inviter ownership/account status,
+   and native production workspace eligibility. An accepted invitation cannot
+   reactivate a removed member. Re-inviting an inactive former owner grants only
+   member access, not their former privileges.
+
+Links expire after seven days. Creating another invitation for the same email
+revokes earlier pending links. Ownership transfer revokes pending invitations;
+revoking the inviter's access also makes their links unavailable. The UI preserves
+the locator through sign-in in tab session storage. Neither a missing invitation
+nor an unverified email can create group membership.
+
+Joining shares display names and membership roles with that group's members.
+Recipient emails on pending invitations are visible only to owners. Personal drink
+histories remain person-scoped: group membership does not expose another person's
+stats or records. Leaving/removal revokes group management and logging/edit access,
+but does not delete personal history or accounts. Cross-group notifications and
+group-shared activity feeds are not part of this increment.
+
+Mutations use durable account-scoped request IDs and retain group action events.
+Creation is bounded to 50 invitations/group/day in addition to account command
+limits. These are pilot limits, not a substitute for public-launch abuse controls.
+Keep `APP_ACTIVITY_ENABLED=false` as the shared app-write kill switch. Rollbacks
+leave additive tables intact and do not affect the GroupMe agent.
+
+### Email configuration and operator onboarding
 
 Before enabling real sign-in, configure `WEB_ORIGIN` to the exact HTTPS app origin,
 plus `SMTP_HOST`, `SMTP_PORT` (465 for implicit TLS, otherwise mandatory STARTTLS),

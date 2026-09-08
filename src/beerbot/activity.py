@@ -86,18 +86,22 @@ async def writable_workspaces(conn, account_id: str) -> list[dict]:
 
 
 async def authorize_workspace(conn, account_id: str, workspace_id: str):
-    row = await conn.fetchrow(
-        """SELECT w.id,w.settings->>'activity_mode' AS activity_mode
-           FROM app_workspace_access a JOIN workspaces w ON w.id=a.workspace_id
-           WHERE a.account_id=$1 AND w.id=$2 AND a.active
-           AND coalesce(w.settings->>'environment','production')='production'
-           FOR SHARE OF a,w""",
+    # Group management locks workspace before membership; use the same order.
+    workspace = await conn.fetchrow(
+        """SELECT id,settings->>'activity_mode' AS activity_mode FROM workspaces
+           WHERE id=$1 AND coalesce(settings->>'environment','production')='production'
+           FOR SHARE""",
+        workspace_id,
+    )
+    access = await conn.fetchrow(
+        """SELECT account_id FROM app_workspace_access WHERE account_id=$1
+           AND workspace_id=$2 AND active FOR SHARE""",
         account_id,
         workspace_id,
     )
-    if not row:
+    if not workspace or not access:
         raise HTTPException(403, "You do not have app logging access to this group")
-    return row
+    return workspace
 
 
 async def run_command(person: dict, action: str, command: Command, entry_id: UUID | None = None):
@@ -218,6 +222,14 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
             await authorize_workspace(conn, account_id, row["workspace_id"])
             # Same lock order as GroupMe's DELETE + FK cascade: beers, then app_activity.
             if row["legacy_beer_id"] is not None:
+                # GroupMe first upserts the user, then updates/deletes their beer.
+                # Lock that identity before the beer so concurrent edits cannot
+                # deadlock with the unchanged GroupMe transaction.
+                await conn.fetchrow(
+                    """SELECT u.id FROM users u JOIN beers b ON b.user_id=u.id
+                       WHERE b.id=$1 FOR SHARE OF u""",
+                    row["legacy_beer_id"],
+                )
                 legacy = await conn.fetchrow(
                     """SELECT b.*,u.person_id AS current_person_id,g.workspace_id AS current_workspace_id
                        FROM beers b JOIN users u ON u.id=b.user_id JOIN groups g ON g.group_id=b.group_id

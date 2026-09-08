@@ -6,12 +6,19 @@
   <title>Your history · Beerbot</title>
   <link rel="stylesheet" href="/app/assets/app.css">
   <script src="/app/assets/app.js" defer></script>
+  <script src="/app/assets/groups.js" defer></script>
 </head>
 <body>
   <header class="masthead"><a href="/app" class="brand">beerbot<span class="brand-dot">.</span></a><span class="header-note">YOUR PERSONAL ROUNDUP</span><button id="logout" class="quiet" hidden>Sign out</button></header>
   <main>
     <p id="status" role="status" aria-live="polite">Loading your history…</p>
     <button id="retry-save" class="quiet" hidden>Retry last save safely</button>
+    <section id="invitation-card" class="panel invitation-card" hidden>
+      <p class="eyebrow">GROUP INVITATION</p><h2 id="invitation-heading">Join an app group</h2>
+      <p id="invitation-description"></p><p id="invitation-error" role="status"></p>
+      <form id="join-form" hidden><div id="join-name-field" hidden><label for="join-name">Your name</label><input id="join-name" maxlength="100" autocomplete="name"></div><p>Joining shares your name and membership with the group. Your personal drink history stays private.</p><button type="submit">Join group</button></form>
+      <button id="dismiss-invitation" class="quiet" type="button">Dismiss invitation</button>
+    </section>
     <section id="login" class="login" hidden>
       <p class="eyebrow">SAME YOU. ALL YOUR GROUPS.</p>
       <h1>Your history.<br>Your corner.</h1>
@@ -32,7 +39,7 @@
     <section id="dashboard" hidden>
       <div class="page-heading"><div><p class="eyebrow">YOUR PERSONAL ROUNDUP</p><h1 id="greeting">Your history</h1><p id="email-display" class="muted"></p></div><div class="filter"><label for="group">Show history from</label><select id="group"><option value="">All my groups</option></select></div></div>
       <section id="logging" class="panel logging-panel" hidden>
-        <div class="section-heading"><h2>Log a drink</h2><button id="new-group" class="quiet">Create app group</button></div>
+        <div class="section-heading"><h2>Log a drink</h2><div class="group-actions"><button id="manage-groups" class="quiet">Manage app groups</button><button id="new-group" class="quiet">Create app group</button></div></div>
         <form id="drink-form" class="drink-form">
           <div><label for="log-workspace">Group</label><select id="log-workspace" required></select></div>
           <div><label for="log-type">Drink</label><select id="log-type"><option value="beer">Beer</option><option value="wine">Wine</option><option value="cocktail">Cocktail</option><option value="claw">Hard seltzer</option></select></div>
@@ -61,6 +68,24 @@
     <p id="edit-error" role="status"></p><div class="dialog-actions"><button type="button" data-close="edit-dialog" class="quiet">Cancel</button><button type="submit">Save changes</button></div>
   </form></dialog>
   <dialog id="undo-dialog" aria-labelledby="undo-title"><form id="undo-form"><h2 id="undo-title">Undo this entry?</h2><p id="undo-description"></p><p>This removes the whole entry from your totals, including GroupMe when connected.</p><p id="undo-error" role="status"></p><div class="dialog-actions"><button type="button" data-close="undo-dialog" class="quiet">Keep entry</button><button type="submit">Undo entry</button></div></form></dialog>
-  <dialog id="group-dialog" aria-labelledby="group-title"><form id="new-group-form"><h2 id="group-title">Create an app-only group</h2><p>No GroupMe account or chat required. Friend invitations are a follow-up.</p><label for="group-name">Group name</label><input id="group-name" required maxlength="80" placeholder="My group"><p id="group-error" role="status"></p><div class="dialog-actions"><button type="button" data-close="group-dialog" class="quiet">Cancel</button><button type="submit">Create group</button></div></form></dialog>
+  <dialog id="group-dialog" aria-labelledby="group-title"><form id="new-group-form"><h2 id="group-title">Create an app-only group</h2><p>No GroupMe account or chat required. You can invite friends after creating the group.</p><label for="group-name">Group name</label><input id="group-name" required maxlength="80" placeholder="My group"><p id="group-error" role="status"></p><div class="dialog-actions"><button type="button" data-close="group-dialog" class="quiet">Cancel</button><button type="submit">Create group</button></div></form></dialog>
+  <dialog id="groups-dialog" aria-labelledby="groups-title">
+    <div class="section-heading"><h2 id="groups-title">App groups</h2><button type="button" data-close="groups-dialog" class="quiet">Close</button></div>
+    <p class="hint">These controls apply only to app-only groups, not GroupMe groups.</p>
+    <p id="groups-error" role="status"></p><p id="groups-empty" hidden>Create an app-only group to invite friends and manage its members.</p>
+    <label for="managed-group">Group to manage</label><select id="managed-group"></select>
+    <section id="group-management" hidden>
+      <div id="owner-controls" hidden>
+        <form id="rename-group-form"><label for="managed-name">Group name</label><div class="input-row"><input id="managed-name" required maxlength="80"><button type="submit">Save name</button></div></form>
+        <form id="invite-friend-form"><h3>Invite a friend</h3><label for="friend-email">Friend's email</label><div class="input-row"><input id="friend-email" type="email" required maxlength="254" placeholder="friend@example.com"><button type="submit">Create invite link</button></div><p class="hint">Share the link yourself. Only someone who verifies this email can join. Links expire after seven days.</p></form>
+        <div id="share-invitation" hidden><label for="invitation-link">Invitation link</label><input id="invitation-link" readonly><button id="copy-invitation" class="quiet">Copy link</button></div>
+      </div>
+      <h3>Members</h3><div id="group-members"></div>
+      <div id="pending-invitations" hidden><h3>Pending invitations</h3><div id="group-invitations"></div></div>
+      <p id="owner-leave-hint" class="hint" hidden>Transfer ownership to another member before leaving.</p><button id="leave-group" class="quiet" hidden>Leave group</button>
+    </section>
+    <button id="create-from-groups" class="quiet">Create a new app group</button>
+  </dialog>
+  <dialog id="group-action-dialog" aria-labelledby="group-action-title"><form id="group-action-form"><h2 id="group-action-title">Confirm group change</h2><p id="group-action-description"></p><p id="group-action-error" role="status"></p><div class="dialog-actions"><button type="button" data-close="group-action-dialog" class="quiet">Cancel</button><button id="confirm-group-action" type="submit">Confirm</button></div></form></dialog>
 </body>
 </html>
