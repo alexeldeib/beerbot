@@ -5,12 +5,15 @@ message_id, and sender info so the AI never sees security-sensitive identifiers.
 """
 
 import logging
+import inspect
+from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .models import DrinkType
+from .database import execution_scope
 from .repositories import beer_repo, debt_repo, user_repo
 
 logger = logging.getLogger(__name__)
@@ -547,7 +550,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         ctx.reply_text = message
         return {"status": "queued"}
 
-    return [
+    tools = [
         # Write tools
         log_drinks,
         remove_drinks,
@@ -569,3 +572,25 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         # Meta tools
         reply,
     ]
+    scope = execution_scope.get()
+    if scope is None:
+        return tools
+
+    def audited(tool):
+        @wraps(tool)
+        async def invoke(*args, **kwargs):
+            try:
+                bound = inspect.signature(tool).bind(*args, **kwargs)
+                bound.apply_defaults()
+                result = await tool(*args, **kwargs)
+            except BaseException:
+                scope.failed = True
+                raise
+            scope.tools.append(
+                {"name": tool.__name__, "arguments": bound.arguments, "result": result}
+            )
+            return result
+
+        return invoke
+
+    return [audited(tool) for tool in tools]

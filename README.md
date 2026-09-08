@@ -203,6 +203,7 @@ src/beerbot/
 ├── main.py           # FastAPI app, webhook handler, routing
 ├── agent.py          # Beerius prompt, multimodal input, model orchestration
 ├── tools.py          # Request-scoped, validated read/write tools
+├── delivery.py       # Durable inbox, atomic execution, outbox delivery and retention
 ├── repositories.py   # Database operations
 ├── models.py         # Pydantic models and enums
 ├── llm.py            # Provider-neutral model profile and capabilities
@@ -214,8 +215,8 @@ src/beerbot/
 ```
 
 **Key Design Decisions:**
-- **Idempotency**: Deduplicated by `(message_id, user_id, drink_type)`
-- **Atomic transactions**: Batch logging uses PostgreSQL transactions
+- **Idempotency**: Inbound messages deduplicate by `(group_id, message_id)`; drink rows also retain their existing uniqueness constraint
+- **Atomic transactions**: A message's database effects, tool results, completion, and queued reply commit together
 - **Eastern timezone**: Consistent "today"/"this week" calculations
 - **Glass-based detection**: Vision identifies drinks by container, not color
 - **Registered groups only**: Inbound and outbound GroupMe traffic must map to a configured group
@@ -225,8 +226,8 @@ src/beerbot/
 
 ## Direction of Travel
 
-GroupMe is the only production transport today and remains on its unchanged
-legacy callback, tool, and statistics path. New workspace, gateway connection,
+GroupMe is the only production transport today. Its callbacks now enter a durable
+inbox; its existing prompts, tools, and statistics remain authoritative. Workspace, gateway connection,
 and gateway route records are maintained as a shadow model so additional
 functionality can be built and verified without changing existing user behavior.
 
@@ -246,6 +247,45 @@ memberships are inferred only from observed group-scoped activity or debt. The
 legacy `users`, `beers`, and `group_id` paths remain authoritative; no global
 stats or account behavior is exposed until shadow parity and the future activity
 model are verified.
+
+## Message execution and delivery
+
+`POST /callback` validates the existing GroupMe registration and stores the event
+before returning HTTP 200 with action `queued` or `duplicate`. A worker executes
+pending messages in receipt order within each group. PostgreSQL claims and a
+transaction-scoped group lock protect concurrent workers. The existing agent and
+tools execute inside a single database transaction, bounded to 90 seconds. All
+repository acquisitions share that connection; related writes and the stored
+reply either commit together or roll back together. Model failures retry up to
+three attempts with backoff; cancellation rolls back and leaves the inbox pending.
+The recorded tool arguments/results describe successful committed executions.
+
+A separate worker sends stored replies. Connect failures and HTTP 429 responses
+retry up to five attempts with backoff; Retry-After seconds are honored. Read/write
+timeouts, HTTP 408/5xx, and interrupted sends become `uncertain` rather than being
+automatically repeated. GroupMe has no bot-post idempotency key, so uncertain
+delivery cannot be resolved into exactly-once sending automatically.
+
+Authenticated admins can inspect `GET /admin/messages/status` for counts, oldest
+pending age, and the last 50 failures/uncertain deliveries (IDs and error codes,
+without message content). `POST /admin/messages/outbox/{id}/retry` retries only a
+stored failed reply. For uncertain delivery, pass `acknowledge_uncertain=true`
+only after accepting the risk of a duplicate chat reply. This never reruns tools.
+Failed executions require investigation; the worker does not retry them forever.
+
+Completed message history survives restarts. Inbox payloads, tool results, and
+outbound text expire after three days, with bounded cleanup roughly every minute.
+Message IDs and state remain as deduplication tombstones. Media is fetched for
+analysis, not stored as binary data. Expired content is not retryable.
+
+`/health` remains process liveness. `/ready` checks database connectivity, model
+client configuration, and worker tasks; Fly gates blue/green traffic on `/ready`.
+Shutdown cancels workers, rolls back incomplete execution, and closes the pool.
+Migration 4 is additive. Deduplication protects messages first accepted by this
+release; it cannot retrospectively identify every command processed by earlier
+releases. Weekly recaps still use their existing independent scheduler and are
+not part of this message outbox. Rolling back to code predating migration 4 leaves
+pending inbox/outbox records retained; deploy compatible worker code to drain them.
 
 Identity maintenance is explicit and outside the message path. Authenticated
 admins can inspect `GET /admin/identities/parity` and repair missing records with

@@ -1,8 +1,34 @@
 """Pytest configuration and fixtures."""
 
 from unittest.mock import AsyncMock, MagicMock
+import asyncio
 
 import pytest
+import pytest_asyncio
+import asyncpg
+import os
+from uuid import uuid4
+from src.beerbot import database
+
+
+@pytest_asyncio.fixture
+async def pg(monkeypatch):
+    dsn = os.environ.get("BEERBOT_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("Set BEERBOT_TEST_DATABASE_URL to a disposable PostgreSQL database")
+    schema = "test_" + uuid4().hex
+    admin = await asyncpg.connect(dsn)
+    await admin.execute(f'CREATE SCHEMA "{schema}"')
+    pool = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
+    )
+    monkeypatch.setattr(database, "_pool", pool)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+        await admin.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        await admin.close()
 
 
 @pytest.fixture(autouse=True)
@@ -12,6 +38,15 @@ def isolate_external_services(monkeypatch):
 
     monkeypatch.setattr(main, "init_db", AsyncMock())
     monkeypatch.setattr(main, "close_pool", AsyncMock())
+
+    async def idle_worker(*args):
+        await asyncio.Future()
+
+    monkeypatch.setattr(main, "execution_worker", idle_worker)
+    monkeypatch.setattr(main, "delivery_worker", idle_worker)
+    monkeypatch.setattr(
+        main, "accept_message", AsyncMock(return_value={"status": "ok", "action": "queued"})
+    )
     monkeypatch.setattr(
         main.group_repo,
         "get_by_group_id",

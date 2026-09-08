@@ -1,6 +1,8 @@
 """Tests for GroupMe outbound routing and delivery handling."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+import httpx
+import pytest
 
 from src.beerbot.groupme_client import GroupMeClient
 
@@ -38,3 +40,32 @@ async def test_rejects_unregistered_group_when_required():
         )
 
     assert sent is False
+
+
+@pytest.mark.parametrize(
+    "outcome,state",
+    [
+        (httpx.ConnectTimeout("connect"), "retry"),
+        (httpx.ReadTimeout("read"), "uncertain"),
+        (httpx.WriteError("write"), "uncertain"),
+        (429, "retry"),
+        (503, "uncertain"),
+        (408, "uncertain"),
+        (403, "failed"),
+        (202, "sent"),
+    ],
+)
+async def test_delivery_classification(outcome, state):
+    client = GroupMeClient(default_bot_id="test")
+    http = AsyncMock()
+    if isinstance(outcome, Exception):
+        http.post.side_effect = outcome
+    else:
+        http.post.return_value = httpx.Response(outcome, headers={"retry-after": "17"})
+    with patch("src.beerbot.groupme_client.httpx.AsyncClient") as factory:
+        factory.return_value.__aenter__ = AsyncMock(return_value=http)
+        factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await client.deliver_message("reply")
+    assert result.state == state
+    if outcome == 429:
+        assert result.retry_after == 17

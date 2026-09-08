@@ -1,11 +1,44 @@
 """Database connection and versioned schema migrations with asyncpg."""
 
+import asyncio
+from contextlib import contextmanager, asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+
 import asyncpg
 
 from .config import settings
 
 # Connection pool
 _pool: asyncpg.Pool | None = None
+
+
+@dataclass
+class ExecutionScope:
+    connection: object
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tools: list = field(default_factory=list)
+    failed: bool = False
+
+    @asynccontextmanager
+    async def acquire(self):
+        # SDK tool calls may be concurrent. asyncpg needs sequential use of
+        # the connection that owns the encompassing message transaction.
+        async with self.lock:
+            yield self.connection
+
+
+execution_scope: ContextVar[ExecutionScope | None] = ContextVar("execution_scope", default=None)
+
+
+@contextmanager
+def bind_execution(connection):
+    scope = ExecutionScope(connection)
+    token = execution_scope.set(scope)
+    try:
+        yield scope
+    finally:
+        execution_scope.reset(token)
 
 
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
@@ -354,11 +387,53 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             "CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)",
         ),
     ),
+    (
+        4,
+        "durable_message_execution",
+        (
+            """CREATE TABLE message_inbox (
+                id BIGSERIAL PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                payload JSONB,
+                state TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(state IN ('pending','completed','failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ,
+                reply TEXT,
+                tool_results JSONB,
+                error_code TEXT,
+                UNIQUE(group_id,message_id)
+            )""",
+            """CREATE INDEX message_inbox_pending ON message_inbox(available_at,id)
+                WHERE state='pending'""",
+            """CREATE INDEX message_inbox_history ON message_inbox(group_id,id DESC)""",
+            """CREATE TABLE message_outbox (
+                id BIGSERIAL PRIMARY KEY,
+                inbox_id BIGINT NOT NULL UNIQUE REFERENCES message_inbox(id),
+                group_id TEXT NOT NULL,
+                body TEXT,
+                state TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(state IN ('pending','sending','sent','failed','uncertain')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                error_code TEXT
+            )""",
+            """CREATE INDEX message_outbox_pending ON message_outbox(available_at,id)
+                WHERE state='pending'""",
+        ),
+    ),
 )
 
 
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
+    if scope := execution_scope.get():
+        return scope
     global _pool
     if _pool is None:
         _pool = await asyncpg.create_pool(

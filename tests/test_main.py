@@ -56,7 +56,9 @@ class TestCallback:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["action"] == "replied"
+        assert data["action"] == "queued"
+        mock_agent.process_message.assert_not_called()
+        mock_groupme.send_message.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.beerbot.main.groupme_client")
@@ -71,8 +73,10 @@ class TestCallback:
         with TestClient(app, raise_server_exceptions=False) as client:
             resp = client.post("/callback", json=sample_groupme_message)
 
-        assert resp.status_code == 502
-        assert resp.json()["action"] == "delivery_failed"
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "queued"
+        mock_agent.process_message.assert_not_called()
+        mock_groupme.send_message.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.beerbot.main.group_repo")
@@ -133,7 +137,7 @@ class TestCallback:
             resp = client.post("/callback", json=sample_groupme_message)
 
         assert resp.status_code == 200
-        assert resp.json()["action"] == "none"
+        assert resp.json()["action"] == "queued"
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_payload(self):

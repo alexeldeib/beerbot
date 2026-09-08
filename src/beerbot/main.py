@@ -13,12 +13,19 @@ from pydantic import BaseModel
 
 from .agent import beer_agent
 from .config import settings
-from .database import close_pool, init_db
+from .database import close_pool, init_db, get_pool
 from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
 from .repositories import group_repo, recap_repo
 from .reconciliation import ReconciliationBusy, reconcile_identities
+from .delivery import (
+    accept_message,
+    execution_worker,
+    delivery_worker,
+    queue_status,
+    retry_delivery,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,10 +66,19 @@ async def lifespan(app: FastAPI):
     await init_db()
     if settings.is_development is False and not settings.groupme_webhook_secret:
         logger.warning("GROUPME_WEBHOOK_SECRET is not configured")
-    task = asyncio.create_task(_recap_scheduler())
-    yield
-    task.cancel()
-    await close_pool()
+    tasks = [
+        asyncio.create_task(_recap_scheduler()),
+        asyncio.create_task(execution_worker(beer_agent)),
+        asyncio.create_task(delivery_worker(groupme_client)),
+    ]
+    app.state.message_workers = tasks[1:]
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await close_pool()
 
 
 app = FastAPI(
@@ -76,6 +92,21 @@ app = FastAPI(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/ready")
+async def readiness(request: Request):
+    workers = getattr(request.app.state, "message_workers", [])
+    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    try:
+        async with asyncio.timeout(3):
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+    except Exception:
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    return {"status": "ready"}
 
 
 @app.get("/version")
@@ -120,19 +151,7 @@ async def groupme_callback(request: Request):
             logger.warning("Rejected callback for unregistered group %s", message.group_id)
             return JSONResponse({"error": "Unknown group"}, status_code=403)
 
-    reply = await beer_agent.process_message(message)
-
-    if reply:
-        sent = await groupme_client.send_message(reply, group_id=message.group_id)
-        if not sent:
-            logger.error("Reply delivery failed for group %s", message.group_id)
-            return JSONResponse(
-                {"status": "error", "action": "delivery_failed"},
-                status_code=502,
-            )
-        return {"status": "ok", "action": "replied"}
-
-    return {"status": "ok", "action": "none"}
+    return await accept_message(message)
 
 
 # --- Admin Endpoints ---
@@ -159,6 +178,20 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
 @app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
 async def identity_parity(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
     return await reconcile_identities(after_id=after_id, limit=limit)
+
+
+@app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])
+async def message_status():
+    return await queue_status()
+
+
+@app.post("/admin/messages/outbox/{outbox_id}/retry", dependencies=[Depends(verify_admin_token)])
+async def retry_outbound(outbox_id: int, acknowledge_uncertain: bool = False):
+    if not await retry_delivery(outbox_id, acknowledge_uncertain):
+        raise HTTPException(
+            status_code=409, detail="Delivery not retryable or uncertainty not acknowledged"
+        )
+    return {"status": "queued"}
 
 
 @app.post("/admin/identities/reconcile", dependencies=[Depends(verify_admin_token)])
