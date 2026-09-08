@@ -19,9 +19,14 @@ async def pg(monkeypatch):
     schema = "test_" + uuid4().hex
     admin = await asyncpg.connect(dsn)
     await admin.execute(f'CREATE SCHEMA "{schema}"')
-    pool = await asyncpg.create_pool(
-        dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
-    )
+
+    async def configure(connection):
+        # Reset hooks/proxies can restore search_path when a connection is
+        # returned. Establish and assert isolation on EVERY acquisition.
+        await connection.execute(f'SET search_path TO "{schema}"')
+        assert await connection.fetchval("SELECT current_schema()") == schema
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4, setup=configure)
     monkeypatch.setattr(database, "_pool", pool)
     try:
         yield pool
