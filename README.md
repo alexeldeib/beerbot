@@ -309,10 +309,32 @@ locally, set `BEERBOT_TEST_DATABASE_URL` to a disposable test database and run
 `uv run --extra dev pytest`. Each test creates and drops a unique schema there;
 the tests never use the application's `DATABASE_URL` for integration testing.
 
-The model profile is also configuration-driven. Google is the implemented
-runtime today; the next explicit agent-loop iteration will add adapters for
-OpenAI-compatible endpoints, including self-hosted multimodal models, and will
-advertise image, video, and tool-calling capabilities independently.
+The model loop is explicit and provider-independent. `model_runtime.py` validates
+each batch of tool arguments, executes tools sequentially, and feeds results back
+through the selected adapter. `reply` completes the turn; raw model text does not
+publish chat messages. Silence remains a successful turn with no reply call.
+`AGENT_MAX_TOOL_CALLS` bounds model rounds (default 5); `AGENT_MAX_EXECUTED_TOOLS`
+bounds actual tool executions (default 20). Invalid calls, incomplete responses,
+or exhausted budgets raise and roll back the enclosing message transaction.
+
+`LLM_PROVIDER=google` remains the default. Its adapter disables SDK automatic tool
+execution and preserves the full native model content, including thought
+signatures, between calls. Images and video remain supported through Gemini.
+
+For a hosted or self-hosted compatible server, set `LLM_PROVIDER=openai_compatible`,
+`LLM_BASE_URL` to its API prefix (for example `https://server.example/v1`), and
+`LLM_MODEL` to its model identifier. Set `LLM_API_KEY` if required; the adapter never
+sends `GEMINI_API_KEY` to a compatible server. It uses the OpenAI SDK Chat
+Completions interface with automatic SDK retries disabled, preserves call IDs and
+returned reasoning fields, and supports text, images, and function tools. Recaps
+use the same configured adapter. A keyless local server may omit `LLM_API_KEY`.
+
+Compatible video input is opt-in: `LLM_VIDEO_FORMAT=video_url` enables that
+server-specific content format; `disabled` rejects video input if video analysis
+is enabled. Set `LLM_SUPPORTS_VIDEO=false` to disable video analysis instead.
+This is transport support, not a claim that every Kimi or compatible deployment
+accepts video or meets Beerius's quality requirements. Run an isolated canary
+against the actual endpoint before changing production away from Gemini.
 
 General CI lives in `.github/workflows/ci.yml` and runs lint, formatting, tests,
 package build, and container build. A successful push to `main` is deployed to

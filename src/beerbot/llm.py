@@ -1,10 +1,8 @@
 """Provider-neutral model configuration and capability boundary.
 
-The current agent still uses Google's automatic function calling. Keeping the
-provider profile in one module makes that dependency explicit and gives the
-next agent-loop iteration a stable place to add Google and OpenAI-compatible
-adapters (including self-hosted multimodal models) without leaking deployment
-configuration throughout the application.
+Google and OpenAI-compatible sessions implement the explicit tool loop in
+model_runtime.py. This module owns non-secret endpoint configuration and
+capability metadata; provider-specific conversation state stays in the adapters.
 """
 
 from dataclasses import dataclass

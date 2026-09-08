@@ -1,6 +1,8 @@
 """Configuration management using pydantic-settings."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from typing import Literal
 
 
 class Settings(BaseSettings):
@@ -19,10 +21,8 @@ class Settings(BaseSettings):
     # Environment
     environment: str = "production"
 
-    # LLM. The current runtime adapter is Google; the configuration names are
-    # provider-neutral so an OpenAI-compatible backend can be added without
-    # changing the agent's deployment contract.
-    llm_provider: str = "google"
+    # Model adapters share the explicit loop and domain tools.
+    llm_provider: Literal["google", "openai_compatible"] = "google"
     llm_model: str = "gemini-3.6-flash"
     llm_base_url: str | None = None
     llm_api_key: str | None = None
@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     enable_image_analysis: bool = True
 
     # Agent
-    agent_max_tool_calls: int = 5
+    agent_max_tool_calls: int = Field(5, ge=1, le=20)
+    agent_max_executed_tools: int = Field(20, ge=1, le=100)
+    llm_video_format: Literal["disabled", "video_url"] = "disabled"
 
     # Weekly recap
     weekly_recap_enabled: bool = True
@@ -66,7 +68,9 @@ class Settings(BaseSettings):
 
     @property
     def model_api_key(self) -> str | None:
-        return self.llm_api_key or self.gemini_api_key
+        if self.llm_provider == "google":
+            return self.llm_api_key or self.gemini_api_key
+        return self.llm_api_key or ("unused" if self.llm_base_url else None)
 
 
 settings = Settings()
