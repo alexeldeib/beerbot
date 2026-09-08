@@ -31,6 +31,17 @@ CHALLENGE_COOKIE = "beerbot_challenge"
 EASTERN = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
+# Workspaces are the tenant, not the gateway or the person's identity. Missing
+# classification preserves existing legacy visibility; explicitly non-production
+# workspaces never enter personal app history, even via a direct group filter.
+PRODUCTION_WORKSPACE = "coalesce(w.settings->>'environment','production')='production'"
+PERSONAL_HISTORY_SCOPE = (
+    "FROM beers b JOIN users u ON u.id=b.user_id "
+    "JOIN groups g ON g.group_id=b.group_id "
+    "LEFT JOIN workspaces w ON w.id=g.workspace_id "
+    "WHERE u.person_id=$1 AND ($2::text IS NULL OR b.group_id=$2) AND " + PRODUCTION_WORKSPACE
+)
+
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
@@ -305,12 +316,15 @@ async def personal_stats(group: str | None = None, person: dict = Depends(signed
     async with pool.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
         groups = await conn.fetch(
             """SELECT DISTINCT g.group_id,g.name FROM groups g JOIN beers b ON b.group_id=g.group_id
-               JOIN users u ON u.id=b.user_id WHERE u.person_id=$1 ORDER BY g.group_id""",
+               JOIN users u ON u.id=b.user_id LEFT JOIN workspaces w ON w.id=g.workspace_id
+               WHERE u.person_id=$1 AND """
+            + PRODUCTION_WORKSPACE
+            + " ORDER BY g.group_id",
             person["id"],
         )
         if group is not None and group not in {g["group_id"] for g in groups}:
             raise HTTPException(404, "No personal history for this group")
-        scope = "FROM beers b JOIN users u ON u.id=b.user_id WHERE u.person_id=$1 AND ($2::text IS NULL OR b.group_id=$2)"
+        scope = PERSONAL_HISTORY_SCOPE
         totals = await conn.fetchrow(
             """SELECT coalesce(sum(quantity),0) AS drinks,coalesce(sum(split_the_g),0) AS splits,
                coalesce(sum(quantity) FILTER(WHERE logged_at >= $3),0) AS this_week,

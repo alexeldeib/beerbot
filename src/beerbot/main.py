@@ -6,6 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -179,6 +180,10 @@ class GroupRegistration(BaseModel):
     name: str | None = None
 
 
+class WorkspaceEnvironment(BaseModel):
+    environment: Literal["production", "test"]
+
+
 async def verify_admin_token(authorization: str | None = Header(None)) -> None:
     if not settings.admin_token:
         raise HTTPException(status_code=503, detail="Admin endpoints not configured")
@@ -199,6 +204,24 @@ async def identity_parity(after_id: int = Query(0, ge=0), limit: int = Query(100
 @app.post("/admin/accounts/invite", dependencies=[Depends(verify_admin_token)])
 async def invite_web_account(invitation: InviteInput):
     return await invite_account(invitation)
+
+
+@app.patch(
+    "/admin/workspaces/{workspace_id}/environment", dependencies=[Depends(verify_admin_token)]
+)
+async def set_workspace_environment(workspace_id: str, classification: WorkspaceEnvironment):
+    """Classify personal-history visibility without moving identities or activity."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE workspaces SET settings=jsonb_set(settings,'{environment}',
+                   to_jsonb($2::text)),updated_at=now() WHERE id=$1 RETURNING id""",
+            workspace_id,
+            classification.environment,
+        )
+    if row is None:
+        raise HTTPException(404, "Workspace not found")
+    return {"workspace_id": row["id"], "environment": classification.environment}
 
 
 @app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])
