@@ -359,12 +359,54 @@ personal-dashboard visibility: no identities, drink rows, group registrations,
 bot replies, or group-specific leaderboards/recaps are modified. It is not process,
 database, or credential isolation; use a separate deployment/database for risky tests.
 
-`/app` is the first-party, read-only personal view: this week and last week,
+`/app` is the first-party personal view: this week and last week,
 all-time drinks, Split-G total, eight-week trend, drink breakdown, and the latest
-30 entries. It reads legacy `beers` through the explicitly linked `users.person_id`.
-It does not duplicate activity, read group chats/photos, send notifications, or
-change the GroupMe agent. Group filters expose only groups with the person's own
-recorded drinks; shadow memberships do **not** grant access to anyone else's data.
+30 entries. It combines authoritative legacy `beers` with native app activity,
+without double counting mirrored entries. It does not read group chats/photos,
+send notifications, or change the GroupMe agent. Group filters expose personal
+history and explicitly granted app groups; shadow memberships grant no app access.
+
+### Native logging (feature-gated)
+
+Migration 6 adds native activity, explicit app workspace access, durable command
+receipts, and a `personal_activity` read view. It does not backfill, rewrite, or
+replace legacy drink rows, and does not modify the GroupMe agent/tools/repositories.
+
+- `APP_ACTIVITY_ENABLED=true` exposes Log / Edit / Undo and app-only group creation.
+  It defaults to false as an independent kill switch; reads still work when off.
+- `PUT /admin/workspaces/{workspace_id}/app-access`, with admin bearer authorization
+  and `{"account_id":"<confirmed-account>","role":"member","active":true}`, grants
+  self-logging access. Set `active:false` to revoke it. Inferred historical
+  memberships are never sufficient. Production group access must be explicitly
+  confirmed by an operator; the app cannot claim existing groups by ID or name.
+- Admin invitations accept either an existing `person_id`, or a `name` to create
+  a new native person with no GroupMe identity. Normal email proof is still required.
+- App-only groups create an internal workspace and an explicit owner grant. They
+  do not register a GroupMe bot, create fake users, or send chat messages. Friend
+  invitations and group-management UI are subsequent increments.
+- In a connected workspace, app writes require exactly one real legacy group and
+  one real mapped legacy user. A log inserts both the authoritative legacy row
+  and its app record in one transaction. No provider message ID is fabricated.
+  Ambiguous/missing mappings fail closed. GroupMe stats and recaps therefore count
+  app-created drinks, but logging in the app sends no GroupMe message.
+- Edits and undo apply only to the account's own app-created entries. Old GroupMe
+  entries remain managed through GroupMe. Opaque revisions reject stale edits,
+  including concurrent changes made by GroupMe. GroupMe deletions cascade to the
+  app reference; its durable create receipt prevents a retry from resurrecting it.
+- Every mutation has an account-scoped UUID request ID and payload fingerprint.
+  The receipt commits with the mutation, survives undo, and is retained. The UI
+  retains an unconfirmed request in tab session storage for safe retry; the
+  database, never browser storage, is authoritative. A tab refresh preserves the
+  pending request, and sign-out clears the local draft.
+- Writes are limited to 120 commands/account/hour and 20 owned groups/account.
+  These controls supplement, not replace, future public-launch abuse protection.
+
+Run `tests/test_activity.py` with a disposable PostgreSQL database before release.
+It covers native users, mirrored statistics, GroupMe edit/undo compatibility,
+atomic failure rollback, concurrent retries, test-workspace exclusion, revoked
+access, mapping drift, and CSRF. Roll back by disabling the feature or redeploying
+the prior application; leave additive schema/data intact. Old app code may omit
+native-only history until rolled forward, but GroupMe remains on its legacy rows.
 
 Before enabling real sign-in, configure `WEB_ORIGIN` to the exact HTTPS app origin,
 plus `SMTP_HOST`, `SMTP_PORT` (465 for implicit TLS, otherwise mandatory STARTTLS),

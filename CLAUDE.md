@@ -83,7 +83,8 @@ src/beerbot/
 - **Compatibility first**: GroupMe remains the live source of truth while workspace/gateway records are shadow state
 - **First-party product**: Web/iOS will own accounts and global personal history; messaging integrations are adapters
 - **Shadow identities**: The GroupMe path does not use people, external identities, or memberships for live authorization or stats
-- **Web accounts**: `/app` uses explicit admin-approved person/email invitations plus email proof, never shadow membership as authorization. Read-only personal stats use the linked `users.person_id`; the GroupMe path is unchanged. Never auto-claim by name or email alone.
+- **Web accounts**: `/app` uses explicit admin-approved person/email invitations plus email proof, never shadow membership as authorization. Never auto-claim by name or email alone.
+- **Native activity**: `activity.py` owns explicit app access and idempotent Log/Edit/Undo. A connected app log writes the real legacy row and app reference atomically. `personal_activity` reads legacy rows plus native-only entries, without double counting. Keep GroupMe repositories and tool behavior unchanged; never invent provider identities. Test with PostgreSQL and feature-gate app writes.
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 
 No repository-local issue tracker is configured.

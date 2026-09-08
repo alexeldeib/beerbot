@@ -1,7 +1,8 @@
 """Invite-only first-party access. Never infer ownership from a name or membership.
 
 Admins approve the person/email binding; the person proves mailbox ownership with
-a short-lived code bound to the browser which requested it. Legacy data is read-only.
+a short-lived code bound to the browser which requested it. Legacy GroupMe records
+stay authoritative; app-created entries use the transactional compatibility adapter.
 """
 
 import asyncio
@@ -14,15 +15,17 @@ import ssl
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .config import settings
 from .database import get_pool
+from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
 
 router = APIRouter()
 STATIC = Path(__file__).with_name("static")
@@ -36,10 +39,8 @@ logger = logging.getLogger(__name__)
 # workspaces never enter personal app history, even via a direct group filter.
 PRODUCTION_WORKSPACE = "coalesce(w.settings->>'environment','production')='production'"
 PERSONAL_HISTORY_SCOPE = (
-    "FROM beers b JOIN users u ON u.id=b.user_id "
-    "JOIN groups g ON g.group_id=b.group_id "
-    "LEFT JOIN workspaces w ON w.id=g.workspace_id "
-    "WHERE u.person_id=$1 AND ($2::text IS NULL OR b.group_id=$2) AND " + PRODUCTION_WORKSPACE
+    "FROM personal_activity b WHERE b.person_id=$1 "
+    "AND ($2::text IS NULL OR b.group_key=$2) AND b.environment='production'"
 )
 
 
@@ -63,7 +64,14 @@ class EmailInput(BaseModel):
 
 
 class InviteInput(EmailInput):
-    person_id: str = Field(min_length=1, max_length=200)
+    person_id: str | None = Field(None, min_length=1, max_length=200)
+    name: str | None = Field(None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def one_identity(self):
+        if bool(self.person_id) == bool(self.name and self.name.strip()):
+            raise ValueError("Provide an existing person_id OR a name for a new native person")
+        return self
 
 
 class CodeInput(BaseModel):
@@ -127,22 +135,28 @@ async def invite_account(data: InviteInput) -> dict:
     pool = await get_pool()
     try:
         async with pool.acquire() as conn, conn.transaction():
-            person = await conn.fetchrow(
-                "SELECT * FROM people WHERE id=$1 FOR UPDATE", data.person_id
-            )
+            person_id = data.person_id
+            if person_id is None:
+                person_id = "person:app:" + str(uuid4())
+                await conn.execute(
+                    "INSERT INTO people(id,display_name) VALUES($1,$2)",
+                    person_id,
+                    data.name.strip(),
+                )
+            person = await conn.fetchrow("SELECT * FROM people WHERE id=$1 FOR UPDATE", person_id)
             if (
                 not person
                 or person["canonical_person_id"]
                 or person["status"] not in ("claimed", "provisional")
             ):
                 raise HTTPException(409, "Person is unavailable for invitation")
-            if await conn.fetchval("SELECT 1 FROM accounts WHERE person_id=$1", data.person_id):
+            if await conn.fetchval("SELECT 1 FROM accounts WHERE person_id=$1", person_id):
                 raise HTTPException(409, "Person already has an account; no binding was changed")
             account_id = "account:" + secrets.token_hex(16)
             await conn.execute(
                 "INSERT INTO accounts(id,person_id,status) VALUES($1,$2,'pending')",
                 account_id,
-                data.person_id,
+                person_id,
             )
             await conn.execute(
                 "INSERT INTO account_emails(account_id,email) VALUES($1,$2)",
@@ -282,7 +296,7 @@ async def signed_in_person(request: Request) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT p.id,p.display_name,e.email FROM web_sessions s
+            """SELECT p.id,p.display_name,e.email,a.id AS account_id FROM web_sessions s
                JOIN accounts a ON a.id=s.account_id JOIN account_emails e ON e.account_id=a.id
                JOIN people p ON p.id=a.person_id WHERE s.token_hash=$1 AND s.expires_at>now()
                AND a.status='active' AND e.verified_at IS NOT NULL
@@ -315,12 +329,16 @@ async def personal_stats(group: str | None = None, person: dict = Depends(signed
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
         groups = await conn.fetch(
-            """SELECT DISTINCT g.group_id,g.name FROM groups g JOIN beers b ON b.group_id=g.group_id
-               JOIN users u ON u.id=b.user_id LEFT JOIN workspaces w ON w.id=g.workspace_id
-               WHERE u.person_id=$1 AND """
-            + PRODUCTION_WORKSPACE
-            + " ORDER BY g.group_id",
+            """SELECT DISTINCT group_key AS group_id,group_name AS name FROM personal_activity
+               WHERE person_id=$1 AND environment='production'
+               UNION SELECT coalesce(g.group_id,w.id),coalesce(g.name,w.name)
+               FROM app_workspace_access a JOIN workspaces w ON w.id=a.workspace_id
+               LEFT JOIN groups g ON g.workspace_id=w.id
+               WHERE a.account_id=$2 AND a.active
+               AND coalesce(w.settings->>'environment','production')='production'
+               ORDER BY group_id""",
             person["id"],
+            person.get("account_id", ""),
         )
         if group is not None and group not in {g["group_id"] for g in groups}:
             raise HTTPException(404, "No personal history for this group")
@@ -352,18 +370,54 @@ async def personal_stats(group: str | None = None, person: dict = Depends(signed
             week_start - timedelta(weeks=7),
         )
         activity = await conn.fetch(
-            "SELECT b.id,b.quantity,b.drink_type,b.split_the_g,b.logged_at "
+            "SELECT b.id,b.app_entry_id,b.revision,b.created_by_account_id,b.workspace_id,"
+            "b.quantity,b.drink_type,b.split_the_g,b.logged_at "
             + scope
             + " ORDER BY b.logged_at DESC,b.id DESC LIMIT 30",
             person["id"],
             group,
         )
+        writable = await writable_workspaces(conn, person.get("account_id", ""))
+        writable_ids = {w["id"] for w in writable}
+        entries = []
+        for row in activity:
+            entry = dict(row)
+            entry["editable"] = bool(
+                settings.app_activity_enabled
+                and row["app_entry_id"]
+                and row["created_by_account_id"] == person.get("account_id")
+                and row["workspace_id"] in writable_ids
+            )
+            entry.pop("created_by_account_id")
+            entries.append(entry)
     return {
         "person": {"name": person["display_name"], "email": person["email"]},
         "groups": [dict(g) for g in groups],
         "totals": dict(totals),
         "breakdown": [dict(r) for r in breakdown],
         "trend": [dict(r) for r in trend],
-        "activity": [dict(r) for r in activity],
+        "activity": entries,
+        "writable_workspaces": writable,
+        "logging_enabled": settings.app_activity_enabled,
         "week_start": week_start.date(),
     }
+
+
+@router.post("/app/api/groups", dependencies=[Depends(check_origin)])
+async def create_app_group(data: NewGroup, person: dict = Depends(signed_in_person)):
+    return await run_command(person, "group", data)
+
+
+@router.post("/app/api/activity", dependencies=[Depends(check_origin)])
+async def create_app_drink(data: NewDrink, person: dict = Depends(signed_in_person)):
+    return await run_command(person, "create", data)
+
+
+@router.post("/app/api/activity/{entry_id}/edit", dependencies=[Depends(check_origin)])
+async def edit_app_drink(entry_id: UUID, data: EditDrink, person: dict = Depends(signed_in_person)):
+    return await run_command(person, "edit", data, entry_id)
+
+
+@router.post("/app/api/activity/{entry_id}/undo", dependencies=[Depends(check_origin)])
+async def undo_app_drink(entry_id: UUID, data: UndoDrink, person: dict = Depends(signed_in_person)):
+    return await run_command(person, "undo", data, entry_id)
