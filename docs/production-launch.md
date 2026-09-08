@@ -3,8 +3,10 @@
 ## Current boundary
 
 The app is deployed on Fly with CI-gated blue-green releases, readiness checks,
-durable message execution/outbox, email proof, and read-only personal history.
-It is still an operator-invited pilot, not an open-signup product. Keep GroupMe
+durable message execution/outbox, email proof, native logging/edit/undo, app-only
+group invitations and management, and private personal history. Existing GroupMe
+identity linking remains operator-approved; native owners can invite new app users.
+It is still an invitation-based pilot, not an open-signup product. Keep GroupMe
 logging and existing behavior authoritative during the rollout.
 
 Beerbeta is a test workspace, not a second identity for the same human. Exclude
@@ -57,6 +59,18 @@ isolation. Later gateways map to the same workspace and inherit its classificati
   SMS/WhatsApp/iOS do not need to be built to launch the existing-group web app.
 
 ## Release order
+
+The weekly chart now has separate plot/date areas, non-shrinking proportional
+bars and explicit zero-height zeroes. The reusable geometry assertion in
+`tests/browser/chart-layout.js` was checked at phone/tablet/desktop widths, but is
+not yet in CI. Add automated browser coverage for chart geometry and the core
+sign-in/log/edit/undo/invitation flows before further UI expansion.
+
+The next product milestone is private Beerius chat in the app, using the existing
+bounded model loop and native commands. Start with scoped history questions and
+self-logging; add photo input after retention/ownership is explicit. Current
+membership consent shares names/roles, not personal drink history, so do not
+silently broaden visibility when adding chat or group summaries.
 
 Test-workspace exclusion → hostname/certificate and origin migration → callback
 authentication and operational checks → invitation lifecycle → small group pilot.

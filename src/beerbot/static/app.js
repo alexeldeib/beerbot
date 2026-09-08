@@ -98,7 +98,17 @@ async function loadDashboard(group="") {
     const trend=$("trend");trend.replaceChildren();const weeks=[];const start=new Date(`${data.week_start}T12:00:00Z`);
     for(let i=7;i>=0;i--){const date=new Date(start);date.setUTCDate(date.getUTCDate()-i*7);const key=date.toISOString().slice(0,10);weeks.push({date,key,total:data.trend.find(t=>t.week===key)?.drinks||0});}
     const max=Math.max(1,...weeks.map(w=>w.total));
-    for(const week of weeks){const cell=text("div","","week");cell.append(text("strong",number(week.total)));const bar=text("div","","bar");bar.style.height=`${Math.max(2,week.total/max*140)}px`;cell.append(bar,text("span",week.date.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"UTC"})));cell.setAttribute("aria-label",`Week of ${week.key}: ${week.total} drinks`);trend.append(cell);}
+    for(const week of weeks){
+      const cell=text("div","","week"),plot=text("div","","week-plot");
+      const bar=text("div","",week.total>0?"bar":"bar bar-zero");
+      bar.style.height=`${Math.max(0,week.total)/max*140}px`;
+      plot.append(text("strong",number(week.total)),bar);
+      const date=text("time","","week-date");date.dateTime=week.key;
+      date.append(text("span",week.date.toLocaleDateString("en-US",{month:"short",timeZone:"UTC"})),text("span",String(week.date.getUTCDate())));
+      cell.append(plot,date);
+      cell.setAttribute("aria-label",`Week of ${week.key}: ${week.total} drinks`);
+      trend.append(cell);
+    }
     $("breakdown").replaceChildren(...data.breakdown.map(row=>{const node=text("div","","drink-row");node.append(text("span",row.drink_type.replaceAll("_"," ")),text("strong",number(row.drinks)));return node;}));
     if(!data.breakdown.length)$("breakdown").append(text("p","No drinks recorded yet.","empty"));
     $("activity").replaceChildren(...data.activity.map(renderEntry));

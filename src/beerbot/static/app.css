@@ -169,10 +169,14 @@ input::placeholder { color: #797381; opacity: 1; }
 .big-number { font: 700 clamp(2.3rem,4.5vw,3.25rem)/1.1 var(--display); font-variant-numeric: lining-nums tabular-nums; letter-spacing: -.045em; margin: .7rem 0 .5rem; }
 .stat > p:last-child { font-size: .8125rem; line-height: 1.5; color: var(--muted); margin: 0; }
 .middle-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 1rem; margin: 1.35rem 0; }
-.trend { display: flex; align-items: stretch; gap: .7rem; height: 190px; margin: 1.3rem 0 1rem; }
-.week { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; flex-direction: column; gap: .45rem; font: .75rem/1.4 ui-monospace, SFMono-Regular, monospace; }
-.week strong { font: 600 .875rem/1.4 "Avenir Next", -apple-system, sans-serif; }
-.bar { width: 100%; max-width: 42px; min-height: 2px; background: var(--lilac); border: 1px solid #9a83aa; border-bottom: 0; border-radius: .35rem .35rem 0 0; }
+.trend { display: flex; align-items: stretch; gap: .7rem; margin: 1.3rem 0 1rem; }
+.week { flex: 1; min-width: 0; display: grid; grid-template-rows: auto 2.8em; justify-items: center; gap: .45rem; font: .75rem/1.4 ui-monospace, SFMono-Regular, monospace; }
+.week-plot { width: 100%; height: calc(140px + 2rem); display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: .45rem; }
+.week strong { flex: none; font: 600 .875rem/1.4 "Avenir Next", -apple-system, sans-serif; }
+.week-date { text-align: center; line-height: 1.4; }
+.week-date span { display: block; }
+.bar { flex: none; width: 100%; max-width: 42px; min-height: 0; background: var(--lilac); border: 1px solid #9a83aa; border-bottom: 0; border-radius: .35rem .35rem 0 0; }
+.bar-zero { border: 0; }
 .week:last-child .bar { background: var(--pink); border-color: #c37595; }
 .drink-row, .activity-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .95rem 0; border-bottom: 1px solid #ece8ee; }
 .drink-row:last-child, .activity-row:last-child { border-bottom: 0; }
