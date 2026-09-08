@@ -115,8 +115,9 @@ Do NOT start replies with "Cheers".
 RECAP_PROMPT = """Write a fun weekly recap for a beer-tracking group chat. Keep it under 500 characters.
 
 Focus on THIS WEEK's activity first: total drinks, weekly MVP (top drinker THIS WEEK) with a quip,
-type breakdown if interesting. Then show the overall all-time top 5 rankings.
-Mention close races or ranking changes if any.
+type breakdown if interesting. Show THIS WEEK's top 5 drinkers and their weekly counts
+(or everyone if fewer than 5 were active). Mention close races when supported by the data.
+Do not show an all-time leaderboard or infer ranking changes without prior rankings.
 
 Include 2-3 of these fun facts if the data is interesting (skip any that are boring):
 - Pace trend vs last week
@@ -124,7 +125,8 @@ Include 2-3 of these fun facts if the data is interesting (skip any that are bor
 - Type champions (who dominated each drink type)
 - Milestones crossed this week
 
-IMPORTANT: Weekly numbers and all-time numbers are SEPARATE sections below. Do NOT mix them.
+IMPORTANT: Rankings and drink counts cover this week's recap period only.
+Achievement totals or milestones explicitly labeled all-time are separate from weekly rankings.
 Use drink emojis: 🍺 beer, 🍸 cocktail, 🍷 wine, 🥤 seltzer.
 
 {data}
@@ -498,7 +500,6 @@ class BeerAgent:
         if week_stats.total_beers == 0:
             return None
 
-        leaderboard = await beer_repo.get_leaderboard_with_breakdown(group_id, None, 5)
         split_stats = await beer_repo.get_split_g_stats(group_id)
 
         # Fun stats
@@ -519,9 +520,6 @@ class BeerAgent:
             data_lines.append(f"  {i}. {user.name}: {user.total_beers} drinks")
 
         data_lines.append("")
-        data_lines.append("=== ALL-TIME OVERALL RANKINGS ===")
-        for i, (name, total, breakdown) in enumerate(leaderboard, 1):
-            data_lines.append(f"  {i}. {name}: {total} ({breakdown})")
         if split_stats.total_splits > 0:
             data_lines.append(f"Split the G (all time): {split_stats.total_splits}")
 

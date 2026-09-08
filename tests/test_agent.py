@@ -1,6 +1,7 @@
 """Tests for BeerAgent."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 from google.genai import types
@@ -607,10 +608,22 @@ class TestGenerateWeeklyRecap:
         week_stats.total_beers = 42
         week_stats.unique_drinkers = 5
         week_stats.drink_type_counts = {"beer": 30, "wine": 12}
-        week_stats.user_stats = []
+        week_stats.user_stats = [
+            SimpleNamespace(name=person, total_beers=count)
+            for person, count in [
+                ("Weekly winner", 15),
+                ("Second", 10),
+                ("Third", 7),
+                ("Fourth", 5),
+                ("Fifth", 3),
+                ("Outside top five", 2),
+            ]
+        ]
 
         mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
-        mock_beer_repo.get_leaderboard_with_breakdown = AsyncMock(return_value=[])
+        mock_beer_repo.get_leaderboard_with_breakdown = AsyncMock(
+            return_value=[("Lifetime champion", 9000, {"beer": 9000})]
+        )
         mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))
 
         # Mock fun stats
@@ -634,6 +647,12 @@ class TestGenerateWeeklyRecap:
         assert "Bryan" in prompt
         assert "Milestones" in prompt
         assert "35 last week" in prompt
+        assert "1. Weekly winner: 15 drinks" in prompt
+        assert "5. Fifth: 3 drinks" in prompt
+        assert "Outside top five" not in prompt
+        assert "Lifetime champion" not in prompt
+        assert "ALL-TIME OVERALL RANKINGS" not in prompt
+        mock_beer_repo.get_leaderboard_with_breakdown.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
