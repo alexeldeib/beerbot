@@ -82,7 +82,8 @@ src/beerbot/
 - **Future gateways**: Multiple gateway conversations may map to one workspace; gateways do not define the tenant
 - **Compatibility first**: GroupMe remains the live source of truth while workspace/gateway records are shadow state
 - **First-party product**: Web/iOS will own accounts and global personal history; messaging integrations are adapters
-- **Shadow identities**: People, external identities, and memberships are not used for live authorization or stats
+- **Shadow identities**: The GroupMe path does not use people, external identities, or memberships for live authorization or stats
+- **Web accounts**: `/app` uses explicit admin-approved person/email invitations plus email proof, never shadow membership as authorization. Read-only personal stats use the linked `users.person_id`; the GroupMe path is unchanged. Never auto-claim by name or email alone.
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 
 No repository-local issue tracker is configured.

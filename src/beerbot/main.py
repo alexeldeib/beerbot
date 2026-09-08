@@ -26,6 +26,7 @@ from .delivery import (
     queue_status,
     retry_delivery,
 )
+from .web import router as web_router, InviteInput, invite_account
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +88,21 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+app.include_router(web_router)
+
+
+@app.middleware("http")
+async def web_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/app" or request.url.path.startswith("/app/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+            "img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        )
+    return response
 
 
 @app.get("/health")
@@ -178,6 +194,11 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
 @app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
 async def identity_parity(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
     return await reconcile_identities(after_id=after_id, limit=limit)
+
+
+@app.post("/admin/accounts/invite", dependencies=[Depends(verify_admin_token)])
+async def invite_web_account(invitation: InviteInput):
+    return await invite_account(invitation)
 
 
 @app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])

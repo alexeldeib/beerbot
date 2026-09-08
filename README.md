@@ -346,6 +346,56 @@ access-controlled external store.
 
 ---
 
+## Personal dashboard (invite-only)
+
+`/app` is the first-party, read-only personal view: this week and last week,
+all-time drinks, Split-G total, eight-week trend, drink breakdown, and the latest
+30 entries. It reads legacy `beers` through the explicitly linked `users.person_id`.
+It does not duplicate activity, read group chats/photos, send notifications, or
+change the GroupMe agent. Group filters expose only groups with the person's own
+recorded drinks; shadow memberships do **not** grant access to anyone else's data.
+
+Before enabling real sign-in, configure `WEB_ORIGIN` to the exact HTTPS app origin,
+plus `SMTP_HOST`, `SMTP_PORT` (465 for implicit TLS, otherwise mandatory STARTTLS),
+`SMTP_FROM`, and the provider's `SMTP_USERNAME` / `SMTP_PASSWORD` as Fly secrets.
+No plaintext SMTP or certificate-validation fallback is supported. An empty email
+configuration fails closed, without affecting GroupMe readiness. Set
+`WEB_ORIGIN=http://127.0.0.1:8089` and `ENVIRONMENT=development` only for local testing.
+
+Account rollout:
+
+1. An administrator independently confirms the existing person and the email they
+   want to use. Never match by display name alone or infer account ownership from
+   a group membership, incoming message, or unverified email.
+2. `POST /admin/accounts/invite` with the existing admin bearer token and JSON
+   `{"person_id":"<confirmed-person-id>","email":"<confirmed-email>"}` creates a
+   pending account with a seven-day invitation. Existing person/email bindings
+   conflict; they are never overwritten. The endpoint itself sends no email.
+3. The invited person opens `/app`, requests a code, and types the emailed eight
+   digits in the **same browser** within ten minutes. Email delivery must be tested
+   with the real mailbox before declaring this flow ready. Unknown, throttled,
+   expired, and delivery-failed requests have the same generic response.
+4. Successful proof activates the account, consumes its outstanding challenges,
+   and creates a 30-day HttpOnly, Secure, SameSite=Strict session. The database
+   stores only hashes of session/browser tokens and codes. Sign-out revokes the
+   session server-side. Disabled accounts and merged/disabled people fail closed.
+
+Limits: five attempts per challenge; one code/minute, three/15 minutes/account,
+and 100/15 minutes globally across machines. Challenges are removed after a day
+and expired sessions removed on login requests. SMTP failure logs omit recipients,
+codes, and provider error details. This initial flow deliberately does not include
+self-service identity claiming, email changes, account merging, or password recovery.
+For emergency revocation, set the affected account's `status` to `disabled` through
+an authenticated operator database session; all its sessions immediately fail their
+next authorization check. Re-invitation/reassignment requires explicit operator
+review, not a public reset endpoint.
+
+Migration 5 adds only new tables; old releases ignore them. Keep the existing
+blue-green deploy strategy and `/ready` checks. An application rollback can leave
+these additive tables in place. Run the real PostgreSQL suite (including
+`tests/test_web.py`) using `BEERBOT_TEST_DATABASE_URL` before release. Do not test
+against the application's production `DATABASE_URL`.
+
 ## 📄 License
 
 MIT
