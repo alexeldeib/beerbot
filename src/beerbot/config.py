@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     # First-party dashboard. Email sign-in fails closed until SMTP is configured.
     web_origin: str = "https://beerbot-groupme.fly.dev"
+    app_activity_enabled: bool = False
     smtp_host: str | None = None
     smtp_port: int = 465
     smtp_username: str | None = None

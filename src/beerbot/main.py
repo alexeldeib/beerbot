@@ -28,6 +28,7 @@ from .delivery import (
     retry_delivery,
 )
 from .web import router as web_router, InviteInput, invite_account
+from .activity import AccessGrant, grant_access
 
 logging.basicConfig(
     level=logging.INFO,
@@ -222,6 +223,11 @@ async def set_workspace_environment(workspace_id: str, classification: Workspace
     if row is None:
         raise HTTPException(404, "Workspace not found")
     return {"workspace_id": row["id"], "environment": classification.environment}
+
+
+@app.put("/admin/workspaces/{workspace_id}/app-access", dependencies=[Depends(verify_admin_token)])
+async def set_app_access(workspace_id: str, grant: AccessGrant):
+    return await grant_access(workspace_id, grant)
 
 
 @app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])

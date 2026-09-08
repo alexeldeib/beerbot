@@ -464,6 +464,65 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        6,
+        "native_app_activity",
+        (
+            """CREATE TABLE app_workspace_access (
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            role TEXT NOT NULL CHECK(role IN ('member','owner')),
+            active BOOLEAN NOT NULL DEFAULT true,
+            granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY(account_id,workspace_id)
+        )""",
+            """CREATE TABLE app_activity (
+            id UUID PRIMARY KEY,
+            person_id TEXT NOT NULL REFERENCES people(id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            created_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+            legacy_beer_id INTEGER UNIQUE REFERENCES beers(id) ON DELETE CASCADE,
+            quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 100),
+            drink_type TEXT NOT NULL CHECK(drink_type IN ('beer','wine','cocktail','claw')),
+            split_the_g INTEGER NOT NULL DEFAULT 0 CHECK(split_the_g BETWEEN 0 AND quantity),
+            logged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            version INTEGER NOT NULL DEFAULT 1,
+            deleted_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""",
+            "CREATE INDEX app_activity_person ON app_activity(person_id,logged_at)",
+            """CREATE TABLE app_commands (
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            request_id UUID NOT NULL,
+            fingerprint TEXT NOT NULL,
+            result JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY(account_id,request_id)
+        )""",
+            """CREATE VIEW personal_activity AS
+            SELECT 'legacy:'||b.id::text AS id,n.id AS app_entry_id,u.person_id,
+                g.workspace_id,b.group_id AS group_key,g.name AS group_name,
+                b.quantity,b.drink_type,b.split_the_g,b.logged_at,
+                md5(concat_ws('|',b.id,b.quantity,b.drink_type,b.split_the_g,b.logged_at,
+                    coalesce(n.version,0))) AS revision,
+                n.created_by_account_id,
+                coalesce(w.settings->>'environment','production') AS environment
+            FROM beers b JOIN users u ON u.id=b.user_id JOIN groups g ON g.group_id=b.group_id
+            LEFT JOIN workspaces w ON w.id=g.workspace_id
+            LEFT JOIN app_activity n ON n.legacy_beer_id=b.id
+            UNION ALL
+            SELECT 'app:'||n.id::text,n.id,n.person_id,n.workspace_id,n.workspace_id,w.name,
+                n.quantity,n.drink_type,n.split_the_g,n.logged_at,
+                md5(concat_ws('|',n.id,n.version)),n.created_by_account_id,
+                coalesce(w.settings->>'environment','production')
+            FROM app_activity n JOIN workspaces w ON w.id=n.workspace_id
+            WHERE n.legacy_beer_id IS NULL AND n.deleted_at IS NULL""",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():
