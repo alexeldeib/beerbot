@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
+    queue_recovery_seconds: int = Field(3600, ge=600, le=86400)
 
     # Environment
     environment: str = "production"
