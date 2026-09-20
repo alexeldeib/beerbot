@@ -562,8 +562,9 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         _pool = await asyncpg.create_pool(
             settings.database_url,
-            min_size=1,
+            min_size=0,
             max_size=10,
+            max_inactive_connection_lifetime=60,
         )
     return _pool
 

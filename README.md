@@ -278,9 +278,22 @@ outbound text expire after three days, with bounded cleanup roughly every minute
 Message IDs and state remain as deduplication tombstones. Media is fetched for
 analysis, not stored as binary data. Expired content is not retryable.
 
-`/health` remains process liveness. `/ready` checks database connectivity, model
-client configuration, and worker tasks; Fly gates blue/green traffic on `/ready`.
+`/health` remains process liveness. `/ready` checks model configuration, worker
+tasks and known worker failures **without querying Postgres**; Fly gates blue/green
+traffic on `/ready`. `/ready/db` performs the explicit database check and wakes
+workers after deployment. CI calls it after verifying the new revision and the
+old fleet has stopped; manual deployments must do the same.
 Shutdown cancels workers, rolls back incomplete execution, and closes the pool.
+
+Workers are event-driven: durable receipts and manual retries wake them immediately,
+and persisted retry/sending deadlines arm timers. Empty queues share an hourly
+recovery sweep (`QUEUE_RECOVERY_SECONDS=3600`). Idle pool connections close after
+60 seconds. This lets Neon suspend between actual work instead of keeping compute
+awake with one-second polling. `GET /admin/workers/status` is an authenticated,
+database-free diagnostic; `POST /admin/messages/wake` is an explicit recovery wake.
+See [idle compute and wakeup design](docs/idle-compute.md), including the deployment
+handoff, retention, rare missed-wake latency, and why Fly's running-machine floor
+must not be changed to zero without an external scheduler.
 Migration 4 is additive. Deduplication protects messages first accepted by this
 release; it cannot retrospectively identify every command processed by earlier
 releases. Weekly recaps still use their existing independent scheduler and are

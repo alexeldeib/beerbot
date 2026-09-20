@@ -299,6 +299,11 @@ async def verify_code(data: CodeInput, request: Request, response: Response):
 
 
 async def signed_in_person(request: Request) -> dict:
+    session_token = request.cookies.get(SESSION_COOKIE)
+    if not session_token:
+        # Rendering the public sign-in screen should not wake a sleeping DB
+        # merely to reject an anonymous /me request.
+        raise HTTPException(401, "Sign in to view your history")
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -307,7 +312,7 @@ async def signed_in_person(request: Request) -> dict:
                JOIN people p ON p.id=a.person_id WHERE s.token_hash=$1 AND s.expires_at>now()
                AND a.status='active' AND e.verified_at IS NOT NULL
                AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL""",
-            digest(request.cookies.get(SESSION_COOKIE, "")),
+            digest(session_token),
         )
     if not row:
         raise HTTPException(401, "Sign in to view your history")

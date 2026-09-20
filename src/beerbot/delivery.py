@@ -4,6 +4,8 @@ import asyncio
 import copy
 import json
 import logging
+import time
+from datetime import datetime, UTC
 
 from .database import bind_execution, get_pool
 from .config import settings
@@ -13,6 +15,69 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
+
+
+class QueueRuntime:
+    """Process-local wake hints. Postgres remains the durable source of truth.
+
+    Both recovery timers use the same wall-clock boundary so empty scans share
+    one Neon wake window. Actual work/retry deadlines always take precedence.
+    """
+
+    def __init__(self, recovery_seconds=None):
+        self.recovery_seconds = recovery_seconds or settings.queue_recovery_seconds
+        self.events = {name: asyncio.Event() for name in ("execution", "delivery")}
+        self.scans = {name: 0 for name in self.events}
+        self.failed = {name: False for name in self.events}
+        self.last_scan = {name: None for name in self.events}
+        self.next_scan = {name: None for name in self.events}
+        self.probe_failed = False
+
+    def wake(self, name=None):
+        for key in [name] if name else self.events:
+            self.events[key].set()
+
+    def recovery_delay(self):
+        return self.recovery_seconds - time.time() % self.recovery_seconds
+
+    async def wait(self, name, delay):
+        self.next_scan[name] = datetime.fromtimestamp(time.time() + delay, UTC).isoformat()
+        try:
+            await asyncio.wait_for(self.events[name].wait(), timeout=delay)
+        except TimeoutError:
+            pass
+
+    def snapshot(self):
+        return {
+            "recovery_seconds": self.recovery_seconds,
+            "scans": self.scans.copy(),
+            "failed": self.failed.copy(),
+            "probe_failed": self.probe_failed,
+            "last_scan": self.last_scan.copy(),
+            "next_scan": self.next_scan.copy(),
+        }
+
+
+async def next_work_delay(name: str, recovery_delay: float) -> float:
+    """Arm a timer for known work, not a poll for hypothetical future work."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if name == "execution":
+            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(i.available_at)-NOW())
+                FROM message_inbox i WHERE i.state='pending'
+                AND NOT EXISTS(SELECT 1 FROM message_inbox earlier
+                    WHERE earlier.group_id=i.group_id AND earlier.state='pending' AND earlier.id<i.id)""")
+        else:
+            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(
+                    CASE WHEN o.state='sending' THEN o.updated_at+INTERVAL '121 seconds'
+                         ELSE o.available_at END)-NOW())
+                FROM message_outbox o WHERE o.state IN ('pending','sending')
+                AND NOT EXISTS(SELECT 1 FROM message_outbox earlier
+                    WHERE earlier.group_id=o.group_id AND earlier.state IN ('pending','sending')
+                    AND earlier.id<o.id)""")
+    # Due rows may be locked by a peer during deployment. Keep checking while
+    # real pending work exists; only an empty queue sleeps until recovery.
+    return recovery_delay if due is None else min(recovery_delay, max(1, float(due)))
 
 
 async def accept_message(message: GroupMeMessage) -> dict:
@@ -194,13 +259,13 @@ async def deliver_one(client) -> bool:
     return True
 
 
-async def maintain_queue() -> None:
+async def maintain_queue() -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SET LOCAL statement_timeout = '5s'")
             # Skip in-flight claims so maintenance cannot delay a live message.
-            await conn.execute("""WITH stale AS (
+            stale = await conn.execute("""WITH stale AS (
                 SELECT id FROM message_outbox WHERE state='sending'
                   AND updated_at < NOW()-INTERVAL '2 minutes'
                 LIMIT 100 FOR UPDATE SKIP LOCKED)
@@ -208,7 +273,7 @@ async def maintain_queue() -> None:
                   error_code='interrupted_send',updated_at=NOW()
                 WHERE id IN (SELECT id FROM stale)""")
             # Keep deduplication tombstones; discard private content after 3 days.
-            await conn.execute("""WITH expired AS (
+            inbox = await conn.execute("""WITH expired AS (
                 SELECT id FROM message_inbox WHERE payload IS NOT NULL
                   AND created_at < NOW()-INTERVAL '3 days'
                 LIMIT 100 FOR UPDATE SKIP LOCKED)
@@ -216,7 +281,7 @@ async def maintain_queue() -> None:
                   state=CASE WHEN state='pending' THEN 'failed' ELSE state END,
                   error_code=CASE WHEN state='pending' THEN 'expired' ELSE error_code END
                 WHERE id IN (SELECT id FROM expired)""")
-            await conn.execute("""WITH expired AS (
+            outbox = await conn.execute("""WITH expired AS (
                 SELECT id FROM message_outbox WHERE body IS NOT NULL
                   AND created_at < NOW()-INTERVAL '3 days'
                 LIMIT 100 FOR UPDATE SKIP LOCKED)
@@ -224,6 +289,9 @@ async def maintain_queue() -> None:
                   state=CASE WHEN state='pending' THEN 'failed' ELSE state END,
                   error_code=CASE WHEN state='pending' THEN 'expired' ELSE error_code END
                 WHERE id IN (SELECT id FROM expired)""")
+    # Continue bounded cleanup batches promptly instead of retaining a backlog
+    # for multiple hourly sweeps. Locked live claims are still skipped.
+    return any(int(result.split()[-1]) >= 100 for result in (stale, inbox, outbox))
 
 
 async def queue_status() -> dict:
@@ -263,26 +331,42 @@ async def retry_delivery(outbox_id: int, acknowledge_uncertain: bool = False) ->
     return row is not None
 
 
-async def execution_worker(agent):
+async def _worker(name, runtime, work, after_work=None, maintenance=None):
+    failures = 0
     while True:
+        # Clear BEFORE scanning, never after: a wake racing with the empty scan
+        # must survive and make the subsequent wait return immediately.
+        runtime.events[name].clear()
+        runtime.next_scan[name] = None
+        runtime.scans[name] += 1
         try:
-            if await execute_one(agent):
-                continue
+            more_maintenance = await maintenance() if maintenance else False
+            while await work():
+                if after_work:
+                    after_work()
+            delay = await next_work_delay(name, runtime.recovery_delay())
+            if more_maintenance:
+                delay = min(delay, 1)
+            failures = 0
+            runtime.failed[name] = False
+            runtime.probe_failed = False
+            runtime.last_scan[name] = datetime.now(UTC).isoformat()
         except Exception:
-            logger.exception("Message worker iteration failed")
-        await asyncio.sleep(1)
+            failures += 1
+            runtime.failed[name] = True
+            delay = min(60, 5 * 2 ** min(failures - 1, 4))
+            logger.exception("Queue worker scan failed: worker=%s", name)
+        await runtime.wait(name, delay)
 
 
-async def delivery_worker(client):
-    ticks = 0
-    while True:
-        try:
-            maintenance_due = ticks % 60 == 0
-            ticks += 1
-            if maintenance_due:
-                await maintain_queue()
-            if await deliver_one(client):
-                continue
-        except Exception:
-            logger.exception("Delivery worker iteration failed")
-        await asyncio.sleep(1)
+async def execution_worker(agent, runtime):
+    await _worker(
+        "execution",
+        runtime,
+        lambda: execute_one(agent),
+        after_work=lambda: runtime.wake("delivery"),
+    )
+
+
+async def delivery_worker(client, runtime):
+    await _worker("delivery", runtime, lambda: deliver_one(client), maintenance=maintain_queue)

@@ -74,6 +74,7 @@ src/beerbot/
 - **Async-first**: All I/O is async; the loop executes validated tool calls sequentially
 - **Idempotency**: Message deduplication via `(message_id, user_id, drink_type)`
 - **Durability**: Inbox `(group_id, message_id)` deduplication; message DB writes/results/outbox commit atomically
+- **Idle compute**: Queue workers wake on committed receipts, replies and retries; empty queues use aligned hourly recovery, not second-level polling. `/ready` must stay database-free. After every deploy, verify the new version and call `/ready/db` to recover handoff work. Keep one Fly machine running unless external scheduling is explicitly implemented. See `docs/idle-compute.md`.
 - **Delivery**: Only connect failures and rate limits automatically retry; uncertain sends need explicit admin review
 - **Retention**: Inbox content, successful tool traces, and reply text expire after three days; IDs remain for deduplication
 - **Timezone**: Eastern time (America/New_York) for "today"/"week" calculations

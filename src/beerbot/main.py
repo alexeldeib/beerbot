@@ -26,6 +26,7 @@ from .delivery import (
     delivery_worker,
     queue_status,
     retry_delivery,
+    QueueRuntime,
 )
 from .web import router as web_router, InviteInput, invite_account
 from .activity import AccessGrant, grant_access
@@ -37,10 +38,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 EASTERN = ZoneInfo("America/New_York")
+_recap_revision = 0
 
 
 async def _recap_scheduler() -> None:
     """Background loop: fires recap on Sunday after WEEKLY_RECAP_HOUR ET."""
+    completed_week = None
+    completed_revision = None
     while True:
         await asyncio.sleep(300)  # 5 min tick
         now = datetime.now(EASTERN)
@@ -50,29 +54,43 @@ async def _recap_scheduler() -> None:
             continue
 
         week_start = (now - timedelta(days=now.weekday())).date()
-        groups = await group_repo.list_all()
-        for group in groups:
-            if await recap_repo.has_sent(group.group_id, week_start):
-                continue
-            recap = await beer_agent.generate_weekly_recap(group.group_id)
-            if recap and await recap_repo.try_claim(group.group_id, week_start):
-                sent = await groupme_client.send_message(recap, group_id=group.group_id)
-                if sent:
-                    logger.info("Sent weekly recap for group %s", group.group_id)
-                else:
-                    await recap_repo.release_claim(group.group_id, week_start)
-                    logger.error("Weekly recap delivery failed for group %s", group.group_id)
+        if completed_week == week_start and completed_revision == _recap_revision:
+            continue
+        revision = _recap_revision
+        complete = True
+        try:
+            groups = await group_repo.list_all()
+            for group in groups:
+                if await recap_repo.has_sent(group.group_id, week_start):
+                    continue
+                recap = await beer_agent.generate_weekly_recap(group.group_id)
+                if not recap:
+                    complete = False
+                elif await recap_repo.try_claim(group.group_id, week_start):
+                    sent = await groupme_client.send_message(recap, group_id=group.group_id)
+                    if sent:
+                        logger.info("Sent weekly recap for group %s", group.group_id)
+                    else:
+                        complete = False
+                        await recap_repo.release_claim(group.group_id, week_start)
+                        logger.error("Weekly recap delivery failed for group %s", group.group_id)
+            if complete:
+                completed_week, completed_revision = week_start, revision
+        except Exception:
+            logger.exception("Weekly recap iteration failed; retrying at the next scheduled tick")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    runtime = QueueRuntime()
+    app.state.queue_runtime = runtime
     if settings.is_development is False and not settings.groupme_webhook_secret:
         logger.warning("GROUPME_WEBHOOK_SECRET is not configured")
     tasks = [
         asyncio.create_task(_recap_scheduler()),
-        asyncio.create_task(execution_worker(beer_agent)),
-        asyncio.create_task(delivery_worker(groupme_client)),
+        asyncio.create_task(execution_worker(beer_agent, runtime)),
+        asyncio.create_task(delivery_worker(groupme_client, runtime)),
     ]
     app.state.message_workers = tasks[1:]
     try:
@@ -114,16 +132,40 @@ async def health_check():
 
 @app.get("/ready")
 async def readiness(request: Request):
+    """Frequent Fly probe: no database I/O, so a sleeping Neon compute stays asleep."""
     workers = getattr(request.app.state, "message_workers", [])
     if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
         return JSONResponse({"status": "not_ready"}, status_code=503)
+    runtime = getattr(request.app.state, "queue_runtime", None)
+    if runtime and (runtime.probe_failed or any(runtime.failed.values())):
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    return {"status": "ready"}
+
+
+@app.get("/ready/db")
+async def database_readiness(request: Request):
+    """Explicit deploy/diagnostic check, never a recurring health probe.
+
+    Waking after the old blue-green fleet has exited closes the handoff race:
+    a late committed receipt cannot be stranded after the new worker's boot scan.
+    """
+    workers = getattr(request.app.state, "message_workers", [])
+    runtime = getattr(request.app.state, "queue_runtime", None)
+    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
+        return JSONResponse({"status": "not_ready"}, status_code=503)
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             pool = await get_pool()
             async with pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
     except Exception:
+        if runtime:
+            runtime.probe_failed = True
+            runtime.wake()
         return JSONResponse({"status": "not_ready"}, status_code=503)
+    if runtime:
+        runtime.probe_failed = False
+        runtime.wake()
     return {"status": "ready"}
 
 
@@ -169,7 +211,10 @@ async def groupme_callback(request: Request):
             logger.warning("Rejected callback for unregistered group %s", message.group_id)
             return JSONResponse({"error": "Unknown group"}, status_code=403)
 
-    return await accept_message(message)
+    result = await accept_message(message)
+    if runtime := getattr(request.app.state, "queue_runtime", None):
+        runtime.wake()
+    return result
 
 
 # --- Admin Endpoints ---
@@ -235,12 +280,30 @@ async def message_status():
     return await queue_status()
 
 
+@app.get("/admin/workers/status", dependencies=[Depends(verify_admin_token)])
+async def worker_status(request: Request):
+    """In-memory diagnostics do not wake Postgres."""
+    runtime = getattr(request.app.state, "queue_runtime", None)
+    return runtime.snapshot() if runtime else {"status": "not_started"}
+
+
+@app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])
+async def wake_messages(request: Request):
+    runtime = getattr(request.app.state, "queue_runtime", None)
+    if runtime is None:
+        raise HTTPException(503, "Workers not started")
+    runtime.wake()
+    return {"status": "woken"}
+
+
 @app.post("/admin/messages/outbox/{outbox_id}/retry", dependencies=[Depends(verify_admin_token)])
-async def retry_outbound(outbox_id: int, acknowledge_uncertain: bool = False):
+async def retry_outbound(request: Request, outbox_id: int, acknowledge_uncertain: bool = False):
     if not await retry_delivery(outbox_id, acknowledge_uncertain):
         raise HTTPException(
             status_code=409, detail="Delivery not retryable or uncertainty not acknowledged"
         )
+    if runtime := getattr(request.app.state, "queue_runtime", None):
+        runtime.wake("delivery")
     return {"status": "queued"}
 
 
@@ -256,12 +319,14 @@ async def identity_reconcile(after_id: int = Query(0, ge=0), limit: int = Query(
 
 @app.post("/admin/groups", dependencies=[Depends(verify_admin_token)])
 async def register_group(registration: GroupRegistration):
+    global _recap_revision
     group = await group_repo.register(
         group_id=registration.group_id,
         bot_id=registration.bot_id,
         name=registration.name,
     )
     groupme_client.clear_cache(registration.group_id)
+    _recap_revision += 1
 
     return {
         "status": "ok",
@@ -295,10 +360,12 @@ async def list_groups():
 
 @app.delete("/admin/groups/{group_id}", dependencies=[Depends(verify_admin_token)])
 async def delete_group(group_id: str):
+    global _recap_revision
     deleted = await group_repo.delete(group_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Group not found")
     groupme_client.clear_cache(group_id)
+    _recap_revision += 1
     return {"status": "ok", "deleted": group_id}
 
 
