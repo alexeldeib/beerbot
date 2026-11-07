@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # beerdev merges with GITHUB_TOKEN, which never triggers push workflows; it dispatches instead.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -63,7 +65,7 @@ jobs:
 
   deploy:
     name: Deploy production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     environment: production

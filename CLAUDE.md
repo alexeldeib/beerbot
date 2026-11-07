@@ -88,6 +88,7 @@ src/beerbot/
 - **Native activity**: `activity.py` owns explicit app access and idempotent Log/Edit/Undo. A connected app log writes the real legacy row and app reference atomically. `personal_activity` reads legacy rows plus native-only entries, without double counting. Keep GroupMe repositories and tool behavior unchanged; never invent provider identities. Test with PostgreSQL and feature-gate app writes.
 - **App groups**: `app_groups.py` manages only native workspaces with no legacy group mapping. Invitations require a verified matching email and a live owner grant. Group membership shares names/roles, never another person's drink history. Keep workspace-before-membership and user-before-beer lock ordering when extending commands.
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
+- **beerdev**: `.github/workflows/beerdev.yml` + `scripts/beerdev.py` turn chat feature requests into `beerdev` issues and ship them with Claude Code (`.github/beerdev-prompt.md`). Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`)
 
 No repository-local issue tracker is configured.
 
