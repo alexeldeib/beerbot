@@ -947,6 +947,79 @@ class DebtRepository:
             return [DebtLeaderboardEntry(name=row["name"], amount=row["amount"]) for row in rows]
 
 
+class ZynRepository:
+    """Zyn pouch tracking, kept separate from alcoholic drink counts."""
+
+    async def log(self, user_id: int, group_id: str, message_id: str, quantity: int) -> bool:
+        """Log pouches once per (message, user). Returns False for a duplicate."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO zyn_logs (user_id, group_id, quantity, message_id)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (message_id, user_id) DO NOTHING
+                RETURNING id
+                """,
+                user_id,
+                group_id,
+                quantity,
+                message_id,
+            )
+            return row is not None
+
+    async def remove(self, user_id: int, group_id: str, quantity: int) -> int:
+        """Remove up to quantity pouches from the newest entries. Returns number removed."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, quantity FROM zyn_logs WHERE user_id = $1 AND group_id = $2 "
+                "ORDER BY logged_at DESC, id DESC",
+                user_id,
+                group_id,
+            )
+            left = quantity
+            for row in rows:
+                if left <= 0:
+                    break
+                take = min(left, row["quantity"])
+                if take == row["quantity"]:
+                    await conn.execute("DELETE FROM zyn_logs WHERE id = $1", row["id"])
+                else:
+                    await conn.execute(
+                        "UPDATE zyn_logs SET quantity = quantity - $1 WHERE id = $2",
+                        take,
+                        row["id"],
+                    )
+                left -= take
+            return quantity - left
+
+    async def stats(self, group_id: str, limit: int = 10) -> list[dict]:
+        """Per-user pouch totals (all time, today, this week in Eastern time)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT u.name,
+                    SUM(z.quantity)::int AS total,
+                    COALESCE(SUM(z.quantity) FILTER (WHERE z.logged_at >=
+                        date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                        AT TIME ZONE 'America/New_York'), 0)::int AS today,
+                    COALESCE(SUM(z.quantity) FILTER (WHERE z.logged_at >=
+                        date_trunc('week', now() AT TIME ZONE 'America/New_York')
+                        AT TIME ZONE 'America/New_York'), 0)::int AS week
+                FROM zyn_logs z JOIN users u ON u.id = z.user_id
+                WHERE z.group_id = $1
+                GROUP BY u.id, u.name
+                ORDER BY total DESC, u.name
+                LIMIT $2
+                """,
+                group_id,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+
 class GroupRepository:
     """Repository for group-to-bot mapping operations."""
 
@@ -1333,6 +1406,7 @@ class RecapRepository:
 user_repo = UserRepository()
 beer_repo = BeerRepository()
 debt_repo = DebtRepository()
+zyn_repo = ZynRepository()
 group_repo = GroupRepository()
 gateway_route_repo = GatewayRouteRepository()
 identity_repo = IdentityRepository()

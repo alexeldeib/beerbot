@@ -553,6 +553,25 @@ SCHEMA_MIGRATIONS += (
     ),
 )
 
+SCHEMA_MIGRATIONS += (
+    (
+        8,
+        "zyn_pouches",
+        (
+            """CREATE TABLE zyn_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                group_id TEXT NOT NULL,
+                quantity INTEGER NOT NULL CHECK(quantity > 0),
+                message_id TEXT,
+                logged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(message_id, user_id)
+            )""",
+            "CREATE INDEX zyn_logs_group_time ON zyn_logs(group_id, logged_at)",
+        ),
+    ),
+)
+
 
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""

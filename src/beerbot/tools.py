@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .models import DrinkType
 from .database import execution_scope
-from .repositories import beer_repo, debt_repo, user_repo
+from .repositories import beer_repo, debt_repo, user_repo, zyn_repo
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +299,44 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             "remaining_debt": remaining,
         }
 
+    async def log_zyn(count: int = 1, target_user_id: str | None = None) -> dict:
+        """Log Zyn nicotine pouches (separate from alcoholic drinks).
+
+        Args:
+            count: Number of pouches, between 1 and 20.
+            target_user_id: User who used them. Defaults to the message sender.
+        """
+        ctx.tools_called = True
+        count = max(1, min(20, count))
+        uid = _validate_user_id(ctx, target_user_id)
+        user = await _get_or_create_user(ctx, uid)
+        logged = await zyn_repo.log(user.id, ctx.group_id, ctx.message_id, count)
+        if not logged:
+            return {"user": user.name, "error": "Zyn already logged for this message"}
+        return {"user": user.name, "logged": count}
+
+    async def remove_zyn(count: int = 1, target_user_id: str | None = None) -> dict:
+        """Remove mistakenly logged Zyn pouches from a user's most recent entries.
+
+        Args:
+            count: Number of pouches to remove, between 1 and 20.
+            target_user_id: User to correct. Defaults to the message sender.
+        """
+        ctx.tools_called = True
+        count = max(1, min(20, count))
+        uid = _validate_user_id(ctx, target_user_id)
+        user = await user_repo.get_by_groupme_id(uid)
+        if not user:
+            return {"error": "User not found"}
+        removed = await zyn_repo.remove(user.id, ctx.group_id, count)
+        return {"user": user.name, "removed": removed}
+
     # === READ TOOLS ===
+
+    async def get_zyn_stats() -> dict:
+        """Get Zyn pouch totals per user (all time, today, this week) for this group."""
+        ctx.tools_called = True
+        return {"entries": await zyn_repo.stats(ctx.group_id)}
 
     async def get_leaderboard(drink_type: str | None = None, limit: int = 10) -> dict:
         """Get the drink leaderboard showing top drinkers.
@@ -559,6 +596,8 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         remove_splits,
         add_debt,
         forgive_debt,
+        log_zyn,
+        remove_zyn,
         # Read tools
         get_leaderboard,
         get_today_stats,
@@ -569,6 +608,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         get_debt_leaderboard,
         get_split_g_leaderboard,
         get_million_countdown,
+        get_zyn_stats,
         # Meta tools
         reply,
     ]
