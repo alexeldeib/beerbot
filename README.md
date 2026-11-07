@@ -170,6 +170,10 @@ fly secrets set ADMIN_TOKEN=your_admin_token
 fly deploy --build-arg GIT_SHA="$(git rev-parse HEAD)"
 ```
 
+Normally you never run `fly deploy` yourself: every push to `main` (and every manual or beerdev
+dispatch of the CI workflow) runs the tests, then deploys blue-green with the `FLY_API_TOKEN`
+repository secret and verifies `/health`, `/ready`, `/version` (the new git SHA), and `/ready/db`.
+
 Set a long random `GROUPME_WEBHOOK_SECRET`, register the group through the admin
 API, and set the GroupMe bot callback URL to:
 ```
@@ -193,6 +197,31 @@ curl -X POST https://your-app.fly.dev/admin/groups \
 curl https://your-app.fly.dev/admin/groups \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
+
+---
+
+## 🛠 beerdev: feature requests from the chat, shipped
+
+`beerdev` is a second GroupMe bot that speaks only to announce a shipped feature; Beerius stays
+silent on feature requests. `.github/workflows/beerdev.yml` runs every 30 minutes:
+
+1. **scan**: reads new chat messages with the owner's GroupMe token, asks Gemini whether anyone
+   asked for a new bot capability, and files each new ask as an issue labeled `beerdev`. Issues
+   are paraphrased with no names or chat text, because this repository is public.
+2. **implement**: Claude Code builds the oldest open `beerdev` issue per
+   `.github/beerdev-prompt.md`, then lint, the full suite, and the live chat e2e
+   (`tests/test_live_chat.py`, real model and PostgreSQL) run. This job holds only a read-only
+   token, so agent-written code never sees write, deploy, or GroupMe credentials.
+3. **ship**: applies the patch to a fresh checkout without running it, rejects changes to
+   infrastructure files, merges, dispatches the CI deploy (which re-tests `main`), waits for it,
+   and posts the agent's how-to-use note as `beerdev`.
+
+Close an issue to cancel it, remove `beerdev-failed` to retry it, add the `beerdev` label to your
+own issue to queue it, add required reviewers to the `beerdev` environment to approve each ship by
+hand, or disable the workflow to pause. Setup: secrets `GROUPME_ACCESS_TOKEN`,
+`GEMINI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`), and `BEERDEV_BOT_ID`, plus the
+variable `BEERDEV_GROUP_ID`; the workflow is inert until that variable exists. GitHub pauses
+scheduled workflows after 60 days without repository activity.
 
 ---
 
