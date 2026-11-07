@@ -29,10 +29,10 @@ def _find_tool(tools: list, name: str):
 
 
 class TestToolFactory:
-    def test_create_tools_returns_17(self):
+    def test_create_tools_returns_20(self):
         ctx = _make_ctx()
         tools = create_tools(ctx)
-        assert len(tools) == 17
+        assert len(tools) == 20
 
     def test_all_tools_are_async(self):
         import asyncio
@@ -60,6 +60,8 @@ class TestToolFactory:
             "remove_splits",
             "add_debt",
             "forgive_debt",
+            "log_zyn",
+            "remove_zyn",
             "get_leaderboard",
             "get_today_stats",
             "get_week_stats",
@@ -69,6 +71,7 @@ class TestToolFactory:
             "get_debt_leaderboard",
             "get_split_g_leaderboard",
             "get_million_countdown",
+            "get_zyn_stats",
             "reply",
         }
         assert names == expected

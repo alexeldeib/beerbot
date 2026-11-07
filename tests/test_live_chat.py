@@ -53,6 +53,12 @@ async def test_logs_a_beer_and_answers_stats(chat, pg):
     assert await chat("how many beers have I had?")
 
 
+async def test_logs_zyn_pouches_without_touching_drinks(chat, pg):
+    assert await chat("+2 zyn")
+    assert await pg.fetchval("SELECT COALESCE(SUM(quantity),0) FROM zyn_logs") == 2
+    assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
+
+
 async def test_leaves_feature_requests_to_beerdev(chat, pg):
     assert await chat("someone should make this bot track our gym sessions") is None
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
