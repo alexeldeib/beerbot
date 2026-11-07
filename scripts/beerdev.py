@@ -106,7 +106,9 @@ def classify(messages: list[dict], issues: list[dict]) -> list[Request]:
         existing="\n".join(f"- {issue['title']}" for issue in issues) or "(none)",
         messages=json.dumps(messages, ensure_ascii=False),
     )
-    response = genai.Client(api_key=os.environ["GEMINI_API_KEY"]).models.generate_content(
+    # Keep a reference: a garbage-collected genai.Client closes its HTTP client mid-request.
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    response = client.models.generate_content(
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
