@@ -208,14 +208,17 @@ silent on feature requests. `.github/workflows/beerdev.yml` runs every 30 minute
 1. **scan**: reads new chat messages with the owner's GroupMe token, asks Gemini whether anyone
    asked for a new bot capability, and files each new ask as an issue labeled `beerdev`. Issues
    are paraphrased with no names or chat text, because this repository is public.
-2. **build**: Claude Code implements the oldest open `beerdev` issue per
-   `.github/beerdev-prompt.md`, without GitHub credentials. The workflow, not the agent, then
-   rejects changes to infrastructure files, runs lint, the full suite, and the live chat e2e
-   (`tests/test_live_chat.py`, real model and PostgreSQL), merges, dispatches the CI deploy, waits
-   for it, and posts the agent's how-to-use note as `beerdev`.
+2. **implement**: Claude Code builds the oldest open `beerdev` issue per
+   `.github/beerdev-prompt.md`, then lint, the full suite, and the live chat e2e
+   (`tests/test_live_chat.py`, real model and PostgreSQL) run. This job holds only a read-only
+   token, so agent-written code never sees write, deploy, or GroupMe credentials.
+3. **ship**: applies the patch to a fresh checkout without running it, rejects changes to
+   infrastructure files, merges, dispatches the CI deploy (which re-tests `main`), waits for it,
+   and posts the agent's how-to-use note as `beerdev`.
 
 Close an issue to cancel it, remove `beerdev-failed` to retry it, add the `beerdev` label to your
-own issue to queue it, or disable the workflow to pause. Setup: secrets `GROUPME_ACCESS_TOKEN`,
+own issue to queue it, add required reviewers to the `beerdev` environment to approve each ship by
+hand, or disable the workflow to pause. Setup: secrets `GROUPME_ACCESS_TOKEN`,
 `GEMINI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`), and `BEERDEV_BOT_ID`, plus the
 variable `BEERDEV_GROUP_ID`; the workflow is inert until that variable exists. GitHub pauses
 scheduled workflows after 60 days without repository activity.

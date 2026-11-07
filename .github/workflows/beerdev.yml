@@ -1,8 +1,12 @@
 name: beerdev
 
-# Ships feature requests from the GroupMe chat. `scan` files new asks as issues labeled beerdev;
-# `build` takes the oldest one through Claude Code, tests, merge, deploy, and a GroupMe announcement.
-# Close an issue to cancel it, remove `beerdev-failed` to retry it, disable this workflow to pause.
+# Ships feature requests from the GroupMe chat:
+# - scan: files new asks as issues labeled beerdev.
+# - implement: Claude Code builds the oldest one and every test runs, with no write access.
+# - ship: applies that patch to a fresh checkout (no agent code runs there), merges, deploys,
+#   and announces it as the beerdev GroupMe bot.
+# Close an issue to cancel it, remove `beerdev-failed` to retry it, add required reviewers to the
+# `beerdev` environment to approve each ship by hand, or disable this workflow to pause.
 
 on:
   schedule:
@@ -38,7 +42,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
@@ -51,16 +55,15 @@ jobs:
           BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
           SINCE_HOURS: ${{ inputs.since_hours }}
 
-  build:
+  implement:
     needs: scan
     if: needs.scan.outputs.issue
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Everything agent-written runs here: a read-only token and no deploy or GroupMe credentials.
     permissions:
-      actions: write # dispatch and watch the CI deploy
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
+      issues: read
     services:
       postgres:
         image: postgres:16
@@ -82,13 +85,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false # the coding agent gets no GitHub credentials
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
@@ -112,43 +115,80 @@ jobs:
           --allowedTools Read Edit Write Glob Grep
           "Bash(uv run pytest:*)" "Bash(uv run ruff:*)" "Bash(git diff:*)" "Bash(git status:*)"
 
-      - name: Verify
-        id: verify
+      - name: Test, including the live chat e2e
         env:
-          GH_TOKEN: ${{ github.token }}
           LIVE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -s /tmp/beerdev/skip.md ]; then exit 0; fi
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q
+          BEERBOT_LIVE_LLM=1 GEMINI_API_KEY="$LIVE_GEMINI_API_KEY" uv run pytest -q tests/test_live_chat.py
+
+      - name: Package the change
+        run: |
+          git add -A
+          git diff --cached --binary > /tmp/beerdev/change.patch
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: beerdev
+          path: /tmp/beerdev/
+          retention-days: 3
+
+  ship:
+    needs: [scan, implement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: beerdev
+    permissions:
+      actions: write # dispatch and watch the CI deploy
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      ISSUE: ${{ needs.scan.outputs.issue }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A fresh checkout: nothing the agent wrote (code, hooks, git config) ever runs in this job.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: beerdev
+          path: /tmp/beerdev
+
+      - name: Apply the change
+        id: apply
         run: |
           if [ -s /tmp/beerdev/skip.md ]; then
             gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
             exit 0
           fi
-          git add -A
-          changed="$(git diff --cached --name-only)"
-          if [ -z "$changed" ] || [ ! -s /tmp/beerdev/announcement.md ]; then
+          if [ ! -s /tmp/beerdev/change.patch ] || [ ! -s /tmp/beerdev/announcement.md ]; then
             echo "::error::Claude finished without both a change and an announcement"
             exit 1
           fi
+          git apply --index /tmp/beerdev/change.patch
+          changed="$(git diff --cached --name-only)"
           protected='^(\.github/|\.claude/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
           if grep -E "$protected" <<< "$changed"; then
             echo "::error::beerdev may not change infrastructure files"
             exit 1
           fi
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run pytest -q
-          BEERBOT_LIVE_LLM=1 GEMINI_API_KEY="$LIVE_GEMINI_API_KEY" uv run pytest -q tests/test_live_chat.py
           echo "ship=true" >> "$GITHUB_OUTPUT"
 
       - name: Merge, deploy, announce
-        if: steps.verify.outputs.ship == 'true'
+        if: steps.apply.outputs.ship == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
           BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
         run: |
           title="$(jq -r .title /tmp/beerdev/issue.json)"
           branch="beerdev/issue-$ISSUE"
           git switch -c "$branch"
-          git -c user.name="github-actions[bot]" \
+          git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "feat: $title" -m "Closes #$ISSUE"
           git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
@@ -159,6 +199,7 @@ jobs:
           gh pr merge "$branch" --squash
 
           # Pushes made with GITHUB_TOKEN never trigger workflows, so start the CI deploy explicitly.
+          # CI re-runs the full suite on main before it deploys.
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
           gh workflow run ci.yml --ref main
           for _ in $(seq 30); do
@@ -174,11 +215,17 @@ jobs:
             | curl -fsS -H "Content-Type: application/json" -d @- https://api.groupme.com/v3/bots/post
           gh issue comment "$ISSUE" --body-file /tmp/beerdev/announcement.md
 
-      - name: Flag failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh issue edit "$ISSUE" --add-label beerdev-failed
-          gh issue comment "$ISSUE" --body \
+  flag:
+    needs: [scan, implement, ship]
+    if: failure() && needs.scan.outputs.issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ needs.scan.outputs.issue }}
+    steps:
+      - run: |
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label beerdev-failed
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
             "beerdev could not ship this: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
