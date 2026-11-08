@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -36,6 +37,19 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _redact_tokens(record: logging.LogRecord) -> bool:
+    """GroupMe can only send the webhook secret in the query string, which access logs print."""
+    if isinstance(record.args, tuple):
+        record.args = tuple(
+            re.sub(r"token=[^&\s]+", "token=***", arg) if isinstance(arg, str) else arg
+            for arg in record.args
+        )
+    return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_redact_tokens)
 
 EASTERN = ZoneInfo("America/New_York")
 _recap_revision = 0
