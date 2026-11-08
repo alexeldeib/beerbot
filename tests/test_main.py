@@ -363,3 +363,17 @@ class TestRecapScheduler:
                 await _recap_scheduler()
 
         mock_agent.generate_weekly_recap.assert_not_called()
+
+
+def test_access_log_redacts_webhook_token():
+    import logging
+
+    from src.beerbot.main import _redact_tokens
+
+    assert _redact_tokens in logging.getLogger("uvicorn.access").filters
+    args = ("1.2.3.4:5", "POST", "/callback?token=s3cret&x=1", "1.1", 200)
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None
+    )
+    assert _redact_tokens(record)
+    assert record.getMessage() == '1.2.3.4:5 - "POST /callback?token=***&x=1 HTTP/1.1" 200'
