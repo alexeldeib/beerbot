@@ -174,8 +174,15 @@ Known gaps, broadest first:
   incidents beerdev couldn't fix in code, changes the reviewer held (each links its open PR), and
   stuck replies. Everything else runs without you.
 - **Asking:** anyone can ask in the chat ("beerdev what's queued?", "how does the zyn tracker
-  count?"). Beerius hands the question over, and beerdev replies within about a minute from the
-  code, docs, and issue queue.
+  count?", "any errors lately?", "did the last deploy work?"). Beerius hands the question over,
+  and beerdev replies within about a minute. It answers from the docs, the behavior code, the
+  issue queue, and live status fetched at that moment:
+  - recent failures, with exception type and code location but never message text
+  - workers' last errors
+  - deploys and ops runs, and ops incidents
+  - spend
+
+  It can't read raw logs, which can contain chat text; use `fly logs -a beerbot-groupme` for those.
 - **Steering:** in the chat, the owner (GroupMe id in Fly's `OWNER_USER_ID` secret) replies "veto"
   or "approve" to one of beerdev's messages, or names the request ("beerdev veto the gym
   tracker"). Beerius refuses anyone else's in code. The same from a terminal:

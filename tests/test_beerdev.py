@@ -213,13 +213,16 @@ def test_answers_come_from_the_code_and_queue_without_tools(monkeypatch):
         }
     ]
     monkeypatch.setattr(beerdev, "USED", [0, 0, 0, 0])
-    line = beerdev.answer("What is queued?", issues, {"usd": 1.23, "budget_usd": 5.0})
+    live = {"spend": {"usd": 1.23}, "messages": {"failed_executions": [{"error_code": "x"}]}}
+    line = beerdev.answer("What is queued?", issues, live)
     assert line == "🤓 Gym tracking is queued as #31."
     assert beerdev.USED == [1, 900, 100, 0]  # Reported to /admin/usage as beerdev's spend.
     prompt = seen["contents"]
     assert "#31 open [beerdev] Track gym sessions" in prompt and "What is queued?" in prompt
     assert "=== src/beerbot/tools.py ===" in prompt and "async def log_drinks" in prompt
-    assert '"usd": 1.23' in prompt  # "How much are we spending?" has an answer.
+    assert '"usd": 1.23' in prompt  # "How much are we spending?" has an answer,
+    assert '"error_code": "x"' in prompt  # and so does "any errors lately?"
+    assert "cannot see raw server logs" in prompt
     assert "=== src/beerbot/web.py ===" not in prompt  # Only what chat questions are about.
     assert seen["config"] == {}  # No tools, so nothing in the runner is reachable.
 
@@ -260,6 +263,9 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
             if request.method == "POST":
                 reported.append(json.loads(request.content))
             return httpx.Response(200, json={"usd": 0.42})
+        if request.url.path in ("/admin/messages/status", "/admin/workers/status", "/version"):
+            failed = [{"error_code": f"e{n}"} for n in range(12)]
+            return httpx.Response(200, json={"failed_executions": failed, "git_sha": "abcdef12"})
         if request.method == "GET":
             return httpx.Response(200, json={"requests": asks})
         claimed.append(int(request.url.path.split("/")[-2]))
@@ -267,6 +273,16 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
 
     def github(request):
         path = request.url.path
+        if path.endswith("/runs"):
+            run = {
+                "event": "push",
+                "conclusion": "success",
+                "status": "completed",
+                "created_at": "2026-11-25T03:00:00Z",
+                "head_sha": "abcdef1234",
+                "display_title": "feat: x",
+            }
+            return httpx.Response(200, json={"workflow_runs": [run]})
         if request.method == "GET" and path.endswith("/issues"):
             return httpx.Response(
                 200, json=[zyn] if request.url.params["labels"] == "beerdev" else []
@@ -312,7 +328,16 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
         ("🤷 Which request? Reply to my message about it, or name it.", "m4"),
     ]
     assert (tmp_path / "out").read_text() == "build=true\n"
-    assert spends == [{"usd": 0.42}] * 2  # Questions see this month's spend.
+    live = spends[0]  # Questions see live status: spend, errors (newest 10), deploys, version.
+    assert spends == [live] * 2 and live["spend"] == {"usd": 0.42} and live["version"] == "abcdef1"
+    assert len(live["messages"]["failed_executions"]) == 10
+    assert live["deploys"][0] == {
+        "event": "push",
+        "conclusion": "success",
+        "at": "2026-11-25T03:00:00Z",
+        "sha": "abcdef1",
+        "title": "feat: x",
+    }
     assert reported == [  # The answers' own tokens join the monthly total.
         {
             "source": "beerdev",
