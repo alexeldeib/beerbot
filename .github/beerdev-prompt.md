@@ -14,7 +14,8 @@ Rules
   request is about them.
 - You may change infrastructure (workflows, scripts/, Dockerfile, fly.toml, dependencies with
   `uv add`/`uv lock`, settings) when the request needs it. An independent reviewer must approve
-  such changes before they ship, so keep them minimal and explain them in the announcement or code.
+  such changes before they ship, and dependency changes always wait for the owner, so keep them
+  minimal and explain them in the announcement or code.
 - Never change your kernel: .github/workflows/beerdev-build.yml, .github/workflows/beerdev-lead.yml,
   .github/beerdev-*.md, .claude/, or tests/test_policy.py. Keep every check in tests/test_policy.py
   passing: no new secrets or secret uses, write permissions, triggers, or network hosts for code

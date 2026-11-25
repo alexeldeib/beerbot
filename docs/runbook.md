@@ -114,7 +114,9 @@ them, including by rename. Three gates guard everything else:
    the same PR.
 2. The independent reviewer must approve any change beyond `src/`, `docs/`, `README.md`, and
    `tests/test_*.py`. If it doesn't, the change waits as an open PR, and its issue moves to the
-   inbox. Merge or close that PR yourself.
+   inbox. Merge or close that PR yourself. Dependency changes (`pyproject.toml`, `uv.lock`) always
+   wait this way: a reviewer can't vet a package's provenance offline. For a human on every
+   infrastructure change, add a required reviewer to the `beerdev` environment.
 3. CI rolls production back if a deploy fails verification.
 
 GitHub backs this up: the `production` (Fly token) and `beerdev` (ship token) environments accept

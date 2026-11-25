@@ -303,8 +303,13 @@ jobs:
             exit 1
           fi
           routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
-          if grep -vE "$routine" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
+          if grep -qE '^(pyproject\.toml|uv\.lock)$' <<< "$changed"; then
+            # A reviewer can't vet a package's provenance offline, and it runs with every secret.
+            echo "hold=true" >> "$GITHUB_OUTPUT"
+            echo "why=It changes dependencies, which always wait for the owner." >> "$GITHUB_OUTPUT"
+          elif grep -vE "$routine" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
             echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code, and not approved.
+            echo "why=The independent reviewer did not approve it: ${REASON:-it did not run}" >> "$GITHUB_OUTPUT"
           fi
           echo "ship=true" >> "$GITHUB_OUTPUT"
 
@@ -315,6 +320,7 @@ jobs:
           # leave .github/workflows alone can ship.
           SHIP_TOKEN: ${{ secrets.BEERDEV_SHIP_TOKEN }}
           HOLD: ${{ steps.apply.outputs.hold }}
+          WHY: ${{ steps.apply.outputs.why }}
         run: |
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
@@ -337,8 +343,7 @@ jobs:
           { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
           if [ "$HOLD" = true ]; then
             # Not approved: the owner reviews and merges it by hand, or closes it.
-            printf '\n\n**Held for the owner.** The independent reviewer did not approve this change: %s\n' \
-              "${REASON:-it did not run}" >> /tmp/beerdev/pr.md
+            printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
             url="$(GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" \
               --body-file /tmp/beerdev/pr.md)"
             gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
