@@ -51,8 +51,11 @@ Labels: beerdev = queued to build; inbox = waiting on the owner; beerdev-failed 
 proposal = the weekly lead's idea. Closed as completed = shipped; as not_planned = declined.
 {queue}
 
-Model spend this month (estimated at list prices; fixed hosting costs are in the runbook):
-{spend}
+Live data, fetched just now. You can see the app's worker and message status (failures carry
+the exception type and code location, never message text), recent deploys (CI) and ops monitoring
+runs, ops incidents, and model spend (list prices; fixed hosting costs are in the runbook). You
+cannot see raw server logs: say so if asked for them.
+{live}
 
 {files}
 """
@@ -122,8 +125,48 @@ def filed(request: dict, issues: list[dict]) -> bool:
     return bool({(request["message_id"], request["kind"]), (request["message_id"], "*")} & seen)
 
 
-def answer(question: str, issues: list[dict], spend: dict | None = None) -> str:
-    """Answer a chat question from the code, docs, queue, and spend. No tools: nothing to leak."""
+def live_status(github: httpx.Client, repo: str, app: httpx.Client) -> dict:
+    """What a question about errors, health, deploys, or costs needs: curated status the app and
+    GitHub already publish (no message text). Fetched only for questions: the database is awake."""
+
+    def runs(workflow: str) -> list[dict]:
+        found = github.get(
+            f"/repos/{repo}/actions/workflows/{workflow}/runs", params={"per_page": 5}
+        ).raise_for_status()
+        return [
+            {
+                "event": r["event"],
+                "conclusion": r["conclusion"] or r["status"],
+                "at": r["created_at"],
+                "sha": r["head_sha"][:7],
+                "title": (r.get("display_title") or "")[:100],  # What the run shipped.
+            }
+            for r in found.json()["workflow_runs"]
+        ]
+
+    messages = app.get("/admin/messages/status").raise_for_status().json()
+    for key in ("failed_executions", "deliveries_needing_attention"):
+        messages[key] = messages.get(key, [])[:10]  # Newest first.
+    incidents = github.get(
+        f"/repos/{repo}/issues", params={"labels": "ops", "state": "all", "per_page": 10}
+    ).raise_for_status()
+    return {
+        "version": app.get("/version").raise_for_status().json().get("git_sha", "")[:7],
+        "workers": app.get("/admin/workers/status").raise_for_status().json(),
+        "messages": messages,
+        "deploys": runs("ci.yml"),
+        "ops_runs": runs("ops.yml"),
+        "ops_issues": [
+            {"number": i["number"], "state": i["state"], "title": i["title"], "at": i["created_at"]}
+            for i in incidents.json()
+        ],
+        "spend": app.get("/admin/usage").raise_for_status().json(),
+    }
+
+
+def answer(question: str, issues: list[dict], live: dict | None = None) -> str:
+    """Answer a chat question from the code, docs, queue, and live status. No tools: nothing to
+    leak."""
     queue = "\n".join(
         f"#{i['number']} {i['state']}{'/' + i['state_reason'] if i.get('state_reason') else ''} "
         f"[{', '.join(label['name'] for label in i['labels'])}] {i['title']}"
@@ -138,7 +181,7 @@ def answer(question: str, issues: list[dict], spend: dict | None = None) -> str:
         question=question,
         issues=REPO_URL,
         queue=queue or "(none)",
-        spend=json.dumps(spend) if spend else "(unavailable)",
+        live=json.dumps(live, default=str) if live else "(unavailable)",
         files=files,
     )
     # Keep a reference: a garbage-collected genai.Client closes its HTTP client mid-request.
@@ -198,12 +241,12 @@ def ack(request: dict, number: int) -> str:
 
 
 def handle(
-    github: httpx.Client, repo: str, issues: list[dict], request: dict, spend: dict | None = None
+    github: httpx.Client, repo: str, issues: list[dict], request: dict, live: dict | None = None
 ) -> str:
     """Act on one ask from Beerius and return beerdev's chat line ("" for nothing to say)."""
     kind = request["kind"]
     if kind == "question":
-        return answer(f"{request['title']}\n{request['spec']}", issues, spend)
+        return answer(f"{request['title']}\n{request['spec']}", issues, live)
     if kind in ("veto", "approve"):  # The app bound these to the owner's own words.
         number = request["issue"] or named(request["title"], issues)
         if number not in {issue["number"] for issue in issues}:
@@ -362,15 +405,19 @@ def main(command: str = "scan", *args: str) -> None:
         timeout=30,
     )
     requests = app.get("/admin/dev-requests").raise_for_status().json()["requests"]
-    # Questions may be about costs; the database is awake from the request above anyway.
-    questions = any(request["kind"] == "question" for request in requests)
-    spend = app.get("/admin/usage").raise_for_status().json() if questions else None
+    # Questions may be about errors, deploys, or costs; the database is awake anyway.
+    live = None
+    if any(request["kind"] == "question" for request in requests):
+        try:
+            live = live_status(github, repo, app)
+        except httpx.HTTPError as exc:  # Answer anyway, from the code and the queue.
+            live = {"unavailable": type(exc).__name__}
     done = 0
     for request in requests:
         stale = datetime.now(UTC) - datetime.fromisoformat(request["created_at"]) > GIVE_UP
         try:
             if not stale:
-                say(handle(github, repo, issues, request, spend), request["message_id"])
+                say(handle(github, repo, issues, request, live), request["message_id"])
         except Exception as exc:  # Left unclaimed: the app asks again within the hour.
             print(
                 f"::warning::Ask {request['id']} ({request['kind']}) failed: {type(exc).__name__}"
