@@ -200,27 +200,29 @@ curl https://your-app.fly.dev/admin/groups \
 
 ---
 
-## 🛠 beerdev: feature requests from the chat, shipped
+## 🛠 beerdev: asks from the chat, shipped
 
-`beerdev` is a second GroupMe bot that speaks only to announce a shipped feature; Beerius stays
-silent on feature requests. `.github/workflows/beerdev.yml` runs every 30 minutes:
+`beerdev` is a second GroupMe bot that turns asks in the chat into shipped changes. It posts only
+to announce something the group will notice, and Beerius stays silent on requests. Progress shows
+as a reaction on the ask itself: 💡 filed, ✅ shipped, 🤷 declined. The reactions come from the
+owner's account, because GroupMe bots cannot react.
 
-1. **scan**: reads new chat messages with the owner's GroupMe token, asks Gemini whether anyone
-   asked for a new bot capability, and files each new ask as an issue labeled `beerdev`. Issues
-   are paraphrased with no names or chat text, because this repository is public.
-2. **implement**: Claude Code builds the oldest open `beerdev` issue per
+1. **scan** (`.github/workflows/beerdev.yml`, every 10 minutes): reads new chat messages with
+   the owner's GroupMe token. Gemini files new feature asks, bug reports, and anything asked of
+   beerdev as issues: `beerdev` (plus `bug`) for code changes, and `beerdev-infra` for asks that
+   need a person (credentials, new services), which list the human setup and are never auto-built.
+   Issues are paraphrased with no names or chat text, because this repository is public.
+2. **implement** (`beerdev-build.yml`): Claude Code handles the oldest open `beerdev` issue per
    `.github/beerdev-prompt.md`, then lint, the full suite, and the live chat e2e
    (`tests/test_live_chat.py`, real model and PostgreSQL) run. This job holds only a read-only
    token, so agent-written code never sees write, deploy, or GroupMe credentials.
 3. **ship**: applies the patch to a fresh checkout without running it, rejects changes to
-   infrastructure files, merges, dispatches the CI deploy (which re-tests `main`), waits for it,
-   and posts the agent's how-to-use note as `beerdev`.
+   infrastructure files, merges, dispatches the CI deploy (which re-tests `main`), and waits for
+   it. The ✅ follows, plus the agent's how-to note when the change is visible to the group.
 
 Close an issue to cancel it, remove `beerdev-failed` to retry it, add the `beerdev` label to your
 own issue to queue it, add required reviewers to the `beerdev` environment to approve each ship by
-hand, or disable the workflow to pause. Setup: secrets `GROUPME_ACCESS_TOKEN`,
-`GEMINI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`), and `BEERDEV_BOT_ID`, plus the
-variable `BEERDEV_GROUP_ID`; the workflow is inert until that variable exists. GitHub pauses
+hand, or disable the workflows to pause. Setup and secrets are in `docs/runbook.md`. GitHub pauses
 scheduled workflows after 60 days without repository activity.
 
 ---

@@ -1,5 +1,6 @@
 """beerdev scanner: chat paging, request filtering, and build selection (no network)."""
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -46,13 +47,22 @@ def test_chat_messages_page_back_to_window_and_skip_bots():
 
 
 def test_fresh_drops_invented_duplicate_and_filed_requests():
-    def ask(message_id):
-        return beerdev.Request(message_id=message_id, title="Track zyns", spec="Log pouches.")
+    def ask(message_id, kind="feature"):
+        return beerdev.Request(message_id=message_id, kind=kind, title="T", spec="S.")
 
-    messages = [{"id": "7", "text": "a"}, {"id": "8", "text": "b"}]
-    issues = [{"title": "Track zyns", "body": "Log.\n\n<!-- beerdev:msg=8 -->"}]
-    kept = beerdev.fresh([ask("7"), ask("7"), ask("8"), ask("99")], messages, issues)
-    assert [request.message_id for request in kept] == ["7"]
+    messages = [{"id": i, "text": "a"} for i in ("6", "7", "8", "9")]
+    issues = [
+        {"title": "Old", "body": "<!-- beerdev:msg=8 -->"},  # Pre-kind marker covers all kinds.
+        {"title": "Bug", "body": "<!-- beerdev:msg=9:bug -->"},
+    ]
+    asks = [ask("7"), ask("7"), ask("7", "infra"), ask("8", "bug"), ask("9", "bug")]
+    asks += [ask("9", "infra"), ask("99")]
+    kept = beerdev.fresh(asks, messages, issues)
+    assert [(r.message_id, r.kind) for r in kept] == [
+        ("7", "feature"),
+        ("7", "infra"),
+        ("9", "infra"),
+    ]
 
 
 def test_next_build_is_oldest_open_unfailed_issue():
@@ -65,6 +75,27 @@ def test_next_build_is_oldest_open_unfailed_issue():
         issue(4, labels=("beerdev", "beerdev-failed")),
         issue(6),
         {**issue(5), "pull_request": {}},
+        issue(2, labels=("beerdev-infra",)),  # Needs a person, never auto-built.
     ]
     assert beerdev.next_build(issues) == 6
     assert beerdev.next_build([issue(3, state="closed")]) is None
+
+
+def test_react_marks_the_request_message():
+    sent = []
+
+    def respond(request):
+        sent.append((request.url.path, request.content.decode()))
+        return httpx.Response(200, json={"response": {}})
+
+    groupme = httpx.Client(
+        base_url="https://api.groupme.test/v3", transport=httpx.MockTransport(respond)
+    )
+    assert beerdev.react(groupme, "g1", "m7", "💡")
+    path, body = sent[0]
+    assert path == "/v3/messages/g1/m7/like"
+    assert json.loads(body) == {"like_icon": {"type": "unicode", "code": "💡"}}
+    failing = httpx.Client(
+        base_url="https://x.test", transport=httpx.MockTransport(lambda _: httpx.Response(401))
+    )
+    assert not beerdev.react(failing, "g1", "m7", "💡")
