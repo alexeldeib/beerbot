@@ -202,28 +202,41 @@ curl https://your-app.fly.dev/admin/groups \
 
 ## 🛠 beerdev: asks from the chat, shipped
 
-`beerdev` is a second GroupMe bot that turns asks in the chat into shipped changes. It posts only
-to announce something the group will notice, and Beerius stays silent on requests. Progress shows
-as a reaction on the ask itself: 💡 filed, ✅ shipped, 🤷 declined. The reactions come from the
-owner's account, because GroupMe bots cannot react.
+`beerdev` is a second GroupMe bot that turns asks in the chat into shipped changes, and keeps the
+chat posted in its own voice. Beerius stays silent on requests.
 
-1. **scan** (`.github/workflows/beerdev.yml`, every 10 minutes): reads new chat messages with
-   the owner's GroupMe token. Gemini files new feature asks, bug reports, and anything asked of
-   beerdev as issues: `beerdev` (plus `bug`) for code changes, and `beerdev-infra` for asks that
-   need a person (credentials, new services), which list the human setup and are never auto-built.
+| In the chat | Meaning |
+|---|---|
+| 💡 Queued: … | Accepted; beerdev will build it |
+| 👀 Filed for a human: … | Needs setup a person must do (it is in the inbox) |
+| 🛠️ New: … / ✅ Shipped: … | Deployed and verified |
+| 🤷 Skipping: … | beerdev declined it, with the reason |
+| 🚫 Vetoed: … | The owner stopped it, or it is being removed |
+| 📜 beerdev this week | Monday digest: shipped, declined, and waiting on a human |
+
+1. **scan** (`beerdev.yml`, instantly on a "beerdev" mention, otherwise every 10 minutes) files
+   new feature asks, bug reports, and anything asked of beerdev as issues. `beerdev` (plus `bug`)
+   marks code changes, and `beerdev-infra` + `inbox` marks asks that need a person.
    Issues are paraphrased with no names or chat text, because this repository is public.
-2. **implement** (`beerdev-build.yml`): Claude Code handles the oldest open `beerdev` issue per
-   `.github/beerdev-prompt.md`, then lint, the full suite, and the live chat e2e
-   (`tests/test_live_chat.py`, real model and PostgreSQL) run. This job holds only a read-only
-   token, so agent-written code never sees write, deploy, or GroupMe credentials.
-3. **ship**: applies the patch to a fresh checkout without running it, rejects changes to
-   infrastructure files, merges, dispatches the CI deploy (which re-tests `main`), and waits for
-   it. The ✅ follows, plus the agent's how-to note when the change is visible to the group.
+2. **build** (`beerdev-build.yml`): Claude Code takes the oldest `beerdev` issue, and incidents
+   first. Lint, the full suite, and the live chat e2e then run with only read-only credentials.
+   `ship` applies the patch to a fresh checkout, appends `CHANGELOG.md`, merges, deploys through
+   CI, and tells the chat. An issue closed mid-build (a veto) never ships.
+3. **lead** (`beerdev-lead.yml`, Mondays) reviews the code, incidents, and backlog with
+   read-only access and proposes up to three improvements. beerdev builds the safe ones, and
+   anything touching dependencies, infrastructure, costs, or product calls waits in the inbox as a
+   `proposal`.
+4. **ops** (`ops.yml`) files production incidents with their diagnosis; beerdev fixes them first.
 
-Close an issue to cancel it, remove `beerdev-failed` to retry it, add the `beerdev` label to your
-own issue to queue it, add required reviewers to the `beerdev` environment to approve each ship by
-hand, or disable the workflows to pause. Setup and secrets are in `docs/runbook.md`. GitHub pauses
-scheduled workflows after 60 days without repository activity.
+**Steering:**
+- Veto or approve: `gh workflow run beerdev.yml -f action=veto -f issue=<n>` (or
+  `action=approve`). A veto closes queued work, stops a build at merge, or removes shipped work
+  through a new build.
+- Close an issue to cancel it quietly. Remove `beerdev-failed` to retry.
+- The inbox lists everything waiting on you:
+  https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox
+
+Setup, credentials, and the access map are in `docs/runbook.md`.
 
 ---
 

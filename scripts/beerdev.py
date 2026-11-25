@@ -1,7 +1,8 @@
-"""beerdev scanner: file asks from the GroupMe chat as GitHub issues and acknowledge them.
+"""beerdev: file asks from the GroupMe chat as GitHub issues, and keep the chat posted.
 
-`scan` (default) is run by .github/workflows/beerdev.yml; `next` picks the issue for
-beerdev-build.yml. Actions logs are public: never print chat text.
+Commands: `scan` (default) and `steer`/`digest` for beerdev.yml, `next` for beerdev-build.yml,
+`propose` for beerdev-lead.yml. beerdev talks only as its own GroupMe bot, never as a person.
+Actions logs are public: never print chat text.
 """
 
 import ast
@@ -16,12 +17,12 @@ from typing import Literal
 import httpx
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, TypeAdapter
 
 MODEL = "gemini-3.6-flash"
 # Only `beerdev` issues are built automatically; infra needs a person (credentials, services).
 LABELS = {"feature": ["beerdev"], "bug": ["beerdev", "bug"], "infra": ["beerdev-infra", "inbox"]}
-FILED = "💡"
+REPO_URL = "https://github.com/alexeldeib/beerbot/issues"
 MAX_LOOKBACK = timedelta(hours=24)
 TOOLS = Path(__file__).resolve().parents[1] / "src/beerbot/tools.py"
 
@@ -49,6 +50,15 @@ Existing requests:
 Chat messages, oldest first (JSON):
 {messages}
 """
+
+
+class Proposal(BaseModel):
+    """One item of the weekly lead's plan (beerdev-lead.yml)."""
+
+    title: str = Field(max_length=80)
+    body: str = Field(max_length=4000)
+    kind: Literal["feature", "bug", "refactor"]
+    needs_owner: bool
 
 
 class Request(BaseModel):
@@ -162,20 +172,93 @@ def next_build(issues: list[dict]) -> int | None:
     return min(buildable, default=(None, None))[1]
 
 
-def react(groupme: httpx.Client, group_id: str, message_id: str, emoji: str) -> bool:
-    """Mark the ask itself. Shows as the token's owner: GroupMe bots cannot react."""
-    response = groupme.post(
-        f"/messages/{group_id}/{message_id}/like",
-        json={"like_icon": {"type": "unicode", "code": emoji}},
+def say(text: str) -> bool:
+    """Post to the group as the beerdev bot. A bot id can post and do nothing else."""
+    bot_id = os.environ.get("BEERDEV_BOT_ID")
+    if not bot_id or not text.strip():
+        return False
+    response = httpx.post(
+        "https://api.groupme.com/v3/bots/post",
+        json={"bot_id": bot_id, "text": text.strip()[:1000]},
+        timeout=30,
     )
+    if not response.is_success:
+        print(f"::warning::beerdev could not post to the chat (HTTP {response.status_code})")
     return response.is_success
+
+
+def ack(request: Request, number: int) -> str:
+    """One line per new issue: accepted and queued, or waiting on a person."""
+    if request.kind == "infra":
+        return f"👀 Filed for a human: {request.title} ({REPO_URL}/{number}). It needs setup I can't do."
+    return f"💡 Queued: {request.title} ({REPO_URL}/{number}). I'll post when it ships."
+
+
+def steer(github: httpx.Client, repo: str, issues: list[dict], action: str, number: int) -> str:
+    """Owner commands. Veto stops queued work, is refused by ship mid-build, and removes shipped
+    work through a new build. Approve makes a waiting issue buildable. Returns the chat line."""
+    issue = github.get(f"/repos/{repo}/issues/{number}").raise_for_status().json()
+    url, title = f"/repos/{repo}/issues/{number}", issue["title"]
+    if action == "approve" and issue["state"] == "open":
+        labels = {label["name"] for label in issue["labels"]} - {"inbox", "beerdev-failed"}
+        github.patch(url, json={"labels": sorted(labels | {"beerdev"})}).raise_for_status()
+        return f"💡 Approved: {title}. Queued to build."
+    if action != "veto":
+        return ""
+    if issue["state"] == "open":
+        github.post(f"{url}/comments", json={"body": "Vetoed by the owner in chat."})
+        github.patch(url, json={"state": "closed", "state_reason": "not_planned"})
+        github.post(f"{url}/labels", json={"labels": ["vetoed"]}).raise_for_status()
+        return f"🚫 Vetoed: {title}."
+    marker = f"<!-- beerdev:veto={number} -->"
+    already = any(marker in (i.get("body") or "") for i in issues)
+    if issue.get("state_reason") != "completed" or already:
+        return ""
+    body = (
+        f"The owner vetoed #{number} after it shipped. Remove it cleanly: its code paths, tools, "
+        "prompt lines, and tests. Leave database tables in place unless removing them is clearly "
+        f"safe. Announce the removal only if the group would notice.\n\n{marker}"
+    )
+    created = github.post(
+        f"/repos/{repo}/issues",
+        json={"title": f"Remove: {title}", "body": body, "labels": ["beerdev", "vetoed"]},
+    )
+    issues.append(created.raise_for_status().json())
+    return f"🚫 Vetoed after it shipped: {title}. Removing it."
+
+
+def digest(issues: list[dict], now: datetime) -> str:
+    """Monday's history line for the chat; empty on a quiet week."""
+    week = now - timedelta(days=7)
+
+    def closed(reason: str) -> list[str]:
+        return [
+            i["title"]
+            for i in issues
+            if i["state"] == "closed"
+            and i.get("state_reason") == reason
+            and datetime.fromisoformat(i["closed_at"]) > week
+            and "ops" not in {label["name"] for label in i["labels"]}
+        ]
+
+    shipped, declined = closed("completed"), closed("not_planned")
+    waiting = [
+        i for i in issues if i["state"] == "open" and "inbox" in {lb["name"] for lb in i["labels"]}
+    ]
+    if not (shipped or declined):
+        return ""
+    lines = ["📜 beerdev this week"]
+    lines += [f"✅ Shipped: {'; '.join(shipped)}"] if shipped else []
+    lines += [f"🤷 Declined or vetoed: {'; '.join(declined)}"] if declined else []
+    lines += [f"👀 {len(waiting)} waiting on a human"] if waiting else []
+    return "\n".join(lines)
 
 
 def filed_requests(github: httpx.Client, repo: str) -> list[dict]:
     """Every beerdev issue, buildable or not, so nothing is filed twice."""
     return [
         issue
-        for label in ("beerdev", "beerdev-infra")
+        for label in ("beerdev", "beerdev-infra", "proposal")
         for issue in github.get(
             f"/repos/{repo}/issues", params={"labels": label, "state": "all", "per_page": 100}
         )
@@ -184,13 +267,36 @@ def filed_requests(github: httpx.Client, repo: str) -> list[dict]:
     ]
 
 
+def propose(github: httpx.Client, repo: str, issues: list[dict], plan: Path) -> bool:
+    """File the lead's plan: at most three items, skipping open duplicates. Work that needs a
+    person (dependencies, infra, product calls) waits in the inbox until approved."""
+    text = plan.read_text()  # The agent's final answer: tolerate a fence or a stray sentence.
+    start, end = text.find("["), text.rfind("]")
+    found = text[start : end + 1] if 0 <= start < end else "[]"
+    proposals = TypeAdapter(list[Proposal]).validate_json(found)[:3]
+    open_titles = {i["title"].casefold() for i in issues if i["state"] == "open"}
+    build = False
+    for item in proposals:
+        if item.title.casefold() in open_titles:
+            continue
+        extra = {"bug": ["bug"], "refactor": ["refactor"]}.get(item.kind, [])
+        labels = ["proposal", "inbox"] if item.needs_owner else ["beerdev", *extra]
+        body = f"{item.body}\n\n_Proposed by the weekly beerdev lead._\n<!-- beerdev:lead -->"
+        github.post(
+            f"/repos/{repo}/issues", json={"title": item.title, "labels": labels, "body": body}
+        ).raise_for_status()
+        build |= not item.needs_owner
+    print(f"Lead proposed {len(proposals)} item(s)")
+    return build
+
+
 def write_output(**values: object) -> None:
     if path := os.environ.get("GITHUB_OUTPUT"):
         with open(path, "a") as handle:
             handle.writelines(f"{key}={value}\n" for key, value in values.items())
 
 
-def main(command: str = "scan") -> None:
+def main(command: str = "scan", *args: str) -> None:
     env = os.environ
     repo = env["GITHUB_REPOSITORY"]
     github = httpx.Client(
@@ -205,6 +311,21 @@ def main(command: str = "scan") -> None:
         if issue:
             write_output(issue=issue)
         return
+    if command == "steer":
+        action, number = env["ACTION"], int(env["ISSUE"])
+        line = steer(github, repo, issues, action, number)
+        print(f"{action} #{number}: {'done' if line else 'nothing to do'}")
+        say(line)
+        write_output(build=str(next_build(issues) is not None).lower())
+        return
+    if command == "digest":
+        line = digest(issues, datetime.now(UTC))
+        print("Posted the weekly digest" if say(line) else "Quiet week: no digest")
+        return
+    if command == "propose":
+        build = propose(github, repo, issues, Path(args[0]))
+        write_output(build=str(build).lower())
+        return
 
     groupme = httpx.Client(
         base_url="https://api.groupme.com/v3",
@@ -215,6 +336,7 @@ def main(command: str = "scan") -> None:
     since = scan_start(github, repo, env.get("SINCE_HOURS"))
     messages = chat_messages(groupme, group, since)
     requests = fresh(classify(messages, issues), messages, issues) if messages else []
+    acks = []
     for request in requests:
         body = f"{request.spec}\n\n<!-- beerdev:msg={request.message_id}:{request.kind} -->"
         created = github.post(
@@ -222,8 +344,8 @@ def main(command: str = "scan") -> None:
             json={"title": request.title, "body": body, "labels": LABELS[request.kind]},
         )
         issues.append(created.raise_for_status().json())
-        if not react(groupme, group, request.message_id, FILED):
-            print("::warning::Filed a request but could not react to it")
+        acks.append(ack(request, issues[-1]["number"]))
+    say("\n".join(acks))
     build = next_build(issues) is not None
     kinds = ", ".join(request.kind for request in requests) or "none"
     print(f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; filed: {kinds}")

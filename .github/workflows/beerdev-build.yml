@@ -3,7 +3,7 @@ name: beerdev build
 # Builds the oldest open `beerdev` issue; started by beerdev.yml.
 # - implement: Claude Code makes the change and every test runs, with only read-only credentials.
 # - ship: applies the patch to a fresh checkout without running it, merges, deploys through CI,
-#   posts the agent's how-to note when the group would notice, and reacts ✅ (🤷 if declined).
+#   appends CHANGELOG.md, and tells the chat (how-to note, ✅ Shipped, or 🤷 Skipping).
 # Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
 # environment to approve every ship by hand.
 
@@ -150,11 +150,16 @@ jobs:
 
       # The artifact is agent-writable, so the issue itself (title, ask id) comes from GitHub.
       - name: Fetch the request
-        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels > /tmp/request.json
+        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels,state > /tmp/request.json
 
       - name: Apply the change
         id: apply
         run: |
+          if ! jq -e '.state == "OPEN"' /tmp/request.json > /dev/null; then
+            echo "The issue was closed during the build (vetoed or cancelled), so nothing ships."
+            exit 0
+          fi
+          from_chat() { jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; }
           if [ -s /tmp/beerdev/skip.md ]; then
             if jq -e 'any(.labels[]; .name == "ops")' /tmp/request.json > /dev/null; then
               # An incident with no code fix still needs someone: hand it to the owner.
@@ -163,7 +168,10 @@ jobs:
               exit 0
             fi
             gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
-            echo "reaction=🤷" >> "$GITHUB_OUTPUT"
+            if from_chat; then  # Close the loop with whoever asked; quiet otherwise.
+              reason="$(tr '\n' ' ' < /tmp/beerdev/skip.md | cut -c1-240)"
+              printf '🤷 Skipping: %s. %s' "$(jq -r .title /tmp/request.json)" "$reason" > /tmp/chat.txt
+            fi
             exit 0
           fi
           if [ ! -s /tmp/beerdev/change.patch ]; then
@@ -180,14 +188,15 @@ jobs:
           echo "ship=true" >> "$GITHUB_OUTPUT"
 
       - name: Merge, deploy, announce
-        id: deploy
         if: steps.apply.outputs.ship == 'true'
-        env:
-          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
         run: |
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
           git switch -c "$branch"
+          # The history of what shipped lives in the repository, one line per issue.
+          [ -f CHANGELOG.md ] || printf '# Changelog\n\nWhat beerdev shipped, oldest first.\n\n' > CHANGELOG.md
+          printf -- '- %s: %s (#%s)\n' "$(date -u +%Y-%m-%d)" "$title" "$ISSUE" >> CHANGELOG.md
+          git add CHANGELOG.md
           git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "feat: $title" -m "Closes #$ISSUE"
@@ -214,30 +223,25 @@ jobs:
           done
           gh run watch "$run" --exit-status --interval 30 > /dev/null
 
-          # Only changes the group would notice get a chat message; the ✅ covers the rest.
+          # The agent's how-to note when the group would notice; else a short line for the asker.
           if [ -s /tmp/beerdev/announcement.md ]; then
-            jq -n --arg bot_id "$BEERDEV_BOT_ID" --rawfile text /tmp/beerdev/announcement.md \
-              '{bot_id: $bot_id, text: ($text | rtrimstr("\n") | .[:1000])}' \
-              | curl -fsS -H "Content-Type: application/json" -d @- https://api.groupme.com/v3/bots/post
+            cp /tmp/beerdev/announcement.md /tmp/chat.txt
             gh issue comment "$ISSUE" --body-file /tmp/beerdev/announcement.md
+          elif jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+            printf '✅ Shipped: %s.' "$title" > /tmp/chat.txt
           fi
-          echo "reaction=✅" >> "$GITHUB_OUTPUT"
 
-      - name: React on the ask
-        if: steps.apply.outputs.reaction || steps.deploy.outputs.reaction
+      # Written only by this job, outside the agent-writable artifact, after a decline or a deploy.
+      - name: Tell the chat
         env:
-          EMOJI: ${{ steps.apply.outputs.reaction || steps.deploy.outputs.reaction }}
-          GROUPME_ACCESS_TOKEN: ${{ secrets.GROUPME_ACCESS_TOKEN }}
-          BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
+          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
         run: |
-          # Shows as the token's owner: GroupMe bots cannot react. Issues filed by hand have no ask.
-          msg="$(jq -r '.body // "" | capture("beerdev:msg=(?<m>[0-9]+)").m // empty' /tmp/request.json)"
-          [[ "$msg" =~ ^[0-9]+$ ]] || exit 0
-          jq -n --arg emoji "$EMOJI" '{like_icon: {type: "unicode", code: $emoji}}' \
-            | curl -fsS -o /dev/null -H "X-Access-Token: $GROUPME_ACCESS_TOKEN" \
-              -H "Content-Type: application/json" -d @- \
-              "https://api.groupme.com/v3/messages/$BEERDEV_GROUP_ID/$msg/like" \
-            || echo "::warning::could not react to the ask"
+          [ -s /tmp/chat.txt ] || exit 0
+          jq -n --arg bot_id "$BEERDEV_BOT_ID" --rawfile text /tmp/chat.txt \
+            '{bot_id: $bot_id, text: ($text | rtrimstr("\n") | .[:1000])}' \
+            | curl -fsS -o /dev/null -H "Content-Type: application/json" -d @- \
+              https://api.groupme.com/v3/bots/post \
+            || echo "::warning::could not post to the chat"
 
   flag:
     needs: [pick, implement, ship]
