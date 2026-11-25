@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Check lockfile is up to date
+        run: uv lock --check
+
       - name: Lint
         run: uv run ruff check .
 
