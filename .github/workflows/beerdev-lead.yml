@@ -55,7 +55,16 @@ jobs:
           npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-lead-prompt.md)"
           --add-dir /tmp/lead --output-format json
           --allowedTools Read Glob Grep "Bash(git log:*)" --disallowedTools "Read(//proc/**)"
-          | jq -r .result > /tmp/lead/plan.json
+          > /tmp/lead/claude.json && jq -r '.result // empty' /tmp/lead/claude.json
+          > /tmp/lead/plan.json
+
+      # Billed to the owner's Claude subscription, not per token; printed so each run's size shows.
+      - name: Claude usage
+        if: always()
+        run: |
+          [ -s /tmp/lead/claude.json ] || exit 0
+          jq -r '"Claude Code: \(.num_turns // 0) turns, \((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cache_creation_input_tokens // 0)) input tokens (\(.usage.cache_read_input_tokens // 0) cached), \(.usage.output_tokens // 0) output; $\((.total_cost_usd // 0) * 100 | round / 100) at API prices (subscription)"' /tmp/lead/claude.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         with:

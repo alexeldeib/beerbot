@@ -51,6 +51,11 @@ async def chat(pg):
 async def test_logs_a_beer_and_answers_stats(chat, pg):
     assert await chat("+1 beer 🍺")
     assert await pg.fetchval("SELECT SUM(quantity) FROM beers WHERE drink_type='beer'") == 1
+    # Spend tracking sees the real API's usage: the system prompt alone is thousands of tokens.
+    calls, tokens = await pg.fetchrow(
+        "SELECT calls, input_tokens FROM model_usage WHERE source = 'beerius'"
+    )
+    assert calls >= 1 and tokens > 1000
     assert await chat("how many beers have I had?")
 
 

@@ -185,6 +185,38 @@ Known gaps, broadest first:
 - **History:** `CHANGELOG.md` gets one line per shipped issue. Mondays at 9am Eastern, beerdev posts
   a digest (shipped, declined, waiting on a human), and skips quiet weeks.
 
+## Spend
+
+At about 350 Beerius messages a month (late 2026), list prices come to roughly:
+
+| Item | Monthly | Notes |
+|---|---|---|
+| Gemini, Beerius | about $3 (about $6 from 2027-01-01) | About 9K input and 600 output tokens per message. The system prompt and tool definitions are about 4.2K tokens per model round, and most messages take two rounds. Thinking is billed as output |
+| Gemini, beerdev answers | about $0.03 per question | 34K-token context: docs plus the behavior files |
+| Gemini, build e2e tests | about $0.10 to $0.30 per build | Shown at the end of each live test run |
+| Fly | $3.69, plus about $0.15 | shared-cpu-1x, 512MB, always on in `iad`, plus a stopped standby's disk. IPs are free |
+| Neon | $0 expected | Free plan. The idle design keeps compute near 15 CU-hours a month |
+| Claude Code | Subscription | implement, review, and lead. Each run's tokens are in its Actions summary. A run starts near 38K input tokens |
+| GitHub Actions | $0 | Public repository |
+
+- **Tracking:** `src/beerbot/usage.py` counts every model response, including thinking tokens. It
+  writes the counts with each message and on the hourly sweep, so tracking adds no database wakes.
+  GitHub jobs report their own calls through `POST /admin/usage`. To read spend:
+  `curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://beerbot-groupme.fly.dev/admin/usage | jq`
+  shows month to date by source, the projection, and the budget. `/admin/workers/status` shows
+  tokens since boot without touching the database. Ask "beerdev, what are we spending?" in the
+  chat and beerdev answers from the same report.
+- **Budget:** set `MODEL_BUDGET_USD` (Fly secret, default `5`). Ops checks once a day. It files one
+  `inbox` issue a month when spend passes the budget, or when the projection does after the 7th.
+- **Prices:** `PRICES` in `src/beerbot/usage.py` holds list prices; update it when Google changes
+  them. `gemini-3.6-flash` doubles on 2027-01-01. For the actual bill, open AI Studio → Spend for
+  the project that owns the app's key (`play`).
+- **Cheaper:** the model is the biggest lever. `gemini-3.1-flash-lite` costs $0.25 per million
+  input tokens and $1.50 per million output, against $0.75 and $3.75. Check a model with the live
+  suite before switching:
+  `BEERBOT_LIVE_LLM=1 LLM_MODEL=<model> uv run pytest tests/test_live_chat.py`.
+  Then run `fly secrets set LLM_MODEL=<model>`.
+
 ## Troubleshooting
 
 **Beerius didn't answer.** Ops files these on its own. By hand, check `failed_executions` in the

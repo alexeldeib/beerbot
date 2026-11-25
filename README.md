@@ -209,7 +209,7 @@ asks over and stays silent.
 | In the chat | Meaning |
 |---|---|
 | 💡 Queued: … | Accepted; beerdev will build it |
-| 🤓 … | An answer about the queue or how the bot works ("beerdev what's queued?") |
+| 🤓 … | An answer about the queue, how the bot works, or what it costs ("beerdev what's queued?") |
 | 👀 Filed for a human: … | Needs setup a person must do (it is in the inbox) |
 | 🛠️ New: … / ✅ Shipped: … | Deployed and verified |
 | 👀 Needs the owner's review: … | The independent reviewer held an infrastructure change for the owner |

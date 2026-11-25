@@ -114,6 +114,38 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
         issues.append(created.raise_for_status().json())
 
 
+def check_spend(
+    github: httpx.Client, repo: str, issues: list[dict], app: httpx.Client, admin: dict
+) -> str:
+    """Once a day: at most one inbox issue a month when model spend is over budget."""
+    spend = app.get("/admin/usage", headers=admin).raise_for_status().json()
+    line = (
+        f"model spend ${spend['usd']:.2f} so far in {spend['month']}, "
+        f"${spend['projected_usd']:.2f} projected, budget ${spend['budget_usd']:.2f}"
+    )
+    marker = f"<!-- ops:key=budget-{spend['month']} -->"
+    if spend.get("over_budget") and not any(marker in (i.get("body") or "") for i in issues):
+        sources = ", ".join(
+            f"{name} ${totals['usd']:.2f} ({totals['calls']} calls)"
+            for name, totals in sorted(spend["by_source"].items())
+        )
+        body = (
+            f"{marker}\nOver budget: {line}. By source: {sources or 'none'}.\n\n"
+            "Options: a cheaper model (`LLM_MODEL`, e.g. a Flash-Lite), a smaller answer context, "
+            "or a higher budget (`MODEL_BUDGET_USD` on Fly). Details: GET /admin/usage and "
+            "docs/runbook.md (Spend)."
+        )
+        github.post(
+            f"/repos/{repo}/issues",
+            json={
+                "title": f"Model spend over budget ({spend['month']})",
+                "labels": NEEDS_OWNER,
+                "body": body,
+            },
+        ).raise_for_status()
+    return line
+
+
 def diagnose(app: httpx.Client, admin: dict) -> str:
     """What the app reports about its workers. Memory-only, so it never wakes the database."""
     try:
@@ -252,7 +284,10 @@ def main() -> None:
     groups = new_failures(status, issues)
     for key, rows in groups.items():
         report(github, repo, issues, key, describe(key, rows))
-    print(f"Healthy; new failures in {len(groups)} class(es): {', '.join(groups) or 'none'}")
+    spend = check_spend(github, repo, issues, app, admin) if daily else "spend checked daily"
+    print(
+        f"Healthy; new failures in {len(groups)} class(es): {', '.join(groups) or 'none'}; {spend}"
+    )
 
 
 if __name__ == "__main__":

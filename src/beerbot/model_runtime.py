@@ -10,6 +10,8 @@ from google.genai import types
 from openai import AsyncOpenAI
 from pydantic import ConfigDict, ValidationError, create_model
 
+from . import usage
+
 
 class ModelProtocolError(RuntimeError):
     pass
@@ -130,8 +132,16 @@ async def run_tools(
 
 
 class GoogleSession:
-    def __init__(self, client, model: str, system: str, contents: list, tools: list[Callable]):
-        self.client, self.model = client, model
+    def __init__(
+        self,
+        client,
+        model: str,
+        system: str,
+        contents: list,
+        tools: list[Callable],
+        source: str = "beerius",
+    ):
+        self.client, self.model, self.source = client, model, source
         parts = [
             types.Part.from_text(text=p)
             if isinstance(p, str)
@@ -170,6 +180,7 @@ class GoogleSession:
         response = await self.client.aio.models.generate_content(
             model=self.model, contents=self.contents, config=config
         )
+        usage.record(self.source, self.model, getattr(response, "usage_metadata", None))
         self.round += 1
         candidates = response.candidates
         if not isinstance(candidates, list) or not candidates:
@@ -217,8 +228,9 @@ class CompatibleSession:
         tools: list[Callable],
         *,
         video_format: str = "disabled",
+        source: str = "beerius",
     ):
-        self.client, self.model = client, model
+        self.client, self.model, self.source = client, model, source
         parts = []
         for part in contents:
             if isinstance(part, str):
@@ -252,6 +264,7 @@ class CompatibleSession:
             self.messages.append({"role": "user", "content": FINAL_TURN_NOTE.format(tool=only)})
             kwargs["tool_choice"] = {"type": "function", "function": {"name": only}}
         response = await self.client.chat.completions.create(**kwargs)
+        usage.record(self.source, self.model, getattr(response, "usage", None))
         if not response.choices:
             raise ModelProtocolError("Endpoint returned no choice")
         choice = response.choices[0]

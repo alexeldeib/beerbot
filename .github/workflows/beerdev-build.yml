@@ -108,7 +108,16 @@ jobs:
           --allowedTools Read Edit Write Glob Grep
           "Bash(uv run pytest:*)" "Bash(uv run ruff:*)" "Bash(git diff:*)" "Bash(git status:*)"
           "Bash(uv add:*)" "Bash(uv remove:*)" "Bash(uv lock:*)"
-          --disallowedTools "Read(//proc/**)"
+          --disallowedTools "Read(//proc/**)" --output-format json > /tmp/claude-implement.json
+
+      # Billed to the owner's Claude subscription, not per token; printed so each run's size shows.
+      - name: Claude usage (implement)
+        if: always()
+        run: |
+          [ -s /tmp/claude-implement.json ] || exit 0
+          jq -r '.result // empty' /tmp/claude-implement.json
+          jq -r '"Claude Code: \(.num_turns // 0) turns, \((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cache_creation_input_tokens // 0)) input tokens (\(.usage.cache_read_input_tokens // 0) cached), \(.usage.output_tokens // 0) output; $\((.total_cost_usd // 0) * 100 | round / 100) at API prices (subscription)"' /tmp/claude-implement.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Test, including the live chat e2e
         env:
@@ -186,7 +195,16 @@ jobs:
           npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-review-prompt.md)"
           --add-dir /tmp/review --output-format json
           --allowedTools Read Glob Grep --disallowedTools "Read(//proc/**)"
-          | jq -r .result > /tmp/review/answer.txt
+          > /tmp/review/claude.json && jq -r '.result // empty' /tmp/review/claude.json
+          > /tmp/review/answer.txt
+
+      # Billed to the owner's Claude subscription, not per token; printed so each run's size shows.
+      - name: Claude usage (review)
+        if: always()
+        run: |
+          [ -s /tmp/review/claude.json ] || exit 0
+          jq -r '"Claude Code: \(.num_turns // 0) turns, \((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cache_creation_input_tokens // 0)) input tokens (\(.usage.cache_read_input_tokens // 0) cached), \(.usage.output_tokens // 0) output; $\((.total_cost_usd // 0) * 100 | round / 100) at API prices (subscription)"' /tmp/review/claude.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         if: steps.scope.outputs.patch == 'true'

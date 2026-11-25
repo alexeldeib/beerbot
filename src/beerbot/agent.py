@@ -240,16 +240,18 @@ class BeerAgent:
         self._history_max_len = 10
         self._group_locks: dict[str, asyncio.Lock] = {}
 
-    def _session(self, system: str, contents: list, tools: list):
+    def _session(self, system: str, contents: list, tools: list, source: str = "beerius"):
+        model = self.model_profile.model
         if self.model_profile.provider == "google":
-            return GoogleSession(self.client, self.model_profile.model, system, contents, tools)
+            return GoogleSession(self.client, model, system, contents, tools, source=source)
         return CompatibleSession(
             self.client,
-            self.model_profile.model,
+            model,
             system,
             contents,
             tools,
             video_format=settings.llm_video_format,
+            source=source,
         )
 
     def _get_bucket(self, group_id: str) -> TokenBucket:
@@ -570,7 +572,7 @@ class BeerAgent:
         prompt = RECAP_PROMPT.format(data=data_str)
 
         try:
-            turn = await self._session("", [prompt], []).next_turn()
+            turn = await self._session("", [prompt], [], source="recap").next_turn()
             return turn.text.strip() or None
         except Exception:
             logger.exception("Weekly recap generation failed for group %s", group_id)

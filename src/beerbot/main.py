@@ -11,9 +11,10 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .agent import beer_agent
+from . import usage
 from .config import settings
 from .database import close_pool, init_db, get_pool
 from .groupme_client import groupme_client
@@ -318,7 +319,37 @@ async def message_status():
 async def worker_status(request: Request):
     """In-memory diagnostics do not wake Postgres."""
     runtime = getattr(request.app.state, "queue_runtime", None)
-    return runtime.snapshot() if runtime else {"status": "not_started"}
+    status = runtime.snapshot() if runtime else {"status": "not_started"}
+    return status | {"model_usage_since_boot": usage.since_boot()}
+
+
+@app.get("/admin/usage", dependencies=[Depends(verify_admin_token)])
+async def model_usage():
+    """Model tokens and list-price spend this month, by source, against the budget."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await usage.flush(conn)
+        return await usage.report(conn)
+
+
+class UsageReport(BaseModel):
+    source: str = Field(pattern=r"^[a-z][a-z-]{0,30}$")
+    model: str = Field(min_length=1, max_length=100)
+    calls: int = Field(ge=0, le=10_000)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+
+
+@app.post("/admin/usage", dependencies=[Depends(verify_admin_token)])
+async def add_model_usage(report: UsageReport):
+    """GitHub jobs (beerdev's answers) report their own model calls."""
+    counts = [report.calls, report.input_tokens, report.output_tokens, report.cached_tokens]
+    usage.add(report.source, report.model, counts)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await usage.flush(conn)
+    return {"status": "recorded"}
 
 
 @app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])

@@ -13,6 +13,7 @@ from pathlib import Path
 from .database import bind_execution, get_pool
 from .config import settings
 from .dispatch import dispatch
+from . import usage
 from .models import GroupMeMessage
 
 logger = logging.getLogger(__name__)
@@ -257,6 +258,7 @@ async def execute_one(agent) -> bool:
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
                 if state == "failed":
                     record_terminal(code)
+        await usage.flush(conn)  # Awake anyway: this message's tokens, even if it failed.
     if asked:  # Committed: start beerdev now rather than at its next scheduled run.
         dispatch("beerdev.yml", every=10)
     return True
@@ -348,6 +350,7 @@ async def maintain_queue() -> bool:
             # hourly wake, rather than having GitHub poll the database.
             unclaimed = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM dev_requests
                 WHERE claimed_at IS NULL AND created_at < NOW()-INTERVAL '5 minutes')""")
+        await usage.flush(conn)  # Recaps and anything a failed flush left behind.
     if unclaimed:
         dispatch("beerdev.yml", every=900)
     # Continue bounded cleanup batches promptly instead of retaining a backlog
