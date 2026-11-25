@@ -2,7 +2,7 @@ name: ops
 
 # Watches production without ever posting to the chat: probes health and readiness, redeploys
 # through CI when the app is stuck, and files one issue per failure class (code-level ones are
-# also labeled `beerdev`, so beerdev fixes them). The app starts this the moment a message fails
+# go to beerdev first, which fixes them or hands them to the owner's inbox). The app starts this the moment a message fails
 # when GITHUB_DISPATCH_TOKEN is set; otherwise the hourly run catches it. See docs/runbook.md.
 
 on:
@@ -13,6 +13,11 @@ on:
       reason:
         description: What prompted this check (the app sends the failure class)
         required: false
+  # A failed deploy, or any CI failure on main, is an incident.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions: {}
 
@@ -22,6 +27,13 @@ concurrency:
 
 jobs:
   check:
+    # Only this repository's own deploy runs: a fork PR can name its branch main, and its log
+    # (which it controls) would otherwise reach beerdev's agent as an incident.
+    if: >-
+      github.event_name != 'workflow_run' || (
+      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event) &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -44,3 +56,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           REASON: ${{ inputs.reason }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}

@@ -14,17 +14,10 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 APP = "https://beerbot-groupme.fly.dev"
-# Failure classes a code change can fix: also labeled for beerdev. Anything else needs a person.
-CODE_BUGS = {
-    "ToolBudgetExceeded",
-    "ModelProtocolError",
-    "ValueError",
-    "TypeError",
-    "KeyError",
-    "AttributeError",
-    "IndexError",
-    "ValidationError",
-}
+# Incidents go to beerdev first. If it finds nothing to fix in code, it moves the issue to
+# the owner's inbox (beerdev-build.yml), so every incident gets a fix attempt or a person.
+INCIDENT = ["ops", "beerdev", "bug"]
+NEEDS_OWNER = ["ops", "inbox"]
 REDEPLOY_COOLDOWN = timedelta(minutes=30)
 # A class closed this recently gets appended to instead of reopened as a new build: a fix that
 # didn't stick goes to a person rather than looping beerdev.
@@ -67,7 +60,7 @@ def new_failures(status: dict, issues: list[dict]) -> dict[str, list[dict]]:
 def describe(key: str, rows: list[dict]) -> tuple[str, str, list[str]]:
     """Title, report text, and labels for a batch of failures."""
     if key == "delivery":
-        title, labels = "Replies stuck in uncertain or failed delivery", ["ops"]
+        title, labels = "Replies stuck in uncertain or failed delivery", NEEDS_OWNER
         lines = [
             f"- outbox {r['id']}: {r['state']} ({r['error_code']}) at {r.get('created_at', '?')}"
             for r in rows
@@ -79,17 +72,15 @@ def describe(key: str, rows: list[dict]) -> tuple[str, str, list[str]]:
     else:
         code = key.split(":", 1)[1]
         title = f"Messages failing with {code}"
-        labels = ["ops", "beerdev", "bug"] if code in CODE_BUGS else ["ops"]
+        labels = INCIDENT
         lines = [
             f"- inbox {r['id']} at {r.get('created_at', '?')}, {r.get('attempts', '?')} attempts: "
             f"`{r.get('error_detail') or code}`"
             for r in rows
         ]
-        advice = "Beerius never answered these messages. " + (
-            "beerdev will try a fix: reproduce it with a failing test first."
-            if code in CODE_BUGS
-            else "This looks environmental (database, network, or model provider): "
-            "a person should check docs/runbook.md."
+        advice = (
+            "Beerius never answered these messages. beerdev: reproduce it with a failing test "
+            "and fix the cause; if it is not a code problem, say what a person must do."
         )
     markers = "".join(f"<!-- ops:seen={r['seen']} -->" for r in rows)
     return title, "\n".join(lines) + f"\n\n{advice}\n{markers}", labels
@@ -121,6 +112,67 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
             f"/repos/{repo}/issues", json={"title": title, "labels": labels, "body": body}
         )
         issues.append(created.raise_for_status().json())
+
+
+def diagnose(app: httpx.Client, admin: dict) -> str:
+    """What the app reports about its workers. Memory-only, so it never wakes the database."""
+    try:
+        workers = app.get("/admin/workers/status", headers=admin).raise_for_status().json()
+    except httpx.HTTPError as exc:
+        return f"Worker status unavailable ({type(exc).__name__})."
+    lines = [
+        f"- {name} worker ({'failing' if workers.get('failed', {}).get(name) else 'recovered'}), "
+        f"last error at {error['at']}: `{error['detail']}`"
+        for name, error in (workers.get("last_error") or {}).items()
+        if error
+    ]
+    return "\n".join(lines) or "Workers report no errors."
+
+
+def failure_excerpt(lines: list[str], limit: int = 40) -> list[str]:
+    """The failing step: its "Run" header, then the lines up to GitHub's first error marker.
+    The tail of a job log is post-job cleanup, which never explains anything."""
+    error = next((i for i, line in enumerate(lines) if "##[error]" in line), None)
+    if error is None:
+        return lines[-limit:]
+    header = max(
+        (i for i, line in enumerate(lines[:error]) if "##[group]Run" in line), default=None
+    )
+    body = lines[max(0, error + 1 - limit) : error + 1]
+    return ([lines[header], "..."] if header is not None and header < error + 1 - limit else []) + (
+        lines[header : error + 1] if header is not None and header >= error + 1 - limit else body
+    )
+
+
+def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str] | None:
+    """Issue key and report for a failed CI run on main, with the failing steps' log tail."""
+    run = github.get(f"/repos/{repo}/actions/runs/{run_id}").raise_for_status().json()
+    trusted = (
+        run.get("event") in ("push", "workflow_dispatch")  # Deploys; never pull_request runs.
+        and run.get("head_branch") == "main"
+        and (run.get("head_repository") or {}).get("full_name") == repo  # Not a fork's "main".
+    )
+    if run["conclusion"] != "failure" or not trusted:
+        return None
+    jobs = github.get(f"/repos/{repo}/actions/runs/{run_id}/jobs").raise_for_status().json()
+    sections = []
+    for job in jobs["jobs"]:
+        if job["conclusion"] != "failure":
+            continue
+        steps = [s["name"] for s in job.get("steps", []) if s.get("conclusion") == "failure"]
+        log = github.get(f"/repos/{repo}/actions/jobs/{job['id']}/logs", follow_redirects=True)
+        lines = failure_excerpt(log.text.splitlines()) if log.is_success else ["(log unavailable)"]
+        tail = "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", line)[:300] for line in lines)
+        sections.append(f"**{job['name']}** failed at {', '.join(steps) or '?'}:\n```\n{tail}\n```")
+    sha = run["head_sha"]
+    pulls = github.get(f"/repos/{repo}/commits/{sha}/pulls")
+    prs = ", ".join(f"#{p['number']}" for p in pulls.json()) if pulls.is_success else ""
+    text = (
+        f"[CI run]({run['html_url']}) for {sha[:7]} ({prs or 'no PR'}) failed on main.\n\n"
+        + "\n\n".join(sections)
+        + "\n\nbeerdev: find the cause in this log and the change that triggered it, then fix it."
+    )
+    return f"deploy:{sha[:7]}", text
 
 
 def redeploy(github: httpx.Client, repo: str) -> str:
@@ -156,15 +208,26 @@ def main() -> None:
     )
     unhealthy = [i for i in issues if i["state"] == "open" and UNHEALTHY in (i.get("body") or "")]
 
+    if (run_id := env.get("CI_RUN_ID")) and (failure := deploy_failure(github, repo, run_id)):
+        key, text = failure
+        report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, INCIDENT))
+        print(f"Reported failed CI run {run_id}")
+
     if problem := probe(app):
+        diagnosis = diagnose(app, admin)
         if unhealthy:  # Already redeployed once; repeating the same deploy won't help.
             url = f"/repos/{repo}/issues/{unhealthy[0]['number']}/comments"
-            github.post(url, json={"body": f"Still unhealthy: {problem}."}).raise_for_status()
+            text = f"Still unhealthy: {problem}.\n\n{diagnosis}"
+            github.post(url, json={"body": text}).raise_for_status()
         else:
-            body = f"{UNHEALTHY}\nDetected: {problem}.\n\n{redeploy(github, repo)}"
+            body = (
+                f"{UNHEALTHY}\nDetected: {problem}.\n\n{diagnosis}\n\n{redeploy(github, repo)}"
+                "\n\nbeerdev: find the cause from the errors above and recent changes, reproduce "
+                "it with a failing test, and fix it."
+            )
             github.post(
                 f"/repos/{repo}/issues",
-                json={"title": "Production is unhealthy", "labels": ["ops"], "body": body},
+                json={"title": "Production is unhealthy", "labels": INCIDENT, "body": body},
             ).raise_for_status()
         print(f"Unhealthy: {problem}")
         return

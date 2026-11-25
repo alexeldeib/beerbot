@@ -49,8 +49,11 @@ def test_failures_group_by_class_and_skip_what_issues_already_mention():
         "failed:TimeoutError": [7],
     }
     title, text, labels = ops.describe("failed:ValueError", groups["failed:ValueError"])
-    assert labels == ["ops", "beerdev", "bug"] and "<!-- ops:seen=inbox-9 -->" in text
-    assert ops.describe("failed:TimeoutError", groups["failed:TimeoutError"])[2] == ["ops"]
+    assert labels == ops.INCIDENT and "<!-- ops:seen=inbox-9 -->" in text
+    # Every class goes to beerdev first; it hands non-code causes to the owner's inbox.
+    assert ops.describe("failed:TimeoutError", groups["failed:TimeoutError"])[2] == ops.INCIDENT
+    stuck = [{"id": 5, "state": "uncertain", "error_code": "ReadTimeout", "seen": "outbox-5"}]
+    assert ops.describe("delivery", stuck)[2] == ops.NEEDS_OWNER
 
 
 def test_report_appends_to_a_live_issue_and_otherwise_opens_one():
@@ -87,3 +90,77 @@ def test_redeploy_waits_out_the_cooldown():
     now = datetime.now(UTC)
     assert "did not redeploy" in ops.redeploy(runs((now - timedelta(minutes=5)).isoformat()), "o/r")
     assert "redeployed" in ops.redeploy(runs((now - timedelta(hours=2)).isoformat()), "o/r")
+
+
+def test_diagnose_reports_what_the_workers_last_saw():
+    def workers(payload):
+        respond = lambda _: httpx.Response(200, json=payload)  # noqa: E731
+        return httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+
+    error = {"at": "01:31", "detail": "InvalidCachedStatementError at delivery.py:126 execute_one"}
+    status = {"failed": {"execution": True}, "last_error": {"execution": error, "delivery": None}}
+    text = ops.diagnose(workers(status), {})
+    assert "execution worker (failing)" in text and "InvalidCachedStatementError" in text
+    assert ops.diagnose(workers({"last_error": {}}), {}) == "Workers report no errors."
+    down = httpx.Client(
+        base_url="https://x.test", transport=httpx.MockTransport(lambda _: httpx.Response(503))
+    )
+    assert ops.diagnose(down, {}).startswith("Worker status unavailable")
+
+
+def test_deploy_failure_names_the_step_the_log_and_the_pr():
+    trusted = {"event": "push", "head_branch": "main", "head_repository": {"full_name": "o/r"}}
+    routes = {
+        "/repos/o/r/actions/runs/1": {
+            **trusted,
+            "conclusion": "failure",
+            "head_sha": "abc1234def",
+            "html_url": "u",
+        },
+        "/repos/o/r/actions/runs/2": {**trusted, "conclusion": "success", "head_sha": "x"},
+        # A fork PR can name its branch main; its log is attacker-controlled.
+        "/repos/o/r/actions/runs/3": {
+            **trusted,
+            "conclusion": "failure",
+            "event": "pull_request",
+            "head_repository": {"full_name": "evil/r"},
+        },
+        "/repos/o/r/actions/runs/1/jobs": {
+            "jobs": [
+                {"id": 8, "name": "test", "conclusion": "success", "steps": []},
+                {
+                    "id": 7,
+                    "name": "Deploy production",
+                    "conclusion": "failure",
+                    "steps": [{"name": "Verify production health", "conclusion": "failure"}],
+                },
+            ]
+        },
+        "/repos/o/r/commits/abc1234def/pulls": [{"number": 28}],
+    }
+
+    def respond(request):
+        if request.url.path == "/repos/o/r/actions/jobs/7/logs":
+            log = "setup\n##[group]Run curl /ready\n\x1b[31mcurl: (28) timed out\x1b[0m\n"
+            log += (
+                "##[error]Process completed with exit code 28.\nPost job cleanup.\nRemoving creds"
+            )
+            return httpx.Response(200, text=log)
+        return httpx.Response(200, json=routes[request.url.path])
+
+    github = httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+    key, text = ops.deploy_failure(github, "o/r", "1")
+    assert key == "deploy:abc1234" and "#28" in text
+    assert "**Deploy production** failed at Verify production health" in text
+    assert "Run curl /ready" in text and "curl: (28) timed out" in text and "\x1b" not in text
+    assert "##[error]" in text and "Removing creds" not in text  # Cleanup noise is dropped.
+    assert ops.deploy_failure(github, "o/r", "2") is None
+    assert ops.deploy_failure(github, "o/r", "3") is None  # Untrusted: never reaches beerdev.
+
+
+def test_failure_excerpt_keeps_the_step_header_when_output_is_long():
+    lines = ["noise"] * 5 + ["##[group]Run curl /health"] + ["503"] * 100 + ["##[error]exit 22"]
+    excerpt = ops.failure_excerpt(lines, limit=10)
+    assert excerpt[0] == "##[group]Run curl /health" and excerpt[1] == "..."
+    assert excerpt[-1] == "##[error]exit 22" and len(excerpt) == 12
+    assert ops.failure_excerpt(["a", "b", "c"], limit=2) == ["b", "c"]  # No marker: plain tail.

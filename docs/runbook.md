@@ -11,7 +11,7 @@ something looks wrong. Commands assume `gh` and `fly` are logged in as the owner
 | **beerdev scan** | GitHub Actions `beerdev.yml`, every 10 min | Files chat asks as issues, reacts 💡 on the ask |
 | **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue, tests, merges, deploys, reacts ✅ |
 | **CI** | GitHub Actions `ci.yml`, on push to `main` or dispatch | Tests, then blue-green deploy to Fly, then verifies health, version, and DB |
-| **ops** | GitHub Actions `ops.yml`, hourly and on failures | Probes health, redeploys a stuck app, files one issue per failure class; never posts in the chat |
+| **ops** | GitHub Actions `ops.yml`: hourly, on app failures, and on CI failures on `main` | Probes health, redeploys a stuck app, and files incidents with their diagnosis for beerdev to fix; never posts in the chat |
 | **Database** | Neon PostgreSQL | All durable state; sleeps when idle (see `idle-compute.md`) |
 
 The `beerius` bot in the Beerbeta test group points at `/callback-fake` on purpose, which
@@ -75,6 +75,34 @@ machine, mint a read-only token instead of reusing the deploy one:
 `fly tokens create readonly -o personal -n debugging -x 720h`. List or revoke tokens with
 `fly tokens list -a beerbot-groupme` and `fly tokens revoke <id>`.
 
+## Access map
+
+Who can read and write what, as narrowly as each system allows. Agent-written code runs only in
+beerdev's `implement` job.
+
+| Actor | Reads | Writes | Credentials |
+|---|---|---|---|
+| Fly app | Webhooks, database, model | Database, Beerius's posts, workflow starts | `DATABASE_URL`, `GEMINI_API_KEY`, `GROUPME_WEBHOOK_SECRET`, `ADMIN_TOKEN`, `SMTP_*`, `GITHUB_DISPATCH_TOKEN` (Actions only, this repo, until 2027-11-24) |
+| CI `test` | Repository | Nothing | `GITHUB_TOKEN` (contents: read) |
+| CI `deploy` | Repository | The Fly app | `FLY_API_TOKEN` (deploy token scoped to the app) |
+| beerdev scan | Chat, issues | Issues, reactions, build starts | `GROUPME_ACCESS_TOKEN`, `GEMINI_API_KEY`, `GITHUB_TOKEN` (issues, actions) |
+| beerdev `implement` (agent code) | Repository, its issue | A patch artifact only | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
+| beerdev `ship` | GitHub's copy of the issue, the patch | Branch, PR, merge, CI start, beerdev's chat post, reactions | `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID`, `GROUPME_ACCESS_TOKEN` |
+| ops | Health and admin status, CI runs and logs, issues | Issues, CI redeploys | `ADMIN_TOKEN`, `GITHUB_TOKEN` (issues, actions) |
+| Owner's machine | Everything | Everything | `gh` (repo scope), `fly` (org), `.env` (production database), `.env.local` |
+
+Known gaps, broadest first:
+- **`GROUPME_ACCESS_TOKEN` is the owner's whole GroupMe account:** every chat and DM, plus posting
+  as the owner. GroupMe bots can neither read history nor react, so nothing narrower exists. A
+  dedicated `beerdev` GroupMe account in the group would confine it to that group and make
+  reactions come from beerdev instead of the owner. That requires a person to create the account.
+- **`ADMIN_TOKEN` opens every admin endpoint,** but ops only reads `/admin/*/status`. A separate
+  read-only ops token would remove its ability to invite, register, or retry.
+- **`DATABASE_URL` is the database owner,** because migrations run at startup. A runtime role
+  without DDL would need a separate migration step.
+- **Agent-written tests can read the Claude and Gemini keys in `implement`.** Use dedicated,
+  low-quota keys for CI.
+
 ## Deploys and rollbacks
 
 - Merging to `main` deploys automatically. To redeploy without a change, run `gh workflow run ci.yml --ref main`.
@@ -92,12 +120,17 @@ machine, mint a read-only token instead of reusing the deploy one:
   shows failed executions (messages Beerius never answered) and deliveries needing attention.
   `/admin/workers/status` is memory-only and safe to poll.
 - **Logs:** `fly logs -a beerbot-groupme`.
-- **ops:** issues labeled `ops`. "Production is unhealthy" opens with the action taken (a CI
-  redeploy, at most once per 30 minutes) and closes itself on recovery. "Messages failing with
-  `<Error>`" lists each failed message with its exception type and stack frames; code-level classes
-  are also labeled `beerdev`, so beerdev fixes them. If a class recurs within 7 days of closing,
-  ops appends to the closed issue instead of starting another build. Ops reads the database only
-  after a failure, or once a day at 12:17 UTC, so Neon can sleep.
+- **ops:** issues labeled `ops`. Incidents carry their own diagnosis: the workers' last errors
+  for an unhealthy app, or the failing step's log for a failed deploy. They are labeled
+  `beerdev` + `bug`, so beerdev builds a fix **before** any feature. If the cause isn't in the code
+  (database, network, provider, credentials), beerdev writes what a person must do and moves the
+  issue to the inbox. "Production is unhealthy" also redeploys once (at most every 30 minutes)
+  and closes itself on recovery. A failure class that recurs within 7 days of closing is appended
+  to the closed issue instead of starting another build. Ops reads the database only after a
+  failure or once a day at 12:17 UTC, so Neon can sleep.
+- **Inbox:** https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox lists everything
+  waiting on the owner: infra asks with their human setup, incidents beerdev couldn't fix in code,
+  and stuck replies. Everything else runs without you.
 
 ## Troubleshooting
 
