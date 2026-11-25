@@ -1,0 +1,242 @@
+name: beerdev build
+
+# Builds the oldest open `beerdev` issue; started by beerdev.yml.
+# - implement: Claude Code makes the change and every test runs, with only read-only credentials.
+# - ship: applies the patch to a fresh checkout without running it, merges, deploys through CI,
+#   posts the agent's how-to note when the group would notice, and reacts ✅ (🤷 if declined).
+# Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
+# environment to approve every ship by hand.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+# One build at a time. A newer queued build replaces an older one, and each picks its issue when
+# it starts, so nothing is built twice.
+concurrency:
+  group: beerdev-build
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue: ${{ steps.pick.outputs.issue }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - id: pick
+        run: uv run --frozen python scripts/beerdev.py next
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  implement:
+    needs: pick
+    if: needs.pick.outputs.issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Everything agent-written runs here: a read-only token and no deploy or GroupMe credentials.
+    permissions:
+      contents: read
+      issues: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: beerbot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d beerbot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ISSUE: ${{ needs.pick.outputs.issue }}
+      BEERBOT_BOT_ID: test-bot
+      DATABASE_URL: postgresql://test:test@localhost/test
+      ENVIRONMENT: development
+      BEERBOT_TEST_DATABASE_URL: postgresql://test:test@localhost:5432/beerbot_test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --extra dev
+
+      - name: Load request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/beerdev
+          gh issue view "$ISSUE" --json title,body,labels > /tmp/beerdev/issue.json
+          jq -r '"# \(.title)\n\nKind: \(if any(.labels[]; .name == "bug") then "bug" else "feature" end)\n\n\(.body // "" | gsub("<!--[^>]*-->"; ""))"' \
+            /tmp/beerdev/issue.json > /tmp/beerdev/request.md
+
+      - name: Implement with Claude Code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: >-
+          npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-prompt.md)"
+          --add-dir /tmp/beerdev
+          --allowedTools Read Edit Write Glob Grep
+          "Bash(uv run pytest:*)" "Bash(uv run ruff:*)" "Bash(git diff:*)" "Bash(git status:*)"
+
+      - name: Test, including the live chat e2e
+        env:
+          LIVE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -s /tmp/beerdev/skip.md ]; then exit 0; fi
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q
+          BEERBOT_LIVE_LLM=1 GEMINI_API_KEY="$LIVE_GEMINI_API_KEY" uv run pytest -q tests/test_live_chat.py
+
+      - name: Package the change
+        run: |
+          git add -A
+          git diff --cached --binary > /tmp/beerdev/change.patch
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: beerdev
+          path: /tmp/beerdev/
+          retention-days: 3
+
+  ship:
+    needs: [pick, implement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: beerdev
+    permissions:
+      actions: write # dispatch and watch the CI deploy
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      ISSUE: ${{ needs.pick.outputs.issue }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A fresh checkout: nothing the agent wrote (code, hooks, git config) ever runs in this job.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: beerdev
+          path: /tmp/beerdev
+
+      - name: Apply the change
+        id: apply
+        run: |
+          if [ -s /tmp/beerdev/skip.md ]; then
+            gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
+            echo "reaction=🤷" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -s /tmp/beerdev/change.patch ]; then
+            echo "::error::Claude finished without a change or a reason to skip"
+            exit 1
+          fi
+          git apply --index /tmp/beerdev/change.patch
+          changed="$(git diff --cached --name-only)"
+          protected='^(\.github/|\.claude/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
+          if grep -E "$protected" <<< "$changed"; then
+            echo "::error::beerdev may not change infrastructure files"
+            exit 1
+          fi
+          echo "ship=true" >> "$GITHUB_OUTPUT"
+
+      - name: Merge, deploy, announce
+        id: deploy
+        if: steps.apply.outputs.ship == 'true'
+        env:
+          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
+        run: |
+          title="$(jq -r .title /tmp/beerdev/issue.json)"
+          branch="beerdev/issue-$ISSUE"
+          git switch -c "$branch"
+          git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "feat: $title" -m "Closes #$ISSUE"
+          git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
+            "HEAD:refs/heads/$branch"
+          note=/tmp/beerdev/announcement.md
+          [ -s "$note" ] || note=/tmp/beerdev/request.md
+          { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
+          gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
+          gh pr merge "$branch" --squash
+
+          # Pushes made with GITHUB_TOKEN never trigger workflows, so start the CI deploy explicitly.
+          # CI re-runs the full suite on main before it deploys.
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          gh workflow run ci.yml --ref main
+          for _ in $(seq 30); do
+            run="$(gh run list --workflow ci.yml --event workflow_dispatch --commit "$sha" \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$run" ] && break
+            sleep 5
+          done
+          gh run watch "$run" --exit-status --interval 30 > /dev/null
+
+          # Only changes the group would notice get a chat message; the ✅ covers the rest.
+          if [ -s /tmp/beerdev/announcement.md ]; then
+            jq -n --arg bot_id "$BEERDEV_BOT_ID" --rawfile text /tmp/beerdev/announcement.md \
+              '{bot_id: $bot_id, text: ($text | rtrimstr("\n") | .[:1000])}' \
+              | curl -fsS -H "Content-Type: application/json" -d @- https://api.groupme.com/v3/bots/post
+            gh issue comment "$ISSUE" --body-file /tmp/beerdev/announcement.md
+          fi
+          echo "reaction=✅" >> "$GITHUB_OUTPUT"
+
+      - name: React on the ask
+        if: steps.apply.outputs.reaction || steps.deploy.outputs.reaction
+        env:
+          EMOJI: ${{ steps.apply.outputs.reaction || steps.deploy.outputs.reaction }}
+          GROUPME_ACCESS_TOKEN: ${{ secrets.GROUPME_ACCESS_TOKEN }}
+          BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
+        run: |
+          # Shows as the token's owner: GroupMe bots cannot react. Issues filed by hand have no ask.
+          msg="$(jq -r '.body // "" | capture("beerdev:msg=(?<m>[^\\s>:]+)").m // empty' /tmp/beerdev/issue.json)"
+          [ -n "$msg" ] || exit 0
+          jq -n --arg emoji "$EMOJI" '{like_icon: {type: "unicode", code: $emoji}}' \
+            | curl -fsS -o /dev/null -H "X-Access-Token: $GROUPME_ACCESS_TOKEN" \
+              -H "Content-Type: application/json" -d @- \
+              "https://api.groupme.com/v3/messages/$BEERDEV_GROUP_ID/$msg/like" \
+            || echo "::warning::could not react to the ask"
+
+  flag:
+    needs: [pick, implement, ship]
+    if: failure() && needs.pick.outputs.issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ needs.pick.outputs.issue }}
+    steps:
+      - run: |
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label beerdev-failed
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
+            "beerdev could not ship this: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

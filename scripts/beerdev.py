@@ -1,14 +1,17 @@
-"""beerdev scanner: file feature requests from the GroupMe chat as GitHub issues.
+"""beerdev scanner: file asks from the GroupMe chat as GitHub issues and acknowledge them.
 
-Run by .github/workflows/beerdev.yml. Actions logs are public: never print chat text.
+`scan` (default) is run by .github/workflows/beerdev.yml; `next` picks the issue for
+beerdev-build.yml. Actions logs are public: never print chat text.
 """
 
 import ast
 import json
 import os
 import re
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from google import genai
@@ -16,18 +19,26 @@ from google.genai import types
 from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
-LABEL = "beerdev"
+# Only `beerdev` issues are built automatically; infra needs a person (credentials, services).
+LABELS = {"feature": ["beerdev"], "bug": ["beerdev", "bug"], "infra": ["beerdev-infra"]}
+FILED = "💡"
 MAX_LOOKBACK = timedelta(hours=24)
 TOOLS = Path(__file__).resolve().parents[1] / "src/beerbot/tools.py"
 
-PROMPT = """You watch a friends' group chat that uses Beerius, a drink-tracking GroupMe bot.
-Find messages that ask for a NEW bot capability (for example "can the bot track zyns?").
-Ignore drink logs, banter, stats questions, bug complaints, things the bot already does, and
-anything already covered by an existing request. Merge duplicate asks into one request.
-Return [] when nothing qualifies, which is the usual case.
+PROMPT = """You watch a friends' group chat for beerdev, the developer behind Beerius, a
+drink-tracking GroupMe bot. File a request when a message:
+- asks for a new bot capability ("can the bot track zyns?"): kind "feature";
+- reports the bot misbehaving ("Beerius never answers my questions"): kind "bug";
+- asks beerdev for anything else: kind "infra" if it needs credentials, new services or bots,
+  monitoring, or deploy changes; otherwise "feature" or "bug".
+One message can hold asks of different kinds (say, a bug and an infra ask): file each separately.
+Ignore drink logs, banter, stats questions, things the bot already does, and anything already
+covered by an existing request. Merge duplicate asks. Return [] when nothing qualifies, which is
+the usual case.
 
-For each request give the message_id of the clearest ask, a short imperative title, and a spec
-of one to three sentences describing the behavior. Never include people's names or IDs.
+For each request give the message_id of the clearest ask, its kind, a short imperative title, and
+a spec of one to three sentences. For "infra", end the spec with "Human setup:" and what a person
+must provide. Never include people's names or IDs.
 
 What the bot can do today:
 {capabilities}
@@ -42,6 +53,7 @@ Chat messages, oldest first (JSON):
 
 class Request(BaseModel):
     message_id: str
+    kind: Literal["feature", "bug", "infra"]
     title: str
     spec: str
 
@@ -62,14 +74,14 @@ def capabilities(source: Path = TOOLS) -> str:
 
 
 def scan_start(github: httpx.Client, repo: str, hours: str | None) -> datetime:
-    """Resume at the last successful scheduled scan; overlap is deduplicated by message id."""
+    """Resume at the last successful scan; overlap is deduplicated by message id."""
     now = datetime.now(UTC)
     if hours:
         return now - timedelta(hours=float(hours))
     runs = (
         github.get(
             f"/repos/{repo}/actions/workflows/beerdev.yml/runs",
-            params={"event": "schedule", "status": "success", "per_page": 1},
+            params={"status": "success", "per_page": 1},
         )
         .raise_for_status()
         .json()["workflow_runs"]
@@ -119,34 +131,66 @@ def classify(messages: list[dict], issues: list[dict]) -> list[Request]:
 
 
 def fresh(requests: list[Request], messages: list[dict], issues: list[dict]) -> list[Request]:
-    """Drop invented message ids and asks that already have an issue."""
+    """Drop invented message ids and asks that already have an issue (one per message and kind)."""
     seen = {
-        marker
+        (message_id, kind or "*")  # Markers without a kind predate kinds and cover them all.
         for issue in issues
-        for marker in re.findall(r"beerdev:msg=([^\s>]+)", issue.get("body") or "")
+        for message_id, kind in re.findall(
+            r"beerdev:msg=([^\s>:]+)(?::(\w+))?", issue.get("body") or ""
+        )
     }
     scanned = {message["id"] for message in messages}
     kept = []
     for request in requests:
-        if request.message_id in scanned and request.message_id not in seen:
-            seen.add(request.message_id)
+        key = (request.message_id, request.kind)
+        if request.message_id in scanned and key not in seen and (key[0], "*") not in seen:
+            seen.add(key)
             kept.append(request)
     return kept
 
 
 def next_build(issues: list[dict]) -> int | None:
-    """Oldest open request that has not failed; builds run one at a time."""
+    """Oldest open `beerdev` issue that has not failed; builds run one at a time."""
     buildable = [
         issue["number"]
         for issue in issues
         if issue["state"] == "open"
         and "pull_request" not in issue
+        and {"beerdev"} <= {label["name"] for label in issue["labels"]}
         and all(label["name"] != "beerdev-failed" for label in issue["labels"])
     ]
     return min(buildable, default=None)
 
 
-def main() -> None:
+def react(groupme: httpx.Client, group_id: str, message_id: str, emoji: str) -> bool:
+    """Mark the ask itself. Shows as the token's owner: GroupMe bots cannot react."""
+    response = groupme.post(
+        f"/messages/{group_id}/{message_id}/like",
+        json={"like_icon": {"type": "unicode", "code": emoji}},
+    )
+    return response.is_success
+
+
+def filed_requests(github: httpx.Client, repo: str) -> list[dict]:
+    """Every beerdev issue, buildable or not, so nothing is filed twice."""
+    return [
+        issue
+        for label in ("beerdev", "beerdev-infra")
+        for issue in github.get(
+            f"/repos/{repo}/issues", params={"labels": label, "state": "all", "per_page": 100}
+        )
+        .raise_for_status()
+        .json()
+    ]
+
+
+def write_output(**values: object) -> None:
+    if path := os.environ.get("GITHUB_OUTPUT"):
+        with open(path, "a") as handle:
+            handle.writelines(f"{key}={value}\n" for key, value in values.items())
+
+
+def main(command: str = "scan") -> None:
     env = os.environ
     repo = env["GITHUB_REPOSITORY"]
     github = httpx.Client(
@@ -154,31 +198,37 @@ def main() -> None:
         headers={"Authorization": f"Bearer {env['GH_TOKEN']}"},
         timeout=30,
     )
+    issues = filed_requests(github, repo)
+    if command == "next":
+        issue = next_build(issues)
+        print(f"Next build: {issue}")
+        if issue:
+            write_output(issue=issue)
+        return
+
     groupme = httpx.Client(
         base_url="https://api.groupme.com/v3",
         headers={"X-Access-Token": env["GROUPME_ACCESS_TOKEN"]},
         timeout=30,
     )
-    issues_url = f"/repos/{repo}/issues"
+    group = env["BEERDEV_GROUP_ID"]
     since = scan_start(github, repo, env.get("SINCE_HOURS"))
-    messages = chat_messages(groupme, env["BEERDEV_GROUP_ID"], since)
-    issues = (
-        github.get(issues_url, params={"labels": LABEL, "state": "all", "per_page": 100})
-        .raise_for_status()
-        .json()
-    )
-    for request in fresh(classify(messages, issues), messages, issues) if messages else []:
-        body = f"{request.spec}\n\n<!-- beerdev:msg={request.message_id} -->"
+    messages = chat_messages(groupme, group, since)
+    requests = fresh(classify(messages, issues), messages, issues) if messages else []
+    for request in requests:
+        body = f"{request.spec}\n\n<!-- beerdev:msg={request.message_id}:{request.kind} -->"
         created = github.post(
-            issues_url, json={"title": request.title, "body": body, "labels": [LABEL]}
+            f"/repos/{repo}/issues",
+            json={"title": request.title, "body": body, "labels": LABELS[request.kind]},
         )
         issues.append(created.raise_for_status().json())
-    issue = next_build(issues)
-    print(f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; next: {issue}")
-    if issue and (output := env.get("GITHUB_OUTPUT")):
-        with open(output, "a") as handle:
-            handle.write(f"issue={issue}\n")
+        if not react(groupme, group, request.message_id, FILED):
+            print("::warning::Filed a request but could not react to it")
+    build = next_build(issues) is not None
+    kinds = ", ".join(request.kind for request in requests) or "none"
+    print(f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; filed: {kinds}")
+    write_output(build=str(build).lower())
 
 
 if __name__ == "__main__":
-    main()
+    main(*sys.argv[1:])
