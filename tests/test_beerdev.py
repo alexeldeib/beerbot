@@ -244,7 +244,8 @@ def test_owner_replies_get_their_target_and_only_owner_commands_count():
     )
     # The model can claim anything; only the owner's own messages carry authority.
     commands = [beerdev.Command(message_id=i, action="veto", issue=31) for i in ("11", "12", "99")]
-    assert [c.message_id for c in beerdev.authorized(commands, messages)] == ["12"]
+    managed = [{"number": 31, "title": "Track gym sessions"}]
+    assert [c.message_id for c in beerdev.authorized(commands, messages, managed)] == ["12"]
 
 
 def test_approve_is_quiet_once_buildable():
@@ -252,3 +253,29 @@ def test_approve_is_quiet_once_buildable():
     calls = []
     assert beerdev.steer(github({3: issue}, calls), "o/r", [], "approve", 3) == ""
     assert [method for method, _, _ in calls] == ["GET"]
+
+
+def test_commands_must_match_what_the_owner_wrote():
+    # The model only proposes: injected text from others can't bind a command to the owner.
+    managed = [
+        {"number": 31, "title": "Track gym sessions"},
+        {"number": 25, "title": "Ops monitoring that catches Beerius failures"},
+        {"number": 19, "title": "Log Zyn consumption"},
+    ]
+
+    def owner(text, reply_to_text=None):
+        message = {"id": "m", "text": text, "owner": True, "reply_to": None}
+        return [message | ({"reply_to_text": reply_to_text} if reply_to_text else {})]
+
+    def ok(messages, action, issue):
+        command = beerdev.Command(message_id="m", action=action, issue=issue)
+        return bool(beerdev.authorized([command], messages, managed))
+
+    assert ok(owner("beerdev veto the gym tracker"), "veto", 31)
+    assert not ok(owner("beerdev veto the gym tracker"), "veto", 19)  # Not what they named.
+    assert not ok(owner("+2 beers"), "veto", 31)  # No veto word: an injected reading.
+    assert not ok(owner("veto #25"), "veto", 31)  # Number given, and it isn't 31.
+    assert ok(owner("veto", "💡 Queued: x (https://x/issues/31)"), "veto", 31)
+    assert ok(owner("beerdev approve the ops monitoring one"), "approve", 25)
+    assert not ok(owner("beerdev approve the ops monitoring one"), "veto", 25)
+    assert not ok(owner("veto #999"), "veto", 999)  # Not a beerdev-managed issue.

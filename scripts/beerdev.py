@@ -169,10 +169,58 @@ def add_reply_context(groupme: httpx.Client, group_id: str, messages: list[dict]
                 message["reply_to_text"] = page[0].get("text") or ""
 
 
-def authorized(commands: list[Command], messages: list[dict]) -> list[Command]:
-    """Authority comes from GroupMe's sender id, never from the model's say-so."""
-    owners = {message["id"] for message in messages if message["owner"]}
-    return [command for command in commands if command.message_id in owners]
+# What the owner must actually have written for each command: the model only proposes.
+ACTION_WORDS = {
+    "veto": re.compile(r"\b(veto|cancel|kill|stop|drop|nix|scrap|remove|revert|undo)\b", re.I),
+    "approve": re.compile(
+        r"\b(approved?|ok|okay|go ahead|green ?light|ship it|lgtm|yes|do it)\b", re.I
+    ),
+}
+FILLER = {
+    "the",
+    "and",
+    "for",
+    "that",
+    "this",
+    "with",
+    "one",
+    "bot",
+    "pls",
+    "please",
+    "beerdev",
+    "beerius",
+}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{3,}", text.lower())} - FILLER
+
+
+def _names(title: str, text: str) -> bool:
+    """Whether the owner's words name this issue: a shared word or a 4-letter stem."""
+    ours, theirs = _words(title), _words(text)
+    return bool(ours & theirs) or any(
+        a[:4] == b[:4] for a in ours for b in theirs if min(len(a), len(b)) >= 4
+    )
+
+
+def authorized(commands: list[Command], messages: list[dict], issues: list[dict]) -> list[Command]:
+    """Run a command only if it is bound to what the owner wrote, not just to their message id:
+    other people's text in the same scan must not be able to steer the model's reading."""
+    owners = {message["id"]: message for message in messages if message["owner"]}
+    managed = {issue["number"]: issue for issue in issues}
+    kept = []
+    for command in commands:
+        message, issue = owners.get(command.message_id), managed.get(command.issue)
+        if not message or not issue or not ACTION_WORDS[command.action].search(message["text"]):
+            continue
+        context = f"{message['text']} {message.get('reply_to_text', '')}"
+        numbers = set(re.findall(r"(?:#|issues/)(\d+)", context))
+        if str(command.issue) in numbers or (
+            not numbers and _names(issue["title"], message["text"])
+        ):
+            kept.append(command)
+    return kept
 
 
 def classify(messages: list[dict], issues: list[dict]) -> Scan:
@@ -399,9 +447,8 @@ def main(command: str = "scan", *args: str) -> None:
     add_reply_context(groupme, group, messages)
     scan = classify(messages, issues) if messages else Scan(requests=[], commands=[])
     requests = fresh(scan.requests, messages, issues)
-    acks = [
-        steer(github, repo, issues, c.action, c.issue) for c in authorized(scan.commands, messages)
-    ]
+    allowed = authorized(scan.commands, messages, issues)
+    acks = [steer(github, repo, issues, c.action, c.issue) for c in allowed]
     for request in requests:
         body = f"{request.spec}\n\n<!-- beerdev:msg={request.message_id}:{request.kind} -->"
         created = github.post(
@@ -413,7 +460,7 @@ def main(command: str = "scan", *args: str) -> None:
     say("\n".join(line for line in acks if line))
     build = next_build(issues) is not None
     kinds = ", ".join(request.kind for request in requests) or "none"
-    steered = len(authorized(scan.commands, messages))
+    steered = len(allowed)
     print(
         f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; filed: {kinds}; commands: {steered}"
     )
