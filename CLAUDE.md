@@ -56,7 +56,7 @@ src/beerbot/
 ├── agent.py          # BeerAgent: system prompt, rate limiting, conversation history
 ├── model_runtime.py  # Bounded tool loop, Google and OpenAI-compatible sessions
 ├── delivery.py       # Durable message execution, outbox, retries, retention and status
-├── tools.py          # Tool factory: 15 async closures (7 write, 8 read) with validation
+├── tools.py          # Tool factory: async closures with validation
 ├── llm.py            # Provider-neutral model profile and capability metadata
 ├── gateways/         # Canonical inbound transport contracts and adapters
 ├── routing.py        # Stable gateway route identifiers
@@ -89,7 +89,7 @@ src/beerbot/
 - **App groups**: `app_groups.py` manages only native workspaces with no legacy group mapping. Invitations require a verified matching email and a live owner grant. Group membership shares names/roles, never another person's drink history. Keep workspace-before-membership and user-before-beer lock ordering when extending commands.
 - **Migrations**: never `SELECT *` (or `RETURNING *`) from a table a migration alters. Neon's pooler caches server-side plans by query text, so the old plan fails with `InvalidCachedStatementError` until the query text changes (2026-11-25 outage)
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
-- **beerdev**: `beerdev.yml` (scan, `steer`, Monday digest) + `scripts/beerdev.py` file chat asks as `beerdev`/`beerdev-infra` issues and talk only as the beerdev bot (no reactions, nothing as the owner); `beerdev-build.yml` ships `beerdev` issues (incidents first) with Claude Code (`.github/beerdev-prompt.md`), appending `CHANGELOG.md`; `beerdev-lead.yml` proposes up to three improvements weekly. Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`). Operations: `docs/runbook.md`
+- **beerdev**: Beerius hands asks over with `ask_beerdev` (feature/bug/infra/question) and the owner's `steer_beerdev` (refused in code for anyone else, bound to the owner's words) into `dev_requests`; the app dispatches `beerdev.yml` after commit (and hourly while unclaimed). `scripts/beerdev.py` pulls them via `/admin/dev-requests`, files `beerdev`/`beerdev-infra` issues, answers questions with Gemini (no tools), and talks only as the beerdev bot; GitHub never reads the chat; `beerdev-build.yml` ships `beerdev` issues (incidents first) with Claude Code (`.github/beerdev-prompt.md`), appending `CHANGELOG.md`; `beerdev-lead.yml` proposes up to three improvements weekly. Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`). Operations: `docs/runbook.md`
 - **ops**: `ops.yml` + `scripts/ops.py` probe production hourly, redeploy a stuck app through CI, and file one issue per failure class (code-level classes also get `beerdev`). Terminal failures store a publishable `error_detail` (exception type + this repo's frames, never message text) and bump the memory-only `TERMINAL_FAILURES` counter; `dispatch.py` starts ops/beerdev runs immediately when `GITHUB_DISPATCH_TOKEN` is set
 
 No repository-local issue tracker is configured.

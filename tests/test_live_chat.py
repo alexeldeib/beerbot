@@ -60,9 +60,61 @@ async def test_logs_zyn_pouches_without_touching_drinks(chat, pg):
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
 
 
-async def test_leaves_feature_requests_to_beerdev(chat, pg):
+async def test_hands_feature_requests_and_questions_to_beerdev(chat, pg):
     assert await chat("someone should make this bot track our gym sessions") is None
+    assert await chat("beerdev what features are you building right now?") is None
+    asks = await pg.fetch("SELECT kind, title FROM dev_requests ORDER BY id")
+    assert [ask["kind"] for ask in asks] == ["feature", "question"], asks
+    assert "gym" in asks[0]["title"].lower()
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
+
+
+async def test_only_the_owner_can_veto_beerdev_work(chat, pg, monkeypatch):
+    from src.beerbot.agent import settings
+    from src.beerbot.delivery import accept_context
+
+    monkeypatch.setattr(settings, "owner_user_id", "boss")
+    line = (
+        "💡 Queued: Track gym sessions (https://github.com/o/r/issues/31). I'll post when it ships."
+    )
+    await accept_context(
+        GroupMeMessage(
+            id="dev-1",
+            group_id="g1",
+            user_id="b1",
+            sender_id="b1",
+            sender_type="bot",
+            name="beerdev",
+            text=line,
+            created_at=0,
+        )
+    )
+    reply = {"type": "reply", "reply_id": "dev-1", "base_reply_id": "dev-1"}
+    await chat("veto", sender="pal", attachments=[reply])
+    assert not (asks := await pg.fetch("SELECT kind, title FROM dev_requests")), asks
+    # Push beerdev's line out of Beerius's history window: the owner's reply still finds it.
+    for i in range(10):
+        filler = GroupMeMessage(
+            id=f"filler-{i}",
+            group_id="g1",
+            user_id="pal",
+            sender_id="pal",
+            sender_type="user",
+            name="Pal",
+            text="lol",
+            created_at=0,
+        )
+        await pg.execute(
+            """INSERT INTO message_inbox(group_id,message_id,payload,state)
+               VALUES('g1',$1,$2::jsonb,'completed')""",
+            filler.id,
+            filler.model_dump_json(),
+        )
+    assert await chat("veto", sender="boss", attachments=[reply]) is None
+    assert await chat("beerdev veto the gym tracker", sender="boss") is None
+    asks = [tuple(r) for r in await pg.fetch("SELECT kind, issue, title FROM dev_requests")]
+    assert asks[0] == ("veto", 31, "") and asks[1][:2] == ("veto", None), asks
+    assert "gym" in asks[1][2], asks  # Only the owner's own words name the request.
 
 
 async def test_answers_questions_it_has_no_dedicated_tool_for(chat, pg):

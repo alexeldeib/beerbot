@@ -16,13 +16,13 @@ from pydantic import BaseModel
 from .agent import beer_agent
 from .config import settings
 from .database import close_pool, init_db, get_pool
-from .dispatch import dispatch
 from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
-from .repositories import group_repo, recap_repo
+from .repositories import dev_repo, group_repo, recap_repo
 from .reconciliation import ReconciliationBusy, reconcile_identities
 from .delivery import (
+    accept_context,
     accept_message,
     execution_worker,
     delivery_worker,
@@ -218,6 +218,12 @@ async def groupme_callback(request: Request):
         return JSONResponse({"error": "Invalid message format"}, status_code=400)
 
     if message.sender_type == "bot":
+        # beerdev's own messages become context for replies to them; no bot message is processed.
+        if message.name == "beerdev" and (
+            not settings.require_registered_groups
+            or await group_repo.get_by_group_id(message.group_id)
+        ):
+            await accept_context(message)
         return {"status": "ignored", "reason": "bot message"}
 
     if settings.require_registered_groups:
@@ -229,8 +235,6 @@ async def groupme_callback(request: Request):
     result = await accept_message(message)
     if runtime := getattr(request.app.state, "queue_runtime", None):
         runtime.wake()
-    if result.get("action") == "queued" and "beerdev" in (message.text or "").lower():
-        dispatch("beerdev.yml", every=60)  # Ack the ask now, not at the next scheduled scan.
     return result
 
 
@@ -290,6 +294,19 @@ async def set_workspace_environment(workspace_id: str, classification: Workspace
 @app.put("/admin/workspaces/{workspace_id}/app-access", dependencies=[Depends(verify_admin_token)])
 async def set_app_access(workspace_id: str, grant: AccessGrant):
     return await grant_access(workspace_id, grant)
+
+
+@app.get("/admin/dev-requests", dependencies=[Depends(verify_admin_token)])
+async def pending_dev_requests():
+    """Asks Beerius handed to beerdev that GitHub has not claimed yet (beerdev.yml pulls them)."""
+    return {"requests": await dev_repo.pending()}
+
+
+@app.post("/admin/dev-requests/{request_id}/claim", dependencies=[Depends(verify_admin_token)])
+async def claim_dev_request(request_id: int):
+    if not await dev_repo.claim(request_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+    return {"status": "claimed"}
 
 
 @app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])
