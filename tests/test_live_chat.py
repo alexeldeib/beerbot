@@ -62,3 +62,13 @@ async def test_logs_zyn_pouches_without_touching_drinks(chat, pg):
 async def test_leaves_feature_requests_to_beerdev(chat, pg):
     assert await chat("someone should make this bot track our gym sessions") is None
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
+
+
+async def test_answers_questions_it_has_no_dedicated_tool_for(chat, pg):
+    # On long histories these ran out of tool rounds in production and were silently dropped.
+    await chat("+2 beers")
+    await pg.execute("""INSERT INTO beers(user_id, group_id, quantity, drink_type, logged_at)
+        SELECT id, 'g1', 2, 'beer', now() - make_interval(days => d)
+        FROM users, generate_series(4, 300, 4) d""")
+    assert await chat("Beerius, when did I log my first drink, what date?")
+    assert await chat("Beerius what is my average daily consumption since your inception?")

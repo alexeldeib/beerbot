@@ -248,6 +248,28 @@ async def test_swallowed_tool_failure_rolls_back(pg, monkeypatch):
     assert await pg.fetchval("SELECT COUNT(*) FROM message_outbox") == 0
 
 
+async def test_bad_tool_input_undoes_only_that_tool_and_still_replies(pg, monkeypatch):
+    await setup(pg)
+    from src.beerbot import tools as tools_module
+
+    async def process(msg):
+        tools = {t.__name__: t for t in create_tools(context(msg))}
+        await tools["add_debt"]("bob", 3)
+        failing = AsyncMock(side_effect=ValueError("bad drink"))
+        monkeypatch.setattr(tools_module.beer_repo, "get_user_total_by_type", failing)
+        assert await tools["log_drinks"](2, "beer") == {"error": "bad drink"}
+        return "Debt added; say the drink again"
+
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", process)
+    await accept_message(message())
+    assert await execute_one(agent)
+    assert await pg.fetchval("SELECT state FROM message_inbox") == "completed"
+    assert await pg.fetchval("SELECT SUM(amount) FROM user_debts") == 3
+    assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0  # Inserted, then savepoint undone.
+    assert await pg.fetchval("SELECT COUNT(*) FROM message_outbox") == 1
+
+
 async def test_execution_deadline_rolls_back_mutations(pg, monkeypatch):
     await setup(pg)
     monkeypatch.setattr("src.beerbot.delivery.EXECUTION_TIMEOUT", 0.2)
