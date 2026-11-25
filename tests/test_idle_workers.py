@@ -91,8 +91,13 @@ async def test_worker_error_is_visible_and_wake_can_recover(monkeypatch):
         await until(lambda: runtime.failed["execution"])
         await asyncio.sleep(0.05)
         assert work.await_count == 1  # no tight error loop
+        error = runtime.snapshot()["last_error"]["execution"]
+        assert (
+            error["detail"].startswith("RuntimeError at") and "test failure" not in error["detail"]
+        )
         runtime.wake("execution")
         await until(lambda: work.await_count == 2 and not runtime.failed["execution"])
+        assert runtime.last_error["execution"] == error  # Kept after recovery for ops to report.
     finally:
         await stop(task)
 

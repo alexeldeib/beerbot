@@ -310,8 +310,9 @@ Message IDs and state remain as deduplication tombstones. Media is fetched for
 analysis, not stored as binary data. Expired content is not retryable.
 
 `/health` remains process liveness. `/ready` checks model configuration, worker
-tasks and known worker failures **without querying Postgres**; Fly gates blue/green
-traffic on `/ready`. `/ready/db` performs the explicit database check and wakes
+tasks and known worker failures **without querying Postgres**. Fly routes traffic on
+`/health` only and runs `/ready` as a top-level check, which gates deploys but never routing,
+so a processing failure can't stop the durable inbox from accepting messages. `/ready/db` performs the explicit database check and wakes
 workers after deployment. CI calls it after verifying the new revision and the
 old fleet has stopped; manual deployments must do the same.
 Shutdown cancels workers, rolls back incomplete execution, and closes the pool.

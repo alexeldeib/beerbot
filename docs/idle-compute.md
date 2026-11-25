@@ -38,7 +38,9 @@ CU-hours meter allocated compute multiplied by running time, not CPU utilization
 ## Health and deployment
 
 `/ready` checks model configuration, live worker tasks, and known worker/probe
-failures without database I/O. `/health` remains basic process liveness. A sleeping
+failures without database I/O. `/health` remains basic process liveness and is the only
+check Fly routes on; `/ready` is a top-level Fly check that gates deploys but never removes a
+machine from rotation, because intake must keep working while processing is broken. A sleeping
 database is not an unhealthy database. Database initialization still must succeed
 before application startup finishes.
 
