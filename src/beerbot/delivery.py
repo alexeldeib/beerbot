@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
+BEERDEV_TOOLS = ("ask_beerdev", "steer_beerdev")
 # Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
 # Postgres; the durable record is the failed rows themselves.
 TERMINAL_FAILURES: Counter[str] = Counter()
@@ -118,6 +119,21 @@ async def accept_message(message: GroupMeMessage) -> dict:
     return {"status": "ok", "action": "queued" if row else "duplicate"}
 
 
+async def accept_context(message: GroupMeMessage) -> None:
+    """Keep beerdev's own messages as completed rows: never processed, but in Beerius's history,
+    so a reply like "veto" to "💡 Queued: … /issues/31" carries its issue."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO message_inbox(group_id,message_id,payload,state,completed_at)
+               VALUES($1,$2,$3::jsonb,'completed',NOW())
+               ON CONFLICT(group_id,message_id) DO NOTHING""",
+            message.group_id,
+            message.id,
+            message.model_dump_json(),
+        )
+
+
 async def execute_one(agent) -> bool:
     """Claim a group's oldest pending message and commit all DB effects together.
 
@@ -151,6 +167,7 @@ async def execute_one(agent) -> bool:
             # takes over after the first completed run and survives restarts.
             history_before = copy.deepcopy(agent._get_history(group_id))
             bucket_before = copy.deepcopy(agent._get_bucket(group_id))
+            asked = False
             try:
                 async with conn.transaction():
                     await conn.execute("SET LOCAL statement_timeout = '10s'")
@@ -181,6 +198,7 @@ async def execute_one(agent) -> bool:
                                     group_id,
                                     msg.text or placeholder,
                                     msg.name,
+                                    is_bot=msg.sender_type == "bot",
                                     message_id=msg.id,
                                     user_id=msg.user_id,
                                 )
@@ -193,6 +211,10 @@ async def execute_one(agent) -> bool:
                             if scope.failed:
                                 raise RuntimeError("Tool execution failed")
                             trace = json.dumps(scope.tools)
+                            asked = any(  # Refused steers (non-owners) start nothing.
+                                t["name"] in BEERDEV_TOOLS and "error" not in t["result"]
+                                for t in scope.tools
+                            )
                         await conn.execute(
                             """UPDATE message_inbox SET state='completed', completed_at=NOW(),
                                attempts=attempts+1, reply=$2,tool_results=$3::jsonb,error_code=NULL
@@ -210,6 +232,7 @@ async def execute_one(agent) -> bool:
                                 reply,
                             )
             except BaseException as exc:
+                asked = False  # Rolled back: nothing reached dev_requests.
                 agent._message_history[group_id] = history_before
                 agent._rate_limiters[group_id] = bucket_before
                 if not isinstance(exc, Exception):
@@ -234,6 +257,8 @@ async def execute_one(agent) -> bool:
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
                 if state == "failed":
                     record_terminal(code)
+    if asked:  # Committed: start beerdev now rather than at its next scheduled run.
+        dispatch("beerdev.yml", every=10)
     return True
 
 
@@ -319,6 +344,12 @@ async def maintain_queue() -> bool:
                   state=CASE WHEN state='pending' THEN 'failed' ELSE state END,
                   error_code=CASE WHEN state='pending' THEN 'expired' ELSE error_code END
                 WHERE id IN (SELECT id FROM expired)""")
+            # Offer asks whose dispatch was lost (GitHub down, token expired) again on this
+            # hourly wake, rather than having GitHub poll the database.
+            unclaimed = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM dev_requests
+                WHERE claimed_at IS NULL AND created_at < NOW()-INTERVAL '5 minutes')""")
+    if unclaimed:
+        dispatch("beerdev.yml", every=900)
     # Continue bounded cleanup batches promptly instead of retaining a backlog
     # for multiple hourly sweeps. Locked live claims are still skipped.
     return any(int(result.split()[-1]) >= 100 for result in (stale, inbox, outbox))

@@ -1,11 +1,12 @@
 """Failure-boundary tests using real PostgreSQL and the existing domain tools."""
 
 import asyncio
+import httpx
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.beerbot import database
+from src.beerbot import database, delivery
 from src.beerbot.agent import BeerAgent
 from src.beerbot.delivery import accept_message, execute_one, deliver_one, maintain_queue
 from src.beerbot.delivery import queue_status, retry_delivery
@@ -468,3 +469,68 @@ async def test_compatible_adapter_uses_same_transactional_agent_tools(pg):
     assert await pg.fetchval("SELECT SUM(quantity) FROM beers") == 1
     assert await pg.fetchval("SELECT body FROM message_outbox") == "Logged"
     assert len(requests) == 2
+
+
+async def test_asks_for_beerdev_commit_with_their_message_and_start_it(pg, monkeypatch):
+    from src.beerbot.repositories import dev_repo
+    from src.beerbot.tools import ToolContext, create_tools
+
+    await setup(pg)
+    started = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, every: started.append(workflow))
+    agent = BeerAgent()
+
+    async def ask_then(outcome):
+        async def process(message):
+            ctx = ToolContext(message.group_id, message.id, "alice", "Alice", None, [])
+            ask = next(tool for tool in create_tools(ctx) if tool.__name__ == "ask_beerdev")
+            await ask("question", "What is queued?", "Which features are waiting?")
+            if outcome == "fail":
+                raise RuntimeError("model failed after asking")
+
+        monkeypatch.setattr(agent, "process_message", process)
+
+    await ask_then("fail")
+    await delivery.accept_message(message("m1", text="beerdev what is queued?"))
+    await delivery.execute_one(agent)
+    assert await pg.fetchval("SELECT COUNT(*) FROM dev_requests") == 0 and started == []
+    await pg.execute("UPDATE message_inbox SET available_at=now()")
+    await ask_then("succeed")
+    await delivery.execute_one(agent)
+    assert [r["kind"] for r in await dev_repo.pending()] == ["question"]
+    assert started == ["beerdev.yml"]  # Only after the ask committed.
+
+    # A lost dispatch is retried by the hourly sweep, never once the ask is claimed.
+    await pg.execute("UPDATE dev_requests SET created_at=now()-interval '10 minutes'")
+    await delivery.maintain_queue()
+    assert started == ["beerdev.yml"] * 2
+    await dev_repo.claim((await dev_repo.pending())[0]["id"])
+    await delivery.maintain_queue()
+    assert started == ["beerdev.yml"] * 2
+
+
+async def test_beerdev_pulls_asks_and_reply_context_through_the_admin_api(pg, monkeypatch):
+    from src.beerbot import main
+    from src.beerbot.repositories import dev_repo
+
+    await setup(pg)
+    line = "💡 Queued: Gym tracker (https://x/issues/31)"
+    await delivery.accept_context(message("dev-1", text=line))
+    assert await pg.fetchval("SELECT state FROM message_inbox") == "completed"  # Never processed.
+    assert await dev_repo.message_text("g1", "dev-1") == line
+    assert await dev_repo.file("g1", "m1", "feature", "Track gym sessions", "Log gym visits.")
+    assert not await dev_repo.file("g1", "m1", "feature", "Same ask", "Again.")
+    monkeypatch.setattr(main.settings, "admin_token", "admin")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app),
+        base_url="https://test",
+        headers={"Authorization": "Bearer admin"},
+    ) as client:
+        asks = (await client.get("/admin/dev-requests")).json()["requests"]
+        assert [(a["kind"], a["title"]) for a in asks] == [("feature", "Track gym sessions")]
+        assert (await client.post(f"/admin/dev-requests/{asks[0]['id']}/claim")).status_code == 200
+        assert (await client.get("/admin/dev-requests")).json()["requests"] == []
+        assert (await client.post("/admin/dev-requests/999/claim")).status_code == 404
+        assert (
+            await client.get("/admin/dev-requests", headers={"Authorization": ""})
+        ).status_code == 401

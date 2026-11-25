@@ -379,16 +379,17 @@ def test_access_log_redacts_webhook_token():
     assert record.getMessage() == '1.2.3.4:5 - "POST /callback?token=***&x=1 HTTP/1.1" 200'
 
 
-def test_mentioning_beerdev_starts_a_scan(monkeypatch, sample_groupme_message):
+def test_beerdevs_messages_become_reply_context(monkeypatch, sample_groupme_message):
     from fastapi.testclient import TestClient
     from src.beerbot import main
 
-    started = []
-    monkeypatch.setattr(main, "dispatch", lambda workflow, **kw: started.append(workflow))
+    kept = []
+    monkeypatch.setattr(
+        main, "accept_context", AsyncMock(side_effect=lambda m: kept.append(m.name))
+    )
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
     with TestClient(main.app) as client:
-        client.post(
-            "/callback", json=sample_groupme_message | {"text": "Beerdev add a zyn tracker"}
-        )
-        client.post("/callback", json=sample_groupme_message | {"text": "+1 beer"})
-    assert started == ["beerdev.yml"]
+        for name in ("beerdev", "beerius"):
+            bot = sample_groupme_message | {"sender_type": "bot", "name": name, "id": name}
+            assert client.post("/callback", json=bot).json()["reason"] == "bot message"
+    assert kept == ["beerdev"]  # Kept as context, never processed; other bots are ignored.

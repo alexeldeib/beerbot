@@ -1,5 +1,5 @@
-"""Best-effort GitHub workflow dispatches: a beerdev scan when someone mentions beerdev, an ops
-check when a message fails. Optional: without GITHUB_DISPATCH_TOKEN, scheduled runs catch up."""
+"""Best-effort GitHub workflow dispatches: beerdev when Beerius hands it an ask, ops when a message
+fails. Optional: without GITHUB_DISPATCH_TOKEN, scheduled runs catch up."""
 
 import asyncio
 import logging

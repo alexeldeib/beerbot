@@ -6,6 +6,7 @@ message_id, and sender info so the AI never sees security-sensitive identifiers.
 
 import logging
 import inspect
+import re
 from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from .models import DrinkType
 from .database import execution_scope
-from .repositories import beer_repo, debt_repo, user_repo, zyn_repo
+from .repositories import beer_repo, debt_repo, dev_repo, user_repo, zyn_repo
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,19 @@ class ToolContext:
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
     replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
     is_owner: bool = False  # From the sender's GroupMe id, never from the model.
+    message_text: str = ""  # The sender's own words: owner commands must match them.
+    replied_text: str = ""  # The message this one replies to, when known (e.g. beerdev's).
     tools_called: bool = field(default=False, init=False)
     reply_text: str | None = field(default=None, init=False)
+
+
+# What the owner must actually have written for a command: the model only proposes.
+ACTION_WORDS = {
+    "veto": re.compile(r"\b(veto|cancel|kill|stop|drop|nix|scrap|remove|revert|undo)\b", re.I),
+    "approve": re.compile(
+        r"\b(approved?|ok|okay|go ahead|green ?light|ship it|lgtm|yes|do it)\b", re.I
+    ),
+}
 
 
 def _validate_user_id(ctx: ToolContext, user_id: str | None) -> str:
@@ -578,6 +590,55 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
 
         return result
 
+    async def ask_beerdev(kind: str, title: str, details: str) -> dict:
+        """Hand something to beerdev, the bot's developer, who answers in the chat itself: a new
+        capability someone wants, a report that the bot misbehaves, infrastructure (credentials,
+        monitoring, deploys), or a question about the bot's code, behavior, or beerdev's queue.
+        Stay silent afterwards: beerdev replies.
+
+        Args:
+            kind: feature, bug, infra, or question.
+            title: Short summary under 80 characters, imperative for requests.
+            details: One to three sentences: the behavior wanted, the problem, or the question.
+                Never include people's names or IDs.
+        """
+        if kind not in ("feature", "bug", "infra", "question"):
+            raise ValueError("kind must be feature, bug, infra, or question")
+        filed = await dev_repo.file(
+            ctx.group_id, ctx.message_id, kind, title.strip()[:80], details.strip()[:1000]
+        )
+        return {"status": "passed to beerdev" if filed else "already passed to beerdev"}
+
+    async def steer_beerdev(action: str, issue: int | None = None, request: str = "") -> dict:
+        """Owner only: veto (stop, cancel, remove) or approve one of beerdev's requests. Stay
+        silent afterwards: beerdev confirms in the chat.
+
+        Args:
+            action: veto or approve.
+            issue: Its issue number, when this message or the beerdev message it replies to
+                links one.
+            request: Otherwise, the owner's own words naming it, such as "gym tracker".
+        """
+        if not ctx.is_owner:  # From the sender's GroupMe id: the model can't change this.
+            raise ValueError("Only the owner can steer beerdev. Don't pass this on to beerdev.")
+        if action not in ACTION_WORDS:
+            raise ValueError("action must be veto or approve")
+        if not ACTION_WORDS[action].search(ctx.message_text):
+            raise ValueError(f"The owner's message doesn't ask to {action}; do nothing.")
+        if issue is not None:
+            context = f"{ctx.message_text} {ctx.replied_text}"
+            if str(issue) not in re.findall(r"(?:#|issues/)(\d+)", context):
+                raise ValueError("That issue isn't linked here; name the request instead.")
+            request = ""
+        else:
+            said = ACTION_WORDS[action].sub(" ", ctx.message_text.lower())  # "veto" names nothing
+            own = set(re.findall(r"[a-z0-9]+", said))
+            request = " ".join(w for w in re.findall(r"[a-z0-9]+", request.lower()) if w in own)
+            if not request:
+                raise ValueError("Name the request in the owner's own words, or reply to it.")
+        await dev_repo.file(ctx.group_id, ctx.message_id, action, title=request, issue=issue)
+        return {"status": f"{action} passed to beerdev"}
+
     async def reply(message: str) -> dict:
         """Send a reply to the group chat. You MUST call this to respond.
         If you have nothing to say, don't call this tool.
@@ -613,6 +674,8 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         get_million_countdown,
         get_zyn_stats,
         # Meta tools
+        ask_beerdev,
+        steer_beerdev,  # Shown to everyone, so a non-owner's veto has a home that refuses it.
         reply,
     ]
     scope = execution_scope.get()

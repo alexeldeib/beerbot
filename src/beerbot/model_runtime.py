@@ -4,7 +4,7 @@ import base64
 import inspect
 import json
 from dataclasses import dataclass
-from typing import Callable, Protocol, get_type_hints
+from typing import Callable, Protocol, get_args, get_type_hints
 
 from google.genai import types
 from openai import AsyncOpenAI
@@ -67,7 +67,8 @@ def validate_arguments(validator, arguments: dict) -> dict:
     arguments = dict(arguments)
     for name, field in validator.model_fields.items():
         value = arguments.get(name)
-        if field.annotation is int and isinstance(value, float) and value.is_integer():
+        accepts_int = int in (field.annotation, *get_args(field.annotation))  # int | None too
+        if accepts_int and isinstance(value, float) and value.is_integer():
             arguments[name] = int(value)
     return validator.model_validate(arguments, strict=True).model_dump()
 

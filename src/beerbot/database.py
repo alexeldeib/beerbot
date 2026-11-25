@@ -582,6 +582,32 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        10,
+        "dev_requests",
+        (
+            # Asks Beerius hands to beerdev, pulled by GitHub (beerdev.yml). Paraphrases only:
+            # no chat text, names, or IDs beyond the source message id.
+            """CREATE TABLE dev_requests (
+                id BIGSERIAL PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('feature','bug','infra','question','veto','approve')),
+                title TEXT NOT NULL DEFAULT '',
+                spec TEXT NOT NULL DEFAULT '',
+                issue INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                claimed_at TIMESTAMPTZ,
+                UNIQUE(message_id, kind)
+            )""",
+            "CREATE INDEX dev_requests_pending ON dev_requests(id) WHERE claimed_at IS NULL",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():

@@ -1,4 +1,4 @@
-"""beerdev scanner: chat paging, request filtering, and build selection (no network)."""
+"""beerdev: handling asks from the app, steering, answers, and builds (no network)."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -6,64 +6,6 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from scripts import beerdev
-
-
-def test_capabilities_come_from_tool_source():
-    summary = beerdev.capabilities()
-    assert "- log_drinks: Log drinks for one or more users." in summary
-    assert "reply" not in summary
-
-
-def test_chat_messages_page_back_to_window_and_skip_bots():
-    since = datetime.fromtimestamp(1_000, UTC)
-    pages = {
-        None: [
-            {"id": "4", "created_at": 1_400, "sender_type": "user", "text": "zyn tracker pls"},
-            {"id": "3", "created_at": 1_300, "sender_type": "bot", "text": "+1🍺 for Al"},
-        ],
-        "3": [
-            {"id": "2", "created_at": 1_200, "sender_type": "user", "text": None},
-            {"id": "1", "created_at": 900, "sender_type": "user", "text": "too old"},
-        ],
-    }
-
-    def respond(request):
-        assert request.headers["X-Access-Token"] == "t"
-        page = pages[request.url.params.get("before_id")]
-        return httpx.Response(200, json={"response": {"messages": page}})
-
-    groupme = httpx.Client(
-        base_url="https://api.groupme.test",
-        headers={"X-Access-Token": "t"},
-        transport=httpx.MockTransport(respond),
-    )
-    expected = {"id": "4", "text": "zyn tracker pls", "owner": False, "reply_to": None}
-    assert beerdev.chat_messages(groupme, "g1", since) == [expected]
-
-    empty = httpx.Client(
-        base_url="https://api.groupme.test",
-        transport=httpx.MockTransport(lambda _: httpx.Response(304)),
-    )
-    assert beerdev.chat_messages(empty, "g1", since) == []
-
-
-def test_fresh_drops_invented_duplicate_and_filed_requests():
-    def ask(message_id, kind="feature"):
-        return beerdev.Request(message_id=message_id, kind=kind, title="T", spec="S.")
-
-    messages = [{"id": i, "text": "a"} for i in ("6", "7", "8", "9")]
-    issues = [
-        {"title": "Old", "body": "<!-- beerdev:msg=8 -->"},  # Pre-kind marker covers all kinds.
-        {"title": "Bug", "body": "<!-- beerdev:msg=9:bug -->"},
-    ]
-    asks = [ask("7"), ask("7"), ask("7", "infra"), ask("8", "bug"), ask("9", "bug")]
-    asks += [ask("9", "infra"), ask("99")]
-    kept = beerdev.fresh(asks, messages, issues)
-    assert [(r.message_id, r.kind) for r in kept] == [
-        ("7", "feature"),
-        ("7", "infra"),
-        ("9", "infra"),
-    ]
 
 
 def test_next_build_is_oldest_open_unfailed_issue():
@@ -82,31 +24,6 @@ def test_next_build_is_oldest_open_unfailed_issue():
     assert beerdev.next_build([issue(3, state="closed")]) is None
     # Incidents jump the queue: production health beats new features.
     assert beerdev.next_build(issues + [issue(12, labels=("ops", "beerdev", "bug"))]) == 12
-
-
-def test_say_posts_only_as_the_beerdev_bot(monkeypatch):
-    sent = []
-    monkeypatch.setattr(
-        beerdev.httpx,
-        "post",
-        lambda url, json, timeout: sent.append((url, json)) or httpx.Response(202),
-    )
-    monkeypatch.delenv("BEERDEV_BOT_ID", raising=False)
-    assert not beerdev.say("hi")  # No bot id: nothing to post as.
-    monkeypatch.setenv("BEERDEV_BOT_ID", "b1")
-    assert not beerdev.say("  ")
-    assert beerdev.say("💡 Queued: x")
-    assert sent == [
-        ("https://api.groupme.com/v3/bots/post", {"bot_id": "b1", "text": "💡 Queued: x"})
-    ]
-
-
-def test_acks_say_queued_or_waiting_on_a_human():
-    def ask(kind):
-        return beerdev.Request(message_id="1", kind=kind, title="Track zyns", spec="S.")
-
-    assert beerdev.ack(ask("feature"), 7).startswith("💡 Queued: Track zyns (")
-    assert beerdev.ack(ask("infra"), 7).startswith("👀 Filed for a human: Track zyns (")
 
 
 def github(issues_by_number, calls):
@@ -205,49 +122,6 @@ def test_propose_files_nothing_from_an_answer_without_a_plan(tmp_path):
     assert calls == []
 
 
-def test_owner_replies_get_their_target_and_only_owner_commands_count():
-    page = [
-        {
-            "id": "12",
-            "created_at": 1_400,
-            "sender_type": "user",
-            "user_id": "boss",
-            "text": "veto",
-            "attachments": [{"type": "reply", "reply_id": "10"}],
-        },
-        {
-            "id": "11",
-            "created_at": 1_300,
-            "sender_type": "user",
-            "user_id": "pal",
-            "text": "veto it",
-        },
-    ]
-
-    def respond(request):
-        if request.url.params.get("after_id") == "9":  # Fetching reply target 10 by id.
-            target = {"id": "10", "text": "💡 Queued: Gym tracker (https://x/issues/31)"}
-            return httpx.Response(200, json={"response": {"messages": [target]}})
-        if request.url.params.get("before_id"):
-            return httpx.Response(304)
-        return httpx.Response(200, json={"response": {"messages": page}})
-
-    groupme = httpx.Client(base_url="https://g.test", transport=httpx.MockTransport(respond))
-    messages = beerdev.chat_messages(groupme, "g1", datetime.fromtimestamp(1_000, UTC), "boss")
-    assert [(m["id"], m["owner"], m["reply_to"]) for m in messages] == [
-        ("11", False, None),
-        ("12", True, "10"),
-    ]
-    beerdev.add_reply_context(groupme, "g1", messages)
-    assert (
-        messages[1]["reply_to_text"].endswith("issues/31)") and "reply_to_text" not in messages[0]
-    )
-    # The model can claim anything; only the owner's own messages carry authority.
-    commands = [beerdev.Command(message_id=i, action="veto", issue=31) for i in ("11", "12", "99")]
-    managed = [{"number": 31, "title": "Track gym sessions"}]
-    assert [c.message_id for c in beerdev.authorized(commands, messages, managed)] == ["12"]
-
-
 def test_approve_is_quiet_once_buildable():
     issue = {"title": "Ops bot", "state": "open", "labels": [{"name": "beerdev"}]}
     calls = []
@@ -255,27 +129,161 @@ def test_approve_is_quiet_once_buildable():
     assert [method for method, _, _ in calls] == ["GET"]
 
 
-def test_commands_must_match_what_the_owner_wrote():
-    # The model only proposes: injected text from others can't bind a command to the owner.
-    managed = [
-        {"number": 31, "title": "Track gym sessions"},
-        {"number": 25, "title": "Ops monitoring that catches Beerius failures"},
-        {"number": 19, "title": "Log Zyn consumption"},
+def test_say_posts_only_as_the_beerdev_bot_threaded_when_it_can(monkeypatch):
+    sent, refuse = [], {"attachments"}  # GroupMe may refuse a reply attachment from a bot.
+
+    def post(url, json, timeout):
+        sent.append(json)
+        return httpx.Response(400 if refuse & json.keys() else 202)
+
+    monkeypatch.setattr(beerdev.httpx, "post", post)
+    monkeypatch.delenv("BEERDEV_BOT_ID", raising=False)
+    assert not beerdev.say("hi")  # No bot id: nothing to post as.
+    monkeypatch.setenv("BEERDEV_BOT_ID", "b1")
+    assert not beerdev.say("  ")
+    assert beerdev.say("💡 Queued: x")
+    assert sent == [{"bot_id": "b1", "text": "💡 Queued: x"}]
+    sent.clear()
+    assert beerdev.say("🤓 Two.", reply_to="m2")  # Refused threaded, so posted plain.
+    assert [post.get("attachments", [{}])[0].get("reply_id") for post in sent] == ["m2", None]
+    sent.clear(), refuse.clear()
+    assert beerdev.say("🤓 Two.", reply_to="m2") and len(sent) == 1
+
+
+def test_filed_is_one_issue_per_message_and_kind():
+    issues = [
+        {"title": "Old", "body": "<!-- beerdev:msg=8 -->"},  # Pre-kind marker covers all kinds.
+        {"title": "Bug", "body": "<!-- beerdev:msg=9:bug -->"},
     ]
+    assert beerdev.filed({"message_id": "8", "kind": "infra"}, issues)
+    assert beerdev.filed({"message_id": "9", "kind": "bug"}, issues)
+    assert not beerdev.filed({"message_id": "9", "kind": "infra"}, issues)
+    assert not beerdev.filed({"message_id": "7", "kind": "feature"}, issues)
 
-    def owner(text, reply_to_text=None):
-        message = {"id": "m", "text": text, "owner": True, "reply_to": None}
-        return [message | ({"reply_to_text": reply_to_text} if reply_to_text else {})]
 
-    def ok(messages, action, issue):
-        command = beerdev.Command(message_id="m", action=action, issue=issue)
-        return bool(beerdev.authorized([command], messages, managed))
+def test_named_picks_the_request_the_owner_named_or_none():
+    issues = [
+        {"number": 31, "title": "Track gym sessions", "state": "open"},
+        {"number": 25, "title": "Ops monitoring that catches Beerius failures", "state": "open"},
+        {"number": 19, "title": "Log Zyn consumption", "state": "closed"},
+        {"number": 40, "title": "Log Zyn consumption", "state": "open"},  # A duplicate ask.
+    ]
+    assert beerdev.named("gym tracker", issues) == 31
+    assert beerdev.named("the ops monitoring one", issues) == 25
+    assert beerdev.named("zyn tracker", issues) == 40  # The word beats a stem; open beats shipped.
+    assert beerdev.named("espresso martinis", issues) is None
+    assert (
+        beerdev.named("log", issues[2:3] + [{"number": 7, "title": "Log naps", "state": "closed"}])
+        is None
+    )
 
-    assert ok(owner("beerdev veto the gym tracker"), "veto", 31)
-    assert not ok(owner("beerdev veto the gym tracker"), "veto", 19)  # Not what they named.
-    assert not ok(owner("+2 beers"), "veto", 31)  # No veto word: an injected reading.
-    assert not ok(owner("veto #25"), "veto", 31)  # Number given, and it isn't 31.
-    assert ok(owner("veto", "💡 Queued: x (https://x/issues/31)"), "veto", 31)
-    assert ok(owner("beerdev approve the ops monitoring one"), "approve", 25)
-    assert not ok(owner("beerdev approve the ops monitoring one"), "veto", 25)
-    assert not ok(owner("veto #999"), "veto", 999)  # Not a beerdev-managed issue.
+
+def test_answers_come_from_the_code_and_queue_without_tools(monkeypatch):
+    seen = {}
+
+    class Models:
+        def generate_content(self, model, contents, **config):
+            seen.update(contents=contents, config=config)
+            return type("Answer", (), {"text": " Gym tracking is queued as #31. "})()
+
+    monkeypatch.setattr(
+        beerdev.genai, "Client", lambda api_key: type("C", (), {"models": Models()})()
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    issues = [
+        {
+            "number": 31,
+            "title": "Track gym sessions",
+            "state": "open",
+            "labels": [{"name": "beerdev"}],
+        }
+    ]
+    line = beerdev.answer("What is queued?", issues)
+    assert line == "🤓 Gym tracking is queued as #31."
+    prompt = seen["contents"]
+    assert "#31 open [beerdev] Track gym sessions" in prompt and "What is queued?" in prompt
+    assert "=== src/beerbot/tools.py ===" in prompt and "async def log_drinks" in prompt
+    assert seen["config"] == {}  # No tools, so nothing in the runner is reachable.
+
+
+def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+
+    def ask(id, kind, title="", issue=None, age=timedelta(0)):
+        return {
+            "id": id,
+            "message_id": f"m{id}",
+            "kind": kind,
+            "title": title,
+            "spec": "Details.",
+            "issue": issue,
+            "created_at": (now - age).isoformat(),
+        }
+
+    asks = [
+        ask(1, "feature", "Track gym sessions"),
+        ask(2, "question", "What is queued?"),
+        ask(3, "veto", "zyn tracker"),  # Named by the owner's own words.
+        ask(4, "approve", issue=404),  # Not a beerdev request.
+        ask(5, "feature", "Ancient ask", age=timedelta(days=2)),  # Given up on: claimed, no post.
+        ask(6, "question", "Breaks the model"),
+    ]
+    zyn = {
+        "number": 19,
+        "title": "Log Zyn consumption",
+        "state": "open",
+        "labels": [{"name": "beerdev"}],
+        "body": "",
+    }
+    claimed, said = [], []
+
+    def app(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"requests": asks})
+        claimed.append(int(request.url.path.split("/")[-2]))
+        return httpx.Response(200, json={"status": "claimed"})
+
+    def github(request):
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/issues"):
+            return httpx.Response(
+                200, json=[zyn] if request.url.params["labels"] == "beerdev" else []
+            )
+        if request.method == "GET":
+            return httpx.Response(200, json=zyn)
+        if request.method == "POST" and path.endswith("/issues"):
+            created = json.loads(request.content) | {"number": 41, "state": "open"}
+            return httpx.Response(201, json=created | {"labels": [{"name": "beerdev"}]})
+        return httpx.Response(200, json={})
+
+    real = httpx.Client
+
+    def client(base_url, headers, timeout):
+        handler = app if base_url == "https://app.test" else github
+        return real(base_url=base_url, headers=headers, transport=httpx.MockTransport(handler))
+
+    def answer(question, issues):
+        if "Breaks" in question:
+            raise RuntimeError("model down")
+        return "🤓 Gym tracking is queued."
+
+    monkeypatch.setattr(beerdev.httpx, "Client", client)
+    monkeypatch.setattr(beerdev, "answer", answer)
+    monkeypatch.setattr(beerdev, "say", lambda text, reply_to=None: said.append((text, reply_to)))
+    for key, value in {
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "t",
+        "ADMIN_TOKEN": "a",
+        "APP_URL": "https://app.test",
+        "GITHUB_OUTPUT": str(tmp_path / "out"),
+    }.items():
+        monkeypatch.setenv(key, value)
+    beerdev.main("scan")
+    assert claimed == [1, 2, 3, 4, 5]  # 6 failed: the app offers it again within the hour.
+    assert said == [
+        (f"💡 Queued: Track gym sessions ({beerdev.REPO_URL}/41). I'll post when it ships.", "m1"),
+        ("🤓 Gym tracking is queued.", "m2"),
+        ("🚫 Vetoed: Log Zyn consumption.", "m3"),
+        ("🤷 Which request? Reply to my message about it, or name it.", "m4"),
+    ]
+    assert (tmp_path / "out").read_text() == "build=true\n"
