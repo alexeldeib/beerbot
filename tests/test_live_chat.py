@@ -25,7 +25,7 @@ async def chat(pg):
     await pg.execute("INSERT INTO groups(group_id,bot_id) VALUES('g1','fake')")
     agent = BeerAgent()
 
-    async def send(text: str, sender: str = "alice") -> str | None:
+    async def send(text: str, sender: str = "alice", attachments: tuple = ()) -> str | None:
         number = await pg.fetchval("SELECT COUNT(*) FROM message_inbox")
         await accept_message(
             GroupMeMessage(
@@ -37,6 +37,7 @@ async def chat(pg):
                 name=sender.title(),
                 text=text,
                 created_at=0,
+                attachments=list(attachments),
             )
         )
         assert await execute_one(agent)
@@ -72,3 +73,18 @@ async def test_answers_questions_it_has_no_dedicated_tool_for(chat, pg):
         FROM users, generate_series(4, 300, 4) d""")
     assert await chat("Beerius, when did I log my first drink, what date?")
     assert await chat("Beerius what is my average daily consumption since your inception?")
+
+
+async def test_owner_commands_override_house_rules(chat, pg, monkeypatch):
+    # Beerius refused this exact ask ("No retroactive bulk dumps") until the owner rule.
+    from src.beerbot.agent import settings
+
+    monkeypatch.setattr(settings, "owner_user_id", "alice")
+    text = "+25 from last weekend, half beer half rbv, for @Jay"
+    mention = {"type": "mentions", "user_ids": ["jay"], "loci": [[text.index("@Jay"), 4]]}
+    assert await chat(text, attachments=[mention])
+    totals = dict(
+        await pg.fetch("""SELECT b.drink_type, SUM(b.quantity) FROM beers b
+            JOIN users u ON u.id = b.user_id WHERE u.groupme_user_id = 'jay' GROUP BY 1""")
+    )
+    assert sum(totals.values()) == 25 and set(totals) == {"beer", "cocktail"}

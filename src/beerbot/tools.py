@@ -32,6 +32,7 @@ class ToolContext:
     sender_avatar_url: str | None
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
     replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
+    is_owner: bool = False  # From the sender's GroupMe id, never from the model.
     tools_called: bool = field(default=False, init=False)
     reply_text: str | None = field(default=None, init=False)
 
@@ -96,7 +97,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                 When specified, logs ONLY for those users (not the sender unless included).
         """
         ctx.tools_called = True
-        count = max(1, min(20, count))
+        count = max(1, min(100 if ctx.is_owner else 20, count))
         dt = DrinkType.from_string(drink_type)
 
         # Determine who to log for

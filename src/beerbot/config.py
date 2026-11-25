@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     # Admin (optional - required for admin endpoints)
     admin_token: str | None = None
+    # GroupMe user id whose serious instructions override Beerius's house rules.
+    owner_user_id: str | None = None
 
     # First-party dashboard. Email sign-in fails closed until SMTP is configured.
     web_origin: str = "https://beerbot-groupme.fly.dev"
