@@ -225,8 +225,8 @@ asks over and stays silent.
 2. **build** (`beerdev-build.yml`): Claude Code takes the oldest `beerdev` issue, and incidents
    first. Lint, the full suite (including the pipeline policy in `tests/test_policy.py`), and the
    live chat e2e then run with only read-only credentials. Changes beyond app code (workflows,
-   scripts, Docker, Fly, dependencies) need an independent Claude reviewer's approval, or they
-   wait for the owner as an open PR. `ship` refuses changes to beerdev's own kernel, applies the
+   scripts, Docker, Fly) need an independent Claude reviewer's approval, or they wait for the
+   owner as an open PR. Dependency changes always wait for the owner. `ship` refuses changes to beerdev's own kernel, applies the
    patch to a fresh checkout, appends `CHANGELOG.md`, merges, deploys through CI (which rolls back
    a failed deploy), and tells the chat. An issue closed mid-build (a veto) never ships.
 3. **lead** (`beerdev-lead.yml`, Mondays) reviews the code, incidents, and backlog with

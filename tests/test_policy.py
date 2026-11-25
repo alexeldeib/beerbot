@@ -176,6 +176,7 @@ def test_beerdev_cannot_change_its_kernel():
         assert re.search(kernel, path), path
     assert not re.search(kernel, "src/beerbot/tools.py")
     assert "--no-renames" in text  # A rename must not hide a kernel file.
+    assert "(pyproject\\.toml|uv\\.lock)" in text  # Dependency changes always wait for the owner.
     review = WORKFLOWS["beerdev-build.yml"]["jobs"]["review"]
     assert "review" in ship["needs"] and "claude-code" in yaml.safe_dump(review)
 
