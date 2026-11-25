@@ -12,8 +12,13 @@ Rules
   any new table or column as a new versioned entry in SCHEMA_MIGRATIONS (src/beerbot/database.py).
 - Keep the diff small. Existing drink counts, leaderboards, and recaps must not change unless the
   request is about them.
-- Never change .github/, scripts/, Dockerfile, .dockerignore, fly.toml, pyproject.toml, uv.lock,
-  or src/beerbot/config.py. No new dependencies, settings, secrets, endpoints, or network calls.
+- You may change infrastructure (workflows, scripts/, Dockerfile, fly.toml, dependencies with
+  `uv add`/`uv lock`, settings) when the request needs it. An independent reviewer must approve
+  such changes before they ship, so keep them minimal and explain them in the announcement or code.
+- Never change your kernel: .github/workflows/beerdev-build.yml, .github/workflows/beerdev-lead.yml,
+  .github/beerdev-*.md, .claude/, or tests/test_policy.py. Keep every check in tests/test_policy.py
+  passing: no new secrets or secret uses, write permissions, triggers, or network hosts for code
+  that holds secrets, and keep deploy verification and rollback. Never print or store a secret.
 - Never weaken privacy or safety: no secrets or internal IDs in replies, no cross-group data, no
   bulk deletes.
 - Tests: add unit tests, plus at least one scenario in tests/test_live_chat.py that sends a

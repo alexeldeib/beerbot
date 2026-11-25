@@ -15,10 +15,10 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Steer an issue instead of scanning
+        description: Scan, or steer an issue
         type: choice
-        options: ["", veto, approve]
-        required: false
+        options: [scan, veto, approve]
+        default: scan
       issue:
         description: Issue number to steer
         type: number
@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   scan:
-    if: ${{ !inputs.action }}
+    if: ${{ !inputs.action || inputs.action == 'scan' }} # schedules have no inputs
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -49,7 +49,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          enable-cache: true
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
 
       - id: scan
         run: uv run --frozen python scripts/beerdev.py
@@ -73,7 +73,7 @@ jobs:
           BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
 
   steer:
-    if: inputs.action
+    if: inputs.action == 'veto' || inputs.action == 'approve'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -89,7 +89,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          enable-cache: true
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
 
       - id: steer
         run: uv run --frozen python scripts/beerdev.py steer
