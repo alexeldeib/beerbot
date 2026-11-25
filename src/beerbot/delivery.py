@@ -5,16 +5,35 @@ import copy
 import json
 import logging
 import time
+import traceback
+from collections import Counter
 from datetime import datetime, UTC
+from pathlib import Path
 
 from .database import bind_execution, get_pool
 from .config import settings
+from .dispatch import dispatch
 from .models import GroupMeMessage
 
 logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
+# Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
+# Postgres; the durable record is the failed rows themselves.
+TERMINAL_FAILURES: Counter[str] = Counter()
+
+
+def failure_detail(exc: BaseException) -> str:
+    """Exception type and this repo's stack frames, never the message: it can hold chat data."""
+    frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/src/beerbot/" in f.filename]
+    where = " <- ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames))
+    return f"{type(exc).__name__} at {where or 'unknown'}"[:500]
+
+
+def record_terminal(code: str) -> None:
+    TERMINAL_FAILURES[code] += 1
+    dispatch("ops.yml", every=600, reason=code)  # No-op without a dispatch token.
 
 
 class QueueRuntime:
@@ -55,6 +74,7 @@ class QueueRuntime:
             "probe_failed": self.probe_failed,
             "last_scan": self.last_scan.copy(),
             "next_scan": self.next_scan.copy(),
+            "terminal_failures": dict(TERMINAL_FAILURES),
         }
 
 
@@ -198,14 +218,17 @@ async def execute_one(agent) -> bool:
                 )
                 await conn.execute(
                     """UPDATE message_inbox SET attempts=$2,state=$3,error_code=$4,
-                       available_at=NOW()+$5*INTERVAL '1 second' WHERE id=$1""",
+                       available_at=NOW()+$5*INTERVAL '1 second',error_detail=$6 WHERE id=$1""",
                     row["id"],
                     attempts,
                     state,
                     code,
                     min(300, 5 * 2**attempts),
+                    failure_detail(exc),
                 )
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
+                if state == "failed":
+                    record_terminal(code)
     return True
 
 
@@ -256,6 +279,8 @@ async def deliver_one(client) -> bool:
             delay,
         )
         logger.info("Reply delivery: outbox=%s state=%s code=%s", row["id"], state, code)
+        if state in ("failed", "uncertain"):
+            record_terminal(f"delivery_{state}")
     return True
 
 
@@ -303,9 +328,9 @@ async def queue_status() -> dict:
         )
         age = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM NOW()-MIN(created_at))
             FROM message_inbox WHERE state='pending'""")
-        attention = await conn.fetch("""SELECT id,inbox_id,state,attempts,error_code
+        attention = await conn.fetch("""SELECT id,inbox_id,state,attempts,error_code,created_at
             FROM message_outbox WHERE state IN ('failed','uncertain') ORDER BY id DESC LIMIT 50""")
-        failed_runs = await conn.fetch("""SELECT id,attempts,error_code
+        failed_runs = await conn.fetch("""SELECT id,attempts,error_code,error_detail,created_at
             FROM message_inbox WHERE state='failed' ORDER BY id DESC LIMIT 50""")
         return {
             "inbox": {r["state"]: r["count"] for r in inbox},

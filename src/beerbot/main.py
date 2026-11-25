@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from .agent import beer_agent
 from .config import settings
 from .database import close_pool, init_db, get_pool
+from .dispatch import dispatch
 from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
@@ -228,6 +229,8 @@ async def groupme_callback(request: Request):
     result = await accept_message(message)
     if runtime := getattr(request.app.state, "queue_runtime", None):
         runtime.wake()
+    if result.get("action") == "queued" and "beerdev" in (message.text or "").lower():
+        dispatch("beerdev.yml", every=60)  # Ack the ask now, not at the next scheduled scan.
     return result
 
 

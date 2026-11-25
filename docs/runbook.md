@@ -11,6 +11,7 @@ something looks wrong. Commands assume `gh` and `fly` are logged in as the owner
 | **beerdev scan** | GitHub Actions `beerdev.yml`, every 10 min | Files chat asks as issues, reacts 💡 on the ask |
 | **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue, tests, merges, deploys, reacts ✅ |
 | **CI** | GitHub Actions `ci.yml`, on push to `main` or dispatch | Tests, then blue-green deploy to Fly, then verifies health, version, and DB |
+| **ops** | GitHub Actions `ops.yml`, hourly and on failures | Probes health, redeploys a stuck app, files one issue per failure class; never posts in the chat |
 | **Database** | Neon PostgreSQL | All durable state; sleeps when idle (see `idle-compute.md`) |
 
 The `beerius` bot in the Beerbeta test group points at `/callback-fake` on purpose, which
@@ -28,7 +29,8 @@ goes out blue-green.
 | `GROUPME_WEBHOOK_SECRET` | Fly, and Beerius's callback URL `?token=` | Rejecting forged callbacks (forged → 401) | See "Rotate the webhook secret" |
 | `DATABASE_URL` | Fly; also the local `.env` | Neon production database | Neon console. The local `.env` points at **production**: run read-only SQL only (`BEGIN READ ONLY`) |
 | `GEMINI_API_KEY` | Fly (Beerius); GitHub (scan, live e2e) | Model calls | Google AI Studio. Prefer a separate low-quota key for GitHub, because agent-written tests can read it |
-| `ADMIN_TOKEN` | Fly; local `.env.local` | `/admin/*` endpoints | `openssl rand -hex 32`, then set it in Fly and `.env.local` |
+| `ADMIN_TOKEN` | Fly; GitHub (ops); local `.env.local` | `/admin/*` endpoints | `openssl rand -hex 32`, then set the same value in all three places |
+| `GITHUB_DISPATCH_TOKEN` (optional) | Fly | Instant beerdev scans on mentions, and instant ops checks on failures | See "Enable instant triggers". Without it, schedules catch up (scan every 10 min, ops hourly) |
 | `BEERBOT_BOT_ID` | Fly | Legacy default bot. Per-group bot IDs live in the `groups` table (`POST /admin/groups`) | GroupMe bot list |
 | `SMTP_*` | Fly | Email sign-in for `/app` | Mail provider |
 | `FLY_API_TOKEN` | GitHub | CI deploys | Deploy token `github-actions-beerbot`, expires 2027-08-30: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot -x 8760h \| gh secret set FLY_API_TOKEN` |
@@ -51,6 +53,28 @@ rotation drops messages for a few seconds. Do it when the chat is quiet.
    that the next chat message shows `POST /callback?token=*** … 200` in `fly logs`. Access logs
    redact `token=`.
 
+### Enable instant triggers
+
+GitHub creates fine-grained tokens only in its web UI. This link prefills everything except the
+repository:
+https://github.com/settings/personal-access-tokens/new?name=beerbot-dispatch&description=Fly+app+starts+beerdev+and+ops+workflows&target_name=alexeldeib&expires_in=366&actions=write
+
+Set **Repository access → Only select repositories → beerbot**, generate the token, and then:
+```sh
+printf 'GITHUB_DISPATCH_TOKEN=%s\n' "$TOKEN" | fly secrets import --stage -a beerbot-groupme
+gh workflow run ci.yml --ref main
+```
+The token can only start and inspect workflows in this repository. Without it, nothing breaks.
+It expires after a year; a lapsed token only slows acks back down to the schedules.
+
+### Fly tokens
+
+CI deploys with an app-scoped deploy token, and nothing in the automation reads Fly directly:
+failures carry their own stack frames in the database. For ad-hoc debugging from another
+machine, mint a read-only token instead of reusing the deploy one:
+`fly tokens create readonly -o personal -n debugging -x 720h`. List or revoke tokens with
+`fly tokens list -a beerbot-groupme` and `fly tokens revoke <id>`.
+
 ## Deploys and rollbacks
 
 - Merging to `main` deploys automatically. To redeploy without a change, run `gh workflow run ci.yml --ref main`.
@@ -68,11 +92,18 @@ rotation drops messages for a few seconds. Do it when the chat is quiet.
   shows failed executions (messages Beerius never answered) and deliveries needing attention.
   `/admin/workers/status` is memory-only and safe to poll.
 - **Logs:** `fly logs -a beerbot-groupme`.
+- **ops:** issues labeled `ops`. "Production is unhealthy" opens with the action taken (a CI
+  redeploy, at most once per 30 minutes) and closes itself on recovery. "Messages failing with
+  `<Error>`" lists each failed message with its exception type and stack frames; code-level classes
+  are also labeled `beerdev`, so beerdev fixes them. If a class recurs within 7 days of closing,
+  ops appends to the closed issue instead of starting another build. Ops reads the database only
+  after a failure, or once a day at 12:17 UTC, so Neon can sleep.
 
 ## Troubleshooting
 
-**Beerius didn't answer.** Check `failed_executions` in the queue status. Payloads are kept for 3
-days, so to see what failed:
+**Beerius didn't answer.** Ops files these on its own. By hand, check `failed_executions` in the
+queue status: `error_detail` has the exception type and stack frames. Payloads are kept for 3
+days, so to see the message itself:
 ```sh
 psql "$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" -c "BEGIN READ ONLY;" -c \
   "SELECT id, created_at, attempts, error_code, left(payload->>'text', 80) FROM message_inbox
