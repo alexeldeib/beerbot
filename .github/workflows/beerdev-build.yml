@@ -166,7 +166,7 @@ jobs:
           fi
           git apply --index /tmp/beerdev/change.patch
           changed="$(git diff --cached --name-only)"
-          protected='^(\.github/|\.claude/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
+          protected='^(\.github/|\.claude/|scripts/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
           if grep -E "$protected" <<< "$changed"; then
             echo "::error::beerdev may not change infrastructure files"
             exit 1
