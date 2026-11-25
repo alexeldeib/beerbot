@@ -59,6 +59,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
           BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
+          OWNER_USER_ID: ${{ vars.OWNER_USER_ID }} # Only this sender can veto or approve.
           SINCE_HOURS: ${{ inputs.since_hours }}
 
       - name: Start a build
