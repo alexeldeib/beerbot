@@ -1,0 +1,46 @@
+name: ops
+
+# Watches production without ever posting to the chat: probes health and readiness, redeploys
+# through CI when the app is stuck, and files one issue per failure class (code-level ones are
+# also labeled `beerdev`, so beerdev fixes them). The app starts this the moment a message fails
+# when GITHUB_DISPATCH_TOKEN is set; otherwise the hourly run catches it. See docs/runbook.md.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: What prompted this check (the app sends the failure class)
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: ops
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write # redeploy through CI
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv run --frozen python scripts/ops.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          REASON: ${{ inputs.reason }}

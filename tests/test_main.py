@@ -377,3 +377,18 @@ def test_access_log_redacts_webhook_token():
     )
     assert _redact_tokens(record)
     assert record.getMessage() == '1.2.3.4:5 - "POST /callback?token=***&x=1 HTTP/1.1" 200'
+
+
+def test_mentioning_beerdev_starts_a_scan(monkeypatch, sample_groupme_message):
+    from fastapi.testclient import TestClient
+    from src.beerbot import main
+
+    started = []
+    monkeypatch.setattr(main, "dispatch", lambda workflow, **kw: started.append(workflow))
+    monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
+    with TestClient(main.app) as client:
+        client.post(
+            "/callback", json=sample_groupme_message | {"text": "Beerdev add a zyn tracker"}
+        )
+        client.post("/callback", json=sample_groupme_message | {"text": "+1 beer"})
+    assert started == ["beerdev.yml"]

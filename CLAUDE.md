@@ -89,6 +89,7 @@ src/beerbot/
 - **App groups**: `app_groups.py` manages only native workspaces with no legacy group mapping. Invitations require a verified matching email and a live owner grant. Group membership shares names/roles, never another person's drink history. Keep workspace-before-membership and user-before-beer lock ordering when extending commands.
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 - **beerdev**: `beerdev.yml` (scan) + `scripts/beerdev.py` file chat asks as `beerdev`/`beerdev-infra` issues and react 💡; `beerdev-build.yml` ships `beerdev` issues with Claude Code (`.github/beerdev-prompt.md`). Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`). Operations: `docs/runbook.md`
+- **ops**: `ops.yml` + `scripts/ops.py` probe production hourly, redeploy a stuck app through CI, and file one issue per failure class (code-level classes also get `beerdev`). Terminal failures store a publishable `error_detail` (exception type + this repo's frames, never message text) and bump the memory-only `TERMINAL_FAILURES` counter; `dispatch.py` starts ops/beerdev runs immediately when `GITHUB_DISPATCH_TOKEN` is set
 
 No repository-local issue tracker is configured.
 

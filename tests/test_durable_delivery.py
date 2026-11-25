@@ -8,7 +8,7 @@ import pytest
 from src.beerbot import database
 from src.beerbot.agent import BeerAgent
 from src.beerbot.delivery import accept_message, execute_one, deliver_one, maintain_queue
-from src.beerbot.delivery import retry_delivery
+from src.beerbot.delivery import queue_status, retry_delivery
 from src.beerbot.groupme_client import DeliveryResult
 from src.beerbot.models import GroupMeMessage
 from src.beerbot.repositories import debt_repo
@@ -197,14 +197,27 @@ async def test_silence_and_retention_keep_deduplication_tombstones(pg, monkeypat
 
 async def test_failed_execution_retries_are_bounded(pg, monkeypatch):
     await setup(pg)
+    from collections import Counter
+    from src.beerbot import delivery
+
+    reports = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, **kw: reports.append((workflow, kw)))
+    monkeypatch.setattr(delivery, "TERMINAL_FAILURES", Counter())
     agent = BeerAgent()
-    monkeypatch.setattr(agent, "process_message", AsyncMock(side_effect=ValueError("bad")))
+    failing = AsyncMock(side_effect=ValueError("chat text"))
+    monkeypatch.setattr(agent, "process_message", failing)
     await accept_message(message())
     for _ in range(3):
         await pg.execute("UPDATE message_inbox SET available_at=NOW()")
         assert await execute_one(agent)
     assert await pg.fetchval("SELECT state FROM message_inbox") == "failed"
     assert not await execute_one(agent)
+    # Ops gets a publishable summary: type and this repo's frames, never the message.
+    detail = await pg.fetchval("SELECT error_detail FROM message_inbox")
+    assert detail.startswith("ValueError at delivery.py:") and "chat text" not in detail
+    assert (await queue_status())["failed_executions"][0]["error_detail"] == detail
+    assert delivery.TERMINAL_FAILURES == {"ValueError": 1}
+    assert reports == [("ops.yml", {"every": 600, "reason": "ValueError"})]
 
 
 async def test_uncertain_admin_retry_only_resends_saved_reply(pg, monkeypatch):

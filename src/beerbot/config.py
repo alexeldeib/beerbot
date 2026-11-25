@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
 
+    # Optional: start beerdev scans on mentions and ops checks on failures right away. Without a
+    # token, the scheduled workflows pick everything up a little later.
+    github_dispatch_token: str | None = None
+    github_repository: str = "alexeldeib/beerbot"
+
     # Build metadata
     app_version: str = "0.2.0"
     git_sha: str = "unknown"
