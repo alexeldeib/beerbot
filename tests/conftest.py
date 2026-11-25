@@ -74,3 +74,24 @@ def sample_groupme_message():
         "text": "+1 beer",
         "user_id": "user-001",
     }
+
+
+def pytest_terminal_summary(terminalreporter):
+    """After live runs, say what the real model calls cost; CI adds it to the run summary."""
+    from datetime import date
+
+    from src.beerbot import usage
+
+    lines = []
+    for model, counts in usage.since_boot().items():
+        usd = usage.cost(model, date.today(), *list(counts.values())[1:])
+        price = f"${usd:.3f}" if usd is not None else "unpriced"
+        lines.append(
+            f"Model usage: {model}: {counts['calls']} calls, {counts['input_tokens']} input and "
+            f"{counts['output_tokens']} output tokens, {price} at list prices"
+        )
+    for line in lines:
+        terminalreporter.write_line(line)
+    if lines and (summary := os.environ.get("GITHUB_STEP_SUMMARY")):
+        with open(summary, "a") as handle:
+            handle.write("\n".join(lines) + "\n")

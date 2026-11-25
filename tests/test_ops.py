@@ -164,3 +164,36 @@ def test_failure_excerpt_keeps_the_step_header_when_output_is_long():
     assert excerpt[0] == "##[group]Run curl /health" and excerpt[1] == "..."
     assert excerpt[-1] == "##[error]exit 22" and len(excerpt) == 12
     assert ops.failure_excerpt(["a", "b", "c"], limit=2) == ["b", "c"]  # No marker: plain tail.
+
+
+def test_spend_over_budget_files_one_inbox_issue_a_month():
+    spend = {
+        "month": "2026-11",
+        "usd": 6.1,
+        "projected_usd": 7.4,
+        "budget_usd": 5.0,
+        "over_budget": True,
+        "by_source": {"beerius": {"usd": 5.9, "calls": 330}, "beerdev": {"usd": 0.2, "calls": 4}},
+    }
+    app = httpx.Client(
+        base_url="https://x.test",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=spend)),
+    )
+    posted = []
+
+    def github_respond(request):
+        posted.append(json.loads(request.content))
+        return httpx.Response(201, json={"number": 50})
+
+    github = httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(github_respond))
+    issues = []
+    line = ops.check_spend(github, "o/r", issues, app, {})
+    assert line.startswith("model spend $6.10 so far in 2026-11, $7.40 projected, budget $5.00")
+    assert len(posted) == 1 and posted[0]["labels"] == ops.NEEDS_OWNER
+    assert "beerius $5.90 (330 calls)" in posted[0]["body"]
+    issues.append({"body": posted[0]["body"], "state": "closed"})  # Even once closed:
+    ops.check_spend(github, "o/r", issues, app, {})
+    assert len(posted) == 1  # one issue per month, not one per day.
+    spend["over_budget"] = False
+    ops.check_spend(github, "o/r", [], app, {})
+    assert len(posted) == 1

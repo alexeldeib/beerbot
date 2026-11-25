@@ -608,6 +608,28 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        11,
+        "model_usage",
+        (
+            # Token counts per day, source (beerius, recap, beerdev), and model; costs are
+            # computed from usage.PRICES when read. No content, so it is kept indefinitely.
+            """CREATE TABLE model_usage (
+                day DATE NOT NULL,
+                source TEXT NOT NULL,
+                model TEXT NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                input_tokens BIGINT NOT NULL DEFAULT 0,
+                output_tokens BIGINT NOT NULL DEFAULT 0,
+                cached_tokens BIGINT NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, source, model)
+            )""",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():

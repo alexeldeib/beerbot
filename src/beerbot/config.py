@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # Optional: start beerdev scans on mentions and ops checks on failures right away. Without a
     # token, the scheduled workflows pick everything up a little later.
     github_dispatch_token: str | None = None
+    # Monthly model spend (USD, list prices) above which ops files an inbox issue.
+    model_budget_usd: float = 5.0
     github_repository: str = "alexeldeib/beerbot"
 
     # Build metadata

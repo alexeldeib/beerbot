@@ -6,6 +6,7 @@ steer_beerdev tools); `scan` pulls them through the admin API, so GitHub never r
 beerdev talks only as its own GroupMe bot. Actions logs are public: never print chat text.
 """
 
+import json
 import os
 import re
 import sys
@@ -50,8 +51,24 @@ Labels: beerdev = queued to build; inbox = waiting on the owner; beerdev-failed 
 proposal = the weekly lead's idea. Closed as completed = shipped; as not_planned = declined.
 {queue}
 
+Model spend this month (estimated at list prices; fixed hosting costs are in the runbook):
+{spend}
+
 {files}
 """
+# What chat questions are about: behavior, features, the queue, operations, and costs.
+ANSWER_FILES = [
+    "README.md",
+    "CHANGELOG.md",
+    "CLAUDE.md",
+    "docs/runbook.md",
+    "src/beerbot/agent.py",
+    "src/beerbot/tools.py",
+    "src/beerbot/models.py",
+    "src/beerbot/config.py",
+    "src/beerbot/usage.py",
+]
+USED = [0, 0, 0, 0]  # This run's Gemini calls and tokens (input, output, cached), for /admin/usage.
 
 
 FILLER = {
@@ -105,22 +122,39 @@ def filed(request: dict, issues: list[dict]) -> bool:
     return bool({(request["message_id"], request["kind"]), (request["message_id"], "*")} & seen)
 
 
-def answer(question: str, issues: list[dict]) -> str:
-    """Answer a chat question from the code, docs, and queue. No tools: nothing to leak."""
+def answer(question: str, issues: list[dict], spend: dict | None = None) -> str:
+    """Answer a chat question from the code, docs, queue, and spend. No tools: nothing to leak."""
     queue = "\n".join(
         f"#{i['number']} {i['state']}{'/' + i['state_reason'] if i.get('state_reason') else ''} "
         f"[{', '.join(label['name'] for label in i['labels'])}] {i['title']}"
         for i in sorted(issues, key=lambda issue: -issue["number"])
     )
-    paths = ["README.md", "CHANGELOG.md", "CLAUDE.md", "docs/runbook.md"]
-    paths += sorted(str(p.relative_to(ROOT)) for p in (ROOT / "src/beerbot").rglob("*.py"))
     files = "\n\n".join(
-        f"=== {path} ===\n{(ROOT / path).read_text()}" for path in paths if (ROOT / path).exists()
+        f"=== {path} ===\n{(ROOT / path).read_text()}"
+        for path in ANSWER_FILES
+        if (ROOT / path).exists()
     )
-    prompt = ANSWER.format(question=question, issues=REPO_URL, queue=queue or "(none)", files=files)
+    prompt = ANSWER.format(
+        question=question,
+        issues=REPO_URL,
+        queue=queue or "(none)",
+        spend=json.dumps(spend) if spend else "(unavailable)",
+        files=files,
+    )
     # Keep a reference: a garbage-collected genai.Client closes its HTTP client mid-request.
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     response = client.models.generate_content(model=MODEL, contents=prompt)
+    meta = response.usage_metadata
+    for i, n in enumerate(
+        [
+            1,
+            getattr(meta, "prompt_token_count", 0) or 0,
+            (getattr(meta, "candidates_token_count", 0) or 0)
+            + (getattr(meta, "thoughts_token_count", 0) or 0),
+            getattr(meta, "cached_content_token_count", 0) or 0,
+        ]
+    ):
+        USED[i] += n
     return f"🤓 {(response.text or '').strip()}"
 
 
@@ -163,11 +197,13 @@ def ack(request: dict, number: int) -> str:
     return f"💡 Queued: {request['title']} ({REPO_URL}/{number}). I'll post when it ships."
 
 
-def handle(github: httpx.Client, repo: str, issues: list[dict], request: dict) -> str:
+def handle(
+    github: httpx.Client, repo: str, issues: list[dict], request: dict, spend: dict | None = None
+) -> str:
     """Act on one ask from Beerius and return beerdev's chat line ("" for nothing to say)."""
     kind = request["kind"]
     if kind == "question":
-        return answer(f"{request['title']}\n{request['spec']}", issues)
+        return answer(f"{request['title']}\n{request['spec']}", issues, spend)
     if kind in ("veto", "approve"):  # The app bound these to the owner's own words.
         number = request["issue"] or named(request["title"], issues)
         if number not in {issue["number"] for issue in issues}:
@@ -326,12 +362,15 @@ def main(command: str = "scan", *args: str) -> None:
         timeout=30,
     )
     requests = app.get("/admin/dev-requests").raise_for_status().json()["requests"]
+    # Questions may be about costs; the database is awake from the request above anyway.
+    questions = any(request["kind"] == "question" for request in requests)
+    spend = app.get("/admin/usage").raise_for_status().json() if questions else None
     done = 0
     for request in requests:
         stale = datetime.now(UTC) - datetime.fromisoformat(request["created_at"]) > GIVE_UP
         try:
             if not stale:
-                say(handle(github, repo, issues, request), request["message_id"])
+                say(handle(github, repo, issues, request, spend), request["message_id"])
         except Exception as exc:  # Left unclaimed: the app asks again within the hour.
             print(
                 f"::warning::Ask {request['id']} ({request['kind']}) failed: {type(exc).__name__}"
@@ -339,8 +378,11 @@ def main(command: str = "scan", *args: str) -> None:
             continue
         app.post(f"/admin/dev-requests/{request['id']}/claim").raise_for_status()
         done += 1
+    if USED[0]:  # Answers count toward the same monthly spend as Beerius.
+        counts = dict(zip(("calls", "input_tokens", "output_tokens", "cached_tokens"), USED))
+        app.post("/admin/usage", json={"source": "beerdev", "model": MODEL} | counts)
     kinds = ", ".join(request["kind"] for request in requests) or "none"
-    print(f"Handled {done} of {len(requests)} ask(s): {kinds}")
+    print(f"Handled {done} of {len(requests)} ask(s): {kinds}; Gemini tokens: {USED[1]} in")
     write_output(build=str(next_build(issues) is not None).lower())
 
 

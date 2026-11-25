@@ -184,7 +184,21 @@ def test_answers_come_from_the_code_and_queue_without_tools(monkeypatch):
     class Models:
         def generate_content(self, model, contents, **config):
             seen.update(contents=contents, config=config)
-            return type("Answer", (), {"text": " Gym tracking is queued as #31. "})()
+            usage = type(
+                "Usage",
+                (),
+                {
+                    "prompt_token_count": 900,
+                    "candidates_token_count": 20,
+                    "thoughts_token_count": 80,
+                    "cached_content_token_count": 0,
+                },
+            )
+            return type(
+                "Answer",
+                (),
+                {"text": " Gym tracking is queued as #31. ", "usage_metadata": usage()},
+            )()
 
     monkeypatch.setattr(
         beerdev.genai, "Client", lambda api_key: type("C", (), {"models": Models()})()
@@ -198,11 +212,15 @@ def test_answers_come_from_the_code_and_queue_without_tools(monkeypatch):
             "labels": [{"name": "beerdev"}],
         }
     ]
-    line = beerdev.answer("What is queued?", issues)
+    monkeypatch.setattr(beerdev, "USED", [0, 0, 0, 0])
+    line = beerdev.answer("What is queued?", issues, {"usd": 1.23, "budget_usd": 5.0})
     assert line == "🤓 Gym tracking is queued as #31."
+    assert beerdev.USED == [1, 900, 100, 0]  # Reported to /admin/usage as beerdev's spend.
     prompt = seen["contents"]
     assert "#31 open [beerdev] Track gym sessions" in prompt and "What is queued?" in prompt
     assert "=== src/beerbot/tools.py ===" in prompt and "async def log_drinks" in prompt
+    assert '"usd": 1.23' in prompt  # "How much are we spending?" has an answer.
+    assert "=== src/beerbot/web.py ===" not in prompt  # Only what chat questions are about.
     assert seen["config"] == {}  # No tools, so nothing in the runner is reachable.
 
 
@@ -235,9 +253,13 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
         "labels": [{"name": "beerdev"}],
         "body": "",
     }
-    claimed, said = [], []
+    claimed, said, reported, spends = [], [], [], []
 
     def app(request):
+        if request.url.path == "/admin/usage":
+            if request.method == "POST":
+                reported.append(json.loads(request.content))
+            return httpx.Response(200, json={"usd": 0.42})
         if request.method == "GET":
             return httpx.Response(200, json={"requests": asks})
         claimed.append(int(request.url.path.split("/")[-2]))
@@ -262,13 +284,16 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
         handler = app if base_url == "https://app.test" else github
         return real(base_url=base_url, headers=headers, transport=httpx.MockTransport(handler))
 
-    def answer(question, issues):
+    def answer(question, issues, spend=None):
+        spends.append(spend)
         if "Breaks" in question:
             raise RuntimeError("model down")
+        beerdev.USED[:] = [beerdev.USED[0] + 1, beerdev.USED[1] + 900, beerdev.USED[2] + 100, 0]
         return "🤓 Gym tracking is queued."
 
     monkeypatch.setattr(beerdev.httpx, "Client", client)
     monkeypatch.setattr(beerdev, "answer", answer)
+    monkeypatch.setattr(beerdev, "USED", [0, 0, 0, 0])
     monkeypatch.setattr(beerdev, "say", lambda text, reply_to=None: said.append((text, reply_to)))
     for key, value in {
         "GITHUB_REPOSITORY": "o/r",
@@ -287,3 +312,14 @@ def test_scan_handles_each_ask_once_and_leaves_failures_for_a_retry(monkeypatch,
         ("🤷 Which request? Reply to my message about it, or name it.", "m4"),
     ]
     assert (tmp_path / "out").read_text() == "build=true\n"
+    assert spends == [{"usd": 0.42}] * 2  # Questions see this month's spend.
+    assert reported == [  # The answers' own tokens join the monthly total.
+        {
+            "source": "beerdev",
+            "model": beerdev.MODEL,
+            "calls": 1,
+            "input_tokens": 900,
+            "output_tokens": 100,
+            "cached_tokens": 0,
+        }
+    ]
