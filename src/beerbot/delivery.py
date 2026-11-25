@@ -127,7 +127,9 @@ async def execute_one(agent) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow("""
-                SELECT i.* FROM message_inbox i
+                -- Explicit columns: a pooled server-side plan for SELECT * breaks when the
+                -- table gains a column (cached plan must not change result type).
+                SELECT i.id, i.group_id, i.payload, i.attempts FROM message_inbox i
                 WHERE i.state='pending' AND i.available_at <= NOW()
                   AND NOT EXISTS (SELECT 1 FROM message_inbox earlier
                       WHERE earlier.group_id=i.group_id AND earlier.state='pending'
