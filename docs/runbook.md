@@ -113,8 +113,15 @@ Known gaps, broadest first:
 - Merging to `main` deploys automatically. To redeploy without a change, run `gh workflow run ci.yml --ref main`.
 - CI deploys blue-green, then verifies `/health`, `/ready`, the git SHA in `/version`, and
   `/ready/db`. That last call recovers messages stranded during the handoff.
+- **Automatic rollback:** before deploying, CI records the running image and git SHA. If
+  verification fails after the deploy, it redeploys that image with that commit's `fly.toml`
+  (blue-green), checks `/ready` and `/ready/db`, and still fails the run, so ops files "Deploy failed"
+  (noting the rollback) and beerdev fixes forward. Migrations are forward-only: code must keep
+  working on the previous schema (add columns, never `SELECT *`).
 - Run `fly deploy` by hand only if CI itself is broken, then call `/ready/db`.
-- To roll back, run `gh pr revert <number>` and merge the revert PR.
+- To roll back by hand, run `fly releases -a beerbot-groupme --image` and then
+  `fly deploy -a beerbot-groupme --image <ref> --strategy bluegreen`. To revert the code,
+  run `gh pr revert <number>` and merge it.
 
 ## Watching it
 
