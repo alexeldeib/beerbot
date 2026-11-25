@@ -48,6 +48,8 @@ class QueueRuntime:
         self.events = {name: asyncio.Event() for name in ("execution", "delivery")}
         self.scans = {name: 0 for name in self.events}
         self.failed = {name: False for name in self.events}
+        # Last scan failure per worker, kept after recovery: what ops reports when /ready fails.
+        self.last_error = {name: None for name in self.events}
         self.last_scan = {name: None for name in self.events}
         self.next_scan = {name: None for name in self.events}
         self.probe_failed = False
@@ -75,6 +77,7 @@ class QueueRuntime:
             "last_scan": self.last_scan.copy(),
             "next_scan": self.next_scan.copy(),
             "terminal_failures": dict(TERMINAL_FAILURES),
+            "last_error": self.last_error.copy(),
         }
 
 
@@ -378,9 +381,13 @@ async def _worker(name, runtime, work, after_work=None, maintenance=None):
             runtime.failed[name] = False
             runtime.probe_failed = False
             runtime.last_scan[name] = datetime.now(UTC).isoformat()
-        except Exception:
+        except Exception as exc:
             failures += 1
             runtime.failed[name] = True
+            runtime.last_error[name] = {
+                "at": datetime.now(UTC).isoformat(),
+                "detail": failure_detail(exc),
+            }
             delay = min(60, 5 * 2 ** min(failures - 1, 4))
             logger.exception("Queue worker scan failed: worker=%s", name)
         await runtime.wait(name, delay)

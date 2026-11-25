@@ -106,18 +106,18 @@ jobs:
       - name: Verify production health and revision
         if: steps.release.outputs.current == 'true'
         run: |
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --max-time 15 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/health
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --max-time 15 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/ready
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --max-time 15 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/version \
             | jq --exit-status --arg sha "${GITHUB_SHA}" '.git_sha == $sha'
           # After cutover, validate DB connectivity and wake the NEW fleet to
           # recover any receipts committed during the old fleet's shutdown.
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --max-time 15 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/ready/db

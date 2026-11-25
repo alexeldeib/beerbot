@@ -22,15 +22,31 @@ primary_region = 'iad'
   auto_start_machines = true
   min_machines_running = 1
 
+# Routing only asks "is the process serving?". Accepting a webhook is one INSERT into the durable
+# inbox, so a processing failure must never take the app out of rotation: on 2026-11-25 a /ready
+# routing check dropped every webhook while the workers were failing.
 [[http_service.checks]]
   grace_period = '15s'
   interval = '30s'
   method = 'GET'
-  # Memory-only liveness/worker state. Never use /ready/db for periodic probes.
-  path = '/ready'
+  path = '/health'
   timeout = '5s'
 
   [http_service.checks.headers]
+    X-Forwarded-Proto = 'https'
+
+# Deploy gate and monitoring, never routing: workers are running and their last scan succeeded.
+# Memory-only. Never use /ready/db for periodic probes.
+[checks.ready]
+  type = 'http'
+  port = 8080
+  method = 'GET'
+  path = '/ready'
+  interval = '30s'
+  timeout = '5s'
+  grace_period = '15s'
+
+  [checks.ready.headers]
     X-Forwarded-Proto = 'https'
 
 [[vm]]
