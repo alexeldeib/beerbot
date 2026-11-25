@@ -148,6 +148,10 @@ jobs:
           name: beerdev
           path: /tmp/beerdev
 
+      # The artifact is agent-writable, so the issue itself (title, ask id) comes from GitHub.
+      - name: Fetch the request
+        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body > /tmp/request.json
+
       - name: Apply the change
         id: apply
         run: |
@@ -162,7 +166,7 @@ jobs:
           fi
           git apply --index /tmp/beerdev/change.patch
           changed="$(git diff --cached --name-only)"
-          protected='^(\.github/|\.claude/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
+          protected='^(\.github/|\.claude/|scripts/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
           if grep -E "$protected" <<< "$changed"; then
             echo "::error::beerdev may not change infrastructure files"
             exit 1
@@ -175,7 +179,7 @@ jobs:
         env:
           BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
         run: |
-          title="$(jq -r .title /tmp/beerdev/issue.json)"
+          title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
           git switch -c "$branch"
           git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
@@ -184,7 +188,10 @@ jobs:
           git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
             "HEAD:refs/heads/$branch"
           note=/tmp/beerdev/announcement.md
-          [ -s "$note" ] || note=/tmp/beerdev/request.md
+          if [ ! -s "$note" ]; then
+            note=/tmp/request.md
+            jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
+          fi
           { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
           gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
           gh pr merge "$branch" --squash
@@ -218,8 +225,8 @@ jobs:
           BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
         run: |
           # Shows as the token's owner: GroupMe bots cannot react. Issues filed by hand have no ask.
-          msg="$(jq -r '.body // "" | capture("beerdev:msg=(?<m>[^\\s>:]+)").m // empty' /tmp/beerdev/issue.json)"
-          [ -n "$msg" ] || exit 0
+          msg="$(jq -r '.body // "" | capture("beerdev:msg=(?<m>[0-9]+)").m // empty' /tmp/request.json)"
+          [[ "$msg" =~ ^[0-9]+$ ]] || exit 0
           jq -n --arg emoji "$EMOJI" '{like_icon: {type: "unicode", code: $emoji}}' \
             | curl -fsS -o /dev/null -H "X-Access-Token: $GROUPME_ACCESS_TOKEN" \
               -H "Content-Type: application/json" -d @- \

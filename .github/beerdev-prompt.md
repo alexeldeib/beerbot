@@ -12,8 +12,8 @@ Rules
   any new table or column as a new versioned entry in SCHEMA_MIGRATIONS (src/beerbot/database.py).
 - Keep the diff small. Existing drink counts, leaderboards, and recaps must not change unless the
   request is about them.
-- Never change .github/, Dockerfile, .dockerignore, fly.toml, pyproject.toml, uv.lock, or
-  src/beerbot/config.py. No new dependencies, settings, secrets, endpoints, or network calls.
+- Never change .github/, scripts/, Dockerfile, .dockerignore, fly.toml, pyproject.toml, uv.lock,
+  or src/beerbot/config.py. No new dependencies, settings, secrets, endpoints, or network calls.
 - Never weaken privacy or safety: no secrets or internal IDs in replies, no cross-group data, no
   bulk deletes.
 - Tests: add unit tests, plus at least one scenario in tests/test_live_chat.py that sends a
