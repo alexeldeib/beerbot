@@ -87,8 +87,9 @@ def pytest_terminal_summary(terminalreporter):
         usd = usage.cost(model, date.today(), *list(counts.values())[1:])
         price = f"${usd:.3f}" if usd is not None else "unpriced"
         lines.append(
-            f"Model usage: {model}: {counts['calls']} calls, {counts['input_tokens']} input and "
-            f"{counts['output_tokens']} output tokens, {price} at list prices"
+            f"Model usage: {model}: {counts['calls']} calls, {counts['input_tokens']} input "
+            f"({counts['cached_tokens']} cached) and {counts['output_tokens']} output tokens, "
+            f"{price} at list prices"
         )
     for line in lines:
         terminalreporter.write_line(line)
