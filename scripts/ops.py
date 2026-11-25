@@ -147,7 +147,12 @@ def failure_excerpt(lines: list[str], limit: int = 40) -> list[str]:
 def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str] | None:
     """Issue key and report for a failed CI run on main, with the failing steps' log tail."""
     run = github.get(f"/repos/{repo}/actions/runs/{run_id}").raise_for_status().json()
-    if run["conclusion"] != "failure":
+    trusted = (
+        run.get("event") in ("push", "workflow_dispatch")  # Deploys; never pull_request runs.
+        and run.get("head_branch") == "main"
+        and (run.get("head_repository") or {}).get("full_name") == repo  # Not a fork's "main".
+    )
+    if run["conclusion"] != "failure" or not trusted:
         return None
     jobs = github.get(f"/repos/{repo}/actions/runs/{run_id}/jobs").raise_for_status().json()
     sections = []

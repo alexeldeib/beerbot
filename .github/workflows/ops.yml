@@ -27,7 +27,13 @@ concurrency:
 
 jobs:
   check:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'failure'
+    # Only this repository's own deploy runs: a fork PR can name its branch main, and its log
+    # (which it controls) would otherwise reach beerdev's agent as an incident.
+    if: >-
+      github.event_name != 'workflow_run' || (
+      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event) &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

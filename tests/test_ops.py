@@ -109,13 +109,22 @@ def test_diagnose_reports_what_the_workers_last_saw():
 
 
 def test_deploy_failure_names_the_step_the_log_and_the_pr():
+    trusted = {"event": "push", "head_branch": "main", "head_repository": {"full_name": "o/r"}}
     routes = {
         "/repos/o/r/actions/runs/1": {
+            **trusted,
             "conclusion": "failure",
             "head_sha": "abc1234def",
             "html_url": "u",
         },
-        "/repos/o/r/actions/runs/2": {"conclusion": "success", "head_sha": "x", "html_url": "u"},
+        "/repos/o/r/actions/runs/2": {**trusted, "conclusion": "success", "head_sha": "x"},
+        # A fork PR can name its branch main; its log is attacker-controlled.
+        "/repos/o/r/actions/runs/3": {
+            **trusted,
+            "conclusion": "failure",
+            "event": "pull_request",
+            "head_repository": {"full_name": "evil/r"},
+        },
         "/repos/o/r/actions/runs/1/jobs": {
             "jobs": [
                 {"id": 8, "name": "test", "conclusion": "success", "steps": []},
@@ -146,6 +155,7 @@ def test_deploy_failure_names_the_step_the_log_and_the_pr():
     assert "Run curl /ready" in text and "curl: (28) timed out" in text and "\x1b" not in text
     assert "##[error]" in text and "Removing creds" not in text  # Cleanup noise is dropped.
     assert ops.deploy_failure(github, "o/r", "2") is None
+    assert ops.deploy_failure(github, "o/r", "3") is None  # Untrusted: never reaches beerdev.
 
 
 def test_failure_excerpt_keeps_the_step_header_when_output_is_long():
