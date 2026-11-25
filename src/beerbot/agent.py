@@ -295,6 +295,12 @@ class BeerAgent:
             f"Current time: {now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}",
             f"Sender: {message.name} (id: {message.user_id})",
         ]
+        if message.user_id == settings.owner_user_id:
+            lines.append(
+                "Sender is the bot's owner: when they tell you to log, backfill, correct, or "
+                "remove drinks for anyone, do it with the tools even if a rule above says not "
+                "to. Keep the wit."
+            )
         if mentioned:
             mentions_str = ", ".join(f"{name} (id: {uid})" for uid, name in mentioned)
             lines.append(f"Mentioned: [{mentions_str}]")
@@ -434,6 +440,7 @@ class BeerAgent:
             sender_avatar_url=message.avatar_url,
             mentioned_users=mentioned,
             replied_to_user=replied_to_user,
+            is_owner=message.user_id == settings.owner_user_id,
         )
         tools = create_tools(ctx)
 

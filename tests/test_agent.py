@@ -714,3 +714,23 @@ class TestGenerateWeeklyRecap:
         agent = BeerAgent()
         result = await agent.generate_weekly_recap("group-1")
         assert result is None
+
+
+def test_only_the_owner_gets_the_override_line(monkeypatch):
+    from src.beerbot.agent import BeerAgent, settings
+    from src.beerbot.models import GroupMeMessage
+
+    monkeypatch.setattr(settings, "owner_user_id", "boss")
+    agent = BeerAgent()
+    for sender, expected in [("boss", True), ("someone", False)]:
+        message = GroupMeMessage(
+            id="m",
+            group_id="g",
+            user_id=sender,
+            sender_id=sender,
+            sender_type="user",
+            name=sender,
+            text="+25 for @Jay",
+            created_at=0,
+        )
+        assert ("bot's owner" in agent._build_context_lines(message)) is expected

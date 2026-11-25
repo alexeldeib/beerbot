@@ -430,3 +430,19 @@ class TestGetMillionCountdown:
         assert "pace_7d" in result
         assert "pace_30d" in result
         assert "target_date" in result
+
+
+@pytest.mark.parametrize("is_owner,logged", [(True, 25), (False, 20)])
+async def test_only_the_owner_logs_past_the_per_message_cap(is_owner, logged):
+    with (
+        patch("src.beerbot.tools.user_repo") as users,
+        patch("src.beerbot.tools.beer_repo") as beers,
+        patch("src.beerbot.tools.debt_repo") as debts,
+    ):
+        users.get_or_create = AsyncMock(return_value=MagicMock(id=1))
+        beers.create = AsyncMock(return_value=MagicMock())
+        beers.get_user_total_by_type = AsyncMock(return_value=logged)
+        debts.reduce_debt = AsyncMock(return_value=0)
+        log_drinks = _find_tool(create_tools(_make_ctx(is_owner=is_owner)), "log_drinks")
+        await log_drinks(25, "beer")
+        assert beers.create.call_args.kwargs["quantity"] == logged
