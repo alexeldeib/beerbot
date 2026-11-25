@@ -584,6 +584,8 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             message: Your reply message.
         """
+        if not message.strip():
+            raise ValueError("Empty message. To stay silent, don't call reply.")
         ctx.reply_text = message
         return {"status": "queued"}
 
@@ -622,7 +624,12 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             try:
                 bound = inspect.signature(tool).bind(*args, **kwargs)
                 bound.apply_defaults()
-                result = await tool(*args, **kwargs)
+                # One savepoint per call: bad model input (ValueError) undoes only this tool and
+                # goes back to the model as an error it can fix, instead of failing the message.
+                async with scope.connection.transaction():
+                    result = await tool(*args, **kwargs)
+            except ValueError as exc:
+                result = {"error": str(exc)}
             except BaseException:
                 scope.failed = True
                 raise

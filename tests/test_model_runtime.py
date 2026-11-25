@@ -5,7 +5,6 @@ import httpx
 import pytest
 from google.genai import types
 from openai import AsyncOpenAI
-from pydantic import ValidationError
 
 from src.beerbot.model_runtime import (
     Call,
@@ -114,18 +113,13 @@ async def test_compatible_http_tools_images_and_reasoning_round_trip():
 
 
 @pytest.mark.parametrize(
-    "calls,error",
+    "calls",
     [
-        ([Call("1", "missing", {})], ModelProtocolError),
-        ([Call("1", "count_drinks", {"count": True})], ValidationError),
-        ([Call("1", "count_drinks", {"count": 1, "tenant": "override"})], ValidationError),
-        (
-            [Call("1", "count_drinks", {"count": 1}), Call("1", "count_drinks", {"count": 1})],
-            ModelProtocolError,
-        ),
+        [Call("1", "missing", {})],
+        [Call("1", "count_drinks", {"count": 1}), Call("1", "count_drinks", {"count": 1})],
     ],
 )
-async def test_invalid_batch_executes_no_tools(calls, error):
+async def test_protocol_violations_execute_no_tools(calls):
     executed = []
 
     async def count_drinks(count: int) -> dict:
@@ -134,9 +128,38 @@ async def test_invalid_batch_executes_no_tools(calls, error):
 
     session = MagicMock()
     session.next_turn = AsyncMock(return_value=Turn(calls))
-    with pytest.raises(error):
+    with pytest.raises(ModelProtocolError):
         await run_tools(session, [count_drinks], max_rounds=2)
     assert executed == []
+
+
+@pytest.mark.parametrize(
+    "arguments,problem",
+    [({"count": True}, "count_drinks.count"), ({"count": 1, "tenant": "x"}, "count_drinks.tenant")],
+)
+async def test_invalid_arguments_run_nothing_and_go_back_to_the_model(arguments, problem):
+    executed = []
+
+    async def count_drinks(count: int) -> dict:
+        executed.append(count)
+        return {}
+
+    async def reply(message: str) -> dict:
+        executed.append(message)
+        return {}
+
+    session = MagicMock()
+    session.next_turn = AsyncMock(
+        side_effect=[
+            Turn([Call("1", "count_drinks", arguments), Call("2", "reply", {"message": "a"})]),
+            Turn([Call("3", "reply", {"message": "fixed"})]),
+        ]
+    )
+    tools = [count_drinks, reply]
+    assert await run_tools(session, tools, max_rounds=3, terminal_tool="reply") == ""
+    assert executed == ["fixed"]  # Nothing from the invalid batch ran, including its reply.
+    first_results = session.add_results.call_args_list[0].args[1]
+    assert len(first_results) == 2 and all(problem in r["error"] for r in first_results)
 
 
 async def test_budget_and_terminal_reply():
@@ -150,6 +173,73 @@ async def test_budget_and_terminal_reply():
         await run_tools(session, [reply], max_rounds=1)
     with pytest.raises(ToolBudgetExceeded):
         await run_tools(session, [reply], max_rounds=1, max_calls=0)
+
+
+@pytest.mark.parametrize("max_rounds,max_calls", [(2, 20), (5, 1)])
+async def test_exhausted_budget_gets_one_reply_only_turn(max_rounds, max_calls):
+    replies = []
+
+    async def lookup() -> dict:
+        return {}
+
+    async def reply(message: str) -> dict:
+        replies.append(message)
+        return {}
+
+    session = MagicMock()
+    session.next_turn = AsyncMock(
+        side_effect=[
+            Turn([Call("1", "lookup", {})]),
+            Turn([Call("2", "lookup", {}), Call("3", "lookup", {})]),
+            Turn([Call("4", "reply", {"message": "Best I can do"})]),
+        ]
+    )
+    tools = [lookup, reply]
+    kwargs = {"max_rounds": max_rounds, "max_calls": max_calls, "terminal_tool": "reply"}
+    assert await run_tools(session, tools, **kwargs) == ""
+    assert replies == ["Best I can do"]
+    assert session.next_turn.call_args_list[-1].kwargs == {"only": "reply"}
+
+    lookups = [Turn([Call(str(i), "lookup", {})]) for i in (5, 6)]
+    session.next_turn = AsyncMock(side_effect=lookups + [Turn([], "no tool call")])
+    with pytest.raises(ToolBudgetExceeded):
+        await run_tools(session, tools, max_rounds=2, terminal_tool="reply")
+
+
+async def test_forced_reply_reaches_both_providers():
+    from google import genai
+
+    client = genai.Client(api_key="synthetic")
+    done = types.Content(role="model", parts=[types.Part(text="ok")])
+    client.aio.models.generate_content = AsyncMock(
+        return_value=types.GenerateContentResponse(
+            candidates=[types.Candidate(content=done, finish_reason="STOP")]
+        )
+    )
+    google = GoogleSession(client, "m", "s", ["hi"], [count_drinks])
+    await google.next_turn(only="count_drinks")
+    forced = client.aio.models.generate_content.call_args.kwargs["config"].tool_config
+    assert forced.function_calling_config.mode == "ANY"
+    assert forced.function_calling_config.allowed_function_names == ["count_drinks"]
+    assert "Out of lookups" in google.contents[-1].parts[-1].text
+    assert google.contents[-1].role == "user" and len(google.contents) == 1
+
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        message = {"role": "assistant", "content": "ok"}
+        choice = {"index": 0, "finish_reason": "stop", "message": message}
+        body = {"id": "1", "object": "chat.completion", "created": 0, "model": "m"}
+        return httpx.Response(200, json=body | {"choices": [choice]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        compatible = AsyncOpenAI(api_key="t", base_url="http://c.test/v1", http_client=http)
+        await CompatibleSession(compatible, "m", "s", ["hi"], [count_drinks]).next_turn(
+            only="count_drinks"
+        )
+    assert requests[0]["tool_choice"] == {"type": "function", "function": {"name": "count_drinks"}}
+    assert "Out of lookups" in requests[0]["messages"][-1]["content"]
 
 
 def test_video_is_explicit_opt_in():

@@ -8,7 +8,7 @@ from typing import Callable, Protocol, get_type_hints
 
 from google.genai import types
 from openai import AsyncOpenAI
-from pydantic import ConfigDict, create_model
+from pydantic import ConfigDict, ValidationError, create_model
 
 
 class ModelProtocolError(RuntimeError):
@@ -17,6 +17,13 @@ class ModelProtocolError(RuntimeError):
 
 class ToolBudgetExceeded(RuntimeError):
     pass
+
+
+# Sent with the forced last turn; without it, models answer the force with an empty call.
+FINAL_TURN_NOTE = (
+    "Out of lookups. Call {tool} now with your best answer from the results so far, "
+    "and say briefly if something could not be determined."
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +47,7 @@ class Turn:
 
 
 class ModelSession(Protocol):
-    async def next_turn(self) -> Turn: ...
+    async def next_turn(self, only: str | None = None) -> Turn: ...
     def add_results(self, turn: Turn, results: list[dict]) -> None: ...
 
 
@@ -54,6 +61,15 @@ def argument_model(tool: Callable):
     return create_model(
         tool.__name__ + "Arguments", __config__=ConfigDict(extra="forbid"), **fields
     )
+
+
+def validate_arguments(validator, arguments: dict) -> dict:
+    arguments = dict(arguments)
+    for name, field in validator.model_fields.items():
+        value = arguments.get(name)
+        if field.annotation is int and isinstance(value, float) and value.is_integer():
+            arguments[name] = int(value)
+    return validator.model_validate(arguments, strict=True).model_dump()
 
 
 async def run_tools(
@@ -73,28 +89,41 @@ async def run_tools(
         if not turn.calls:
             return turn.text
         if count + len(turn.calls) > max_calls:
-            raise ToolBudgetExceeded("Tool call budget exhausted")
+            break
         # Validate the entire batch before any tool in it mutates the database.
-        validated = []
+        validated, errors = [], []
         for call in turn.calls:
             if call.name not in registry or call.id in seen_ids:
                 raise ModelProtocolError("Unknown tool or repeated call ID")
             seen_ids.add(call.id)
-            arguments = dict(call.arguments)
-            for name, field in validators[call.name].model_fields.items():
-                value = arguments.get(name)
-                if field.annotation is int and isinstance(value, float) and value.is_integer():
-                    arguments[name] = int(value)
-            validated.append(
-                validators[call.name].model_validate(arguments, strict=True).model_dump()
-            )
-        results = []
-        for call, arguments in zip(turn.calls, validated):
-            results.append(await registry[call.name](**arguments))
+            try:
+                validated.append(validate_arguments(validators[call.name], call.arguments))
+            except ValidationError as exc:
+                errors += [
+                    f"{call.name}.{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()
+                ]
+        if errors:
+            # Run nothing from an invalid batch, but tell the model why so it can correct itself.
+            error = {"error": "Invalid arguments; no call in this batch ran: " + "; ".join(errors)}
+            results = [error] * len(turn.calls)
+        else:
+            results = [
+                await registry[call.name](**arguments)
+                for call, arguments in zip(turn.calls, validated)
+            ]
         count += len(turn.calls)
         session.add_results(turn, results)
-        if terminal_tool and any(call.name == terminal_tool for call in turn.calls):
+        if not errors and terminal_tool and any(c.name == terminal_tool for c in turn.calls):
             return ""
+    if terminal_tool:
+        # Out of budget: one last turn that may only reply, so a sender is never silently ignored.
+        turn = await session.next_turn(only=terminal_tool)
+        for call in turn.calls:
+            if call.name == terminal_tool:
+                await registry[call.name](
+                    **validate_arguments(validators[call.name], call.arguments)
+                )
+                return ""
     # The surrounding message transaction rolls back, including all tool writes.
     raise ToolBudgetExceeded("Model round budget exhausted")
 
@@ -125,9 +154,20 @@ class GoogleSession:
         )
         self.round = 0
 
-    async def next_turn(self) -> Turn:
+    async def next_turn(self, only: str | None = None) -> Turn:
+        config = self.config
+        if only:  # "ANY" mode restricted to one function forces exactly that call.
+            forced = types.FunctionCallingConfig(mode="ANY", allowed_function_names=[only])
+            config = config.model_copy(
+                update={"tool_config": types.ToolConfig(function_calling_config=forced)}
+            )
+            # The last content is always the user turn (prompt or tool results); extend it so
+            # the conversation keeps alternating roles.
+            self.contents[-1].parts.append(
+                types.Part.from_text(text=FINAL_TURN_NOTE.format(tool=only))
+            )
         response = await self.client.aio.models.generate_content(
-            model=self.model, contents=self.contents, config=self.config
+            model=self.model, contents=self.contents, config=config
         )
         self.round += 1
         candidates = response.candidates
@@ -203,10 +243,13 @@ class CompatibleSession:
             for tool in tools
         ]
 
-    async def next_turn(self) -> Turn:
+    async def next_turn(self, only: str | None = None) -> Turn:
         kwargs = {"model": self.model, "messages": self.messages}
         if self.tools:
             kwargs["tools"] = self.tools
+        if only:
+            self.messages.append({"role": "user", "content": FINAL_TURN_NOTE.format(tool=only)})
+            kwargs["tool_choice"] = {"type": "function", "function": {"name": only}}
         response = await self.client.chat.completions.create(**kwargs)
         if not response.choices:
             raise ModelProtocolError("Endpoint returned no choice")
