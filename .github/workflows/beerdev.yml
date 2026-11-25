@@ -1,16 +1,27 @@
 name: beerdev
 
-# Files asks from the GroupMe chat as GitHub issues and reacts 💡 on the ask. Features and bugs are
-# labeled `beerdev` and built by beerdev-build.yml; asks needing human setup (credentials, new
-# services) are labeled `beerdev-infra`. Close an issue to cancel it; disable this to pause intake.
+# Files asks from the GroupMe chat as GitHub issues and says so in the chat as the beerdev bot:
+# features and bugs are labeled `beerdev` and built by beerdev-build.yml; asks needing human setup
+# are labeled `beerdev-infra` + `inbox`. Dispatch with action=veto|approve to steer an issue. Posts a
+# digest on Mondays. Close an issue to cancel it; disable this workflow to pause intake.
 
 on:
   schedule:
     - cron: "*/10 * * * *"
+    - cron: "0 14 * * 1" # Monday digest, 9am Eastern
   workflow_dispatch:
     inputs:
       since_hours:
         description: Scan this many hours of chat instead of resuming after the last scan
+        required: false
+      action:
+        description: Steer an issue instead of scanning
+        type: choice
+        options: ["", veto, approve]
+        required: false
+      issue:
+        description: Issue number to steer
+        type: number
         required: false
 
 permissions: {}
@@ -22,7 +33,7 @@ concurrency:
 
 jobs:
   scan:
-    if: vars.BEERDEV_GROUP_ID # inert until provisioned
+    if: vars.BEERDEV_GROUP_ID && !inputs.action # inert until provisioned
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -47,10 +58,51 @@ jobs:
           GROUPME_ACCESS_TOKEN: ${{ secrets.GROUPME_ACCESS_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BEERDEV_GROUP_ID: ${{ vars.BEERDEV_GROUP_ID }}
+          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
           SINCE_HOURS: ${{ inputs.since_hours }}
 
       - name: Start a build
         if: steps.scan.outputs.build == 'true'
+        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Monday digest
+        if: github.event.schedule == '0 14 * * 1'
+        run: uv run --frozen python scripts/beerdev.py digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
+
+  steer:
+    if: inputs.action
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # start a removal build
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - id: steer
+        run: uv run --frozen python scripts/beerdev.py steer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
+          ACTION: ${{ inputs.action }}
+          ISSUE: ${{ inputs.issue }}
+
+      - name: Start a build
+        if: steps.steer.outputs.build == 'true'
         run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,96 @@
+name: beerdev lead
+
+# Weekly planning: Claude Code reviews the code, incidents, and backlog with read-only access and
+# proposes up to three improvements. beerdev builds the safe ones without review; anything that
+# needs a person (dependencies, infrastructure, costs, product calls) waits in the inbox labeled
+# `proposal` until the owner approves it.
+
+on:
+  schedule:
+    - cron: "0 13 * * 1" # Mondays, an hour before the digest
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: beerdev-lead
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Read-only token; the agent's only output is its plan file.
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 100
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --extra dev
+
+      - name: Plan with Claude Code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          mkdir -p /tmp/lead &&
+          npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-lead-prompt.md)"
+          --add-dir /tmp/lead
+          --allowedTools Read Write Glob Grep
+          "Bash(gh issue list:*)" "Bash(gh issue view:*)" "Bash(gh run list:*)"
+          "Bash(git log:*)" "Bash(uv run pytest:*)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lead-plan
+          path: /tmp/lead/plan.json
+          retention-days: 7
+
+  file:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # start a build
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: lead-plan
+          path: /tmp/lead
+
+      # Schema-checked and capped at three by trusted code; the plan never runs anything.
+      - id: propose
+        run: uv run --frozen python scripts/beerdev.py propose /tmp/lead/plan.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Start a build
+        if: steps.propose.outputs.build == 'true'
+        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -8,8 +8,9 @@ something looks wrong. Commands assume `gh` and `fly` are logged in as the owner
 | Piece | Runs on | What it does |
 |---|---|---|
 | **Beerius** (GroupMe bot `beerius`, group `beerbot` 112172155) | Fly app `beerbot-groupme` | Receives every message at `/callback?token=…`, logs drinks, answers questions |
-| **beerdev scan** | GitHub Actions `beerdev.yml`, every 10 min | Files chat asks as issues, reacts 💡 on the ask |
-| **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue, tests, merges, deploys, reacts ✅ |
+| **beerdev scan** | GitHub Actions `beerdev.yml`: instantly on mentions, else every 10 min | Files chat asks as issues and acks them in the chat as the beerdev bot; Monday digest; `steer` (veto/approve) |
+| **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue (incidents first), tests, merges, deploys, updates `CHANGELOG.md`, tells the chat |
+| **beerdev lead** | GitHub Actions `beerdev-lead.yml`, Mondays | Read-only review of code, incidents, and backlog; proposes up to three improvements |
 | **CI** | GitHub Actions `ci.yml`, on push to `main` or dispatch | Tests, then blue-green deploy to Fly, then verifies health, version, and DB |
 | **ops** | GitHub Actions `ops.yml`: hourly, on app failures, and on CI failures on `main` | Probes health, redeploys a stuck app, and files incidents with their diagnosis for beerdev to fix; never posts in the chat |
 | **Database** | Neon PostgreSQL | All durable state; sleeps when idle (see `idle-compute.md`) |
@@ -34,7 +35,7 @@ goes out blue-green.
 | `BEERBOT_BOT_ID` | Fly | Legacy default bot. Per-group bot IDs live in the `groups` table (`POST /admin/groups`) | GroupMe bot list |
 | `SMTP_*` | Fly | Email sign-in for `/app` | Mail provider |
 | `FLY_API_TOKEN` | GitHub | CI deploys | Deploy token `github-actions-beerbot`, expires 2027-08-30: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot -x 8760h \| gh secret set FLY_API_TOKEN` |
-| `GROUPME_ACCESS_TOKEN` | GitHub; local `.env.local` | beerdev reads chat and reacts | The owner's personal token: sign in at https://dev.groupme.com/account/access-token. It grants full account access, so it is only given to jobs that never run agent-written code |
+| `GROUPME_ACCESS_TOKEN` | GitHub (scan only); local `.env.local` | beerdev's scan reads the chat; nothing acts as the owner | The owner's personal token: sign in at https://dev.groupme.com/account/access-token. It grants full account access, so it is only given to jobs that never run agent-written code |
 | `CLAUDE_CODE_OAUTH_TOKEN` | GitHub | beerdev's coding agent | `claude setup-token` (valid one year), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` |
 | `BEERDEV_BOT_ID` | GitHub | beerdev posts announcements | `bot_id` of the `beerdev` bot from `GET https://api.groupme.com/v3/bots` |
 | `BEERDEV_GROUP_ID` (variable) | GitHub | Which group beerdev watches | `112172155`. Deleting it pauses scans |
@@ -85,17 +86,20 @@ beerdev's `implement` job.
 | Fly app | Webhooks, database, model | Database, Beerius's posts, workflow starts | `DATABASE_URL`, `GEMINI_API_KEY`, `GROUPME_WEBHOOK_SECRET`, `ADMIN_TOKEN`, `SMTP_*`, `GITHUB_DISPATCH_TOKEN` (Actions only, this repo, until 2027-11-24) |
 | CI `test` | Repository | Nothing | `GITHUB_TOKEN` (contents: read) |
 | CI `deploy` | Repository | The Fly app | `FLY_API_TOKEN` (deploy token scoped to the app) |
-| beerdev scan | Chat, issues | Issues, reactions, build starts | `GROUPME_ACCESS_TOKEN`, `GEMINI_API_KEY`, `GITHUB_TOKEN` (issues, actions) |
+| beerdev scan | Chat, issues | Issues, beerdev's chat posts, build starts | `GROUPME_ACCESS_TOKEN` (read use only), `BEERDEV_BOT_ID`, `GEMINI_API_KEY`, `GITHUB_TOKEN` (issues, actions) |
 | beerdev `implement` (agent code) | Repository, its issue | A patch artifact only | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
-| beerdev `ship` | GitHub's copy of the issue, the patch | Branch, PR, merge, CI start, beerdev's chat post, reactions | `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID`, `GROUPME_ACCESS_TOKEN` |
+| beerdev `ship` | GitHub's copy of the issue, the patch | Branch, PR, merge, CI start, beerdev's chat post | `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID` |
+| beerdev lead `plan` (agent) | Repository, issues, CI runs | A plan file only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN` |
+| beerdev lead `file` | The plan (schema-checked, at most three items) | Issues, build starts | `GITHUB_TOKEN` (issues, actions) |
 | ops | Health and admin status, CI runs and logs, issues | Issues, CI redeploys | `ADMIN_TOKEN`, `GITHUB_TOKEN` (issues, actions) |
 | Owner's machine | Everything | Everything | `gh` (repo scope), `fly` (org), `.env` (production database), `.env.local` |
 
 Known gaps, broadest first:
-- **`GROUPME_ACCESS_TOKEN` is the owner's whole GroupMe account:** every chat and DM, plus posting
-  as the owner. GroupMe bots can neither read history nor react, so nothing narrower exists. A
-  dedicated `beerdev` GroupMe account in the group would confine it to that group and make
-  reactions come from beerdev instead of the owner. That requires a person to create the account.
+- **`GROUPME_ACCESS_TOKEN` is the owner's whole GroupMe account,** although beerdev now uses it
+  only to read the chat: it posts as its own bot, and nothing acts as the owner. GroupMe bots
+  can't read history, so the planned fix is to move intake into the app, which already receives
+  every message. GitHub would then get only paraphrased requests, and the token would leave
+  GitHub entirely.
 - **`ADMIN_TOKEN` opens every admin endpoint,** but ops only reads `/admin/*/status`. A separate
   read-only ops token would remove its ability to invite, register, or retry.
 - **`DATABASE_URL` is the database owner,** because migrations run at startup. A runtime role
@@ -129,8 +133,13 @@ Known gaps, broadest first:
   to the closed issue instead of starting another build. Ops reads the database only after a
   failure or once a day at 12:17 UTC, so Neon can sleep.
 - **Inbox:** https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox lists everything
-  waiting on the owner: infra asks with their human setup, incidents beerdev couldn't fix in code,
-  and stuck replies. Everything else runs without you.
+  waiting on the owner: infra asks with their human setup, the weekly lead's `proposal`s,
+  incidents beerdev couldn't fix in code, and stuck replies. Everything else runs without you.
+- **Steering:** `gh workflow run beerdev.yml -f action=approve -f issue=<n>` makes a proposal or
+  waiting issue buildable. `action=veto` closes queued work, stops a build at merge, or removes
+  shipped work through a new build, and posts 🚫 in the chat.
+- **History:** `CHANGELOG.md` gets one line per shipped issue. Mondays at 9am Eastern, beerdev posts
+  a digest (shipped, declined, waiting on a human), and skips quiet weeks.
 
 ## Troubleshooting
 
