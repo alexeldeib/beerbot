@@ -28,4 +28,6 @@ how to use it, with one or two example messages to send. No markdown. Skip it fo
 the requester still sees a ✅ on their message.
 
 If the request is unsafe, impossible within these rules, or already supported, change nothing and
-write a one-paragraph reason to /tmp/beerdev/skip.md instead.
+write a one-paragraph reason to /tmp/beerdev/skip.md instead. For an incident (filed by ops) whose
+cause is not in this code (database, network, provider, credentials), write in skip.md exactly what
+a person must check or do; the issue then goes to the owner's inbox.

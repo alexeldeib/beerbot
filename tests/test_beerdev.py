@@ -79,6 +79,8 @@ def test_next_build_is_oldest_open_unfailed_issue():
     ]
     assert beerdev.next_build(issues) == 6
     assert beerdev.next_build([issue(3, state="closed")]) is None
+    # Incidents jump the queue: production health beats new features.
+    assert beerdev.next_build(issues + [issue(12, labels=("ops", "beerdev", "bug"))]) == 12
 
 
 def test_react_marks_the_request_message():

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
 # Only `beerdev` issues are built automatically; infra needs a person (credentials, services).
-LABELS = {"feature": ["beerdev"], "bug": ["beerdev", "bug"], "infra": ["beerdev-infra"]}
+LABELS = {"feature": ["beerdev"], "bug": ["beerdev", "bug"], "infra": ["beerdev-infra", "inbox"]}
 FILED = "💡"
 MAX_LOOKBACK = timedelta(hours=24)
 TOOLS = Path(__file__).resolve().parents[1] / "src/beerbot/tools.py"
@@ -150,16 +150,16 @@ def fresh(requests: list[Request], messages: list[dict], issues: list[dict]) -> 
 
 
 def next_build(issues: list[dict]) -> int | None:
-    """Oldest open `beerdev` issue that has not failed; builds run one at a time."""
+    """Oldest open `beerdev` issue that has not failed, incidents (`ops`) first."""
     buildable = [
-        issue["number"]
+        (names.isdisjoint({"ops"}), issue["number"])
         for issue in issues
         if issue["state"] == "open"
         and "pull_request" not in issue
-        and {"beerdev"} <= {label["name"] for label in issue["labels"]}
-        and all(label["name"] != "beerdev-failed" for label in issue["labels"])
+        and "beerdev" in (names := {label["name"] for label in issue["labels"]})
+        and "beerdev-failed" not in names
     ]
-    return min(buildable, default=None)
+    return min(buildable, default=(None, None))[1]
 
 
 def react(groupme: httpx.Client, group_id: str, message_id: str, emoji: str) -> bool:

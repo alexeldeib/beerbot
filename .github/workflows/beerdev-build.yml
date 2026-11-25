@@ -150,12 +150,18 @@ jobs:
 
       # The artifact is agent-writable, so the issue itself (title, ask id) comes from GitHub.
       - name: Fetch the request
-        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body > /tmp/request.json
+        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels > /tmp/request.json
 
       - name: Apply the change
         id: apply
         run: |
           if [ -s /tmp/beerdev/skip.md ]; then
+            if jq -e 'any(.labels[]; .name == "ops")' /tmp/request.json > /dev/null; then
+              # An incident with no code fix still needs someone: hand it to the owner.
+              gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
+              gh issue comment "$ISSUE" --body-file /tmp/beerdev/skip.md
+              exit 0
+            fi
             gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
             echo "reaction=🤷" >> "$GITHUB_OUTPUT"
             exit 0
