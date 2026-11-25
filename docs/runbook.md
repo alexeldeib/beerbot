@@ -39,6 +39,7 @@ goes out blue-green.
 | `CLAUDE_CODE_OAUTH_TOKEN` | GitHub | beerdev's coding agent | `claude setup-token` (valid one year), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` |
 | `BEERDEV_BOT_ID` | GitHub | beerdev posts announcements | `bot_id` of the `beerdev` bot from `GET https://api.groupme.com/v3/bots` |
 | `BEERDEV_GROUP_ID` (variable) | GitHub | Which group beerdev watches | `112172155`. Deleting it pauses scans |
+| `OWNER_USER_ID` | Fly (secret); GitHub (variable) | The owner's GroupMe id: Beerius follows their commands; beerdev takes their vetoes and approvals | `13419729`; not a secret, kept out of the public code |
 
 ### Rotate the webhook secret
 
@@ -135,8 +136,11 @@ Known gaps, broadest first:
 - **Inbox:** https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox lists everything
   waiting on the owner: infra asks with their human setup, the weekly lead's `proposal`s,
   incidents beerdev couldn't fix in code, and stuck replies. Everything else runs without you.
-- **Steering:** `gh workflow run beerdev.yml -f action=approve -f issue=<n>` makes a proposal or
-  waiting issue buildable. `action=veto` closes queued work, stops a build at merge, or removes
+- **Steering:** in the chat, the owner (GroupMe id in the `OWNER_USER_ID` variable) replies "veto"
+  or "approve" to one of beerdev's messages, or names the request ("beerdev veto the gym
+  tracker"). Anyone else's commands are ignored. The same from a terminal:
+  `gh workflow run beerdev.yml -f action=approve -f issue=<n>` makes a proposal or waiting issue
+  buildable. `action=veto` closes queued work, stops a build at merge, or removes
   shipped work through a new build, and posts 🚫 in the chat.
 - **History:** `CHANGELOG.md` gets one line per shipped issue. Mondays at 9am Eastern, beerdev posts
   a digest (shipped, declined, waiting on a human), and skips quiet weeks.

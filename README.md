@@ -229,9 +229,11 @@ chat posted in its own voice. Beerius stays silent on requests.
 4. **ops** (`ops.yml`) files production incidents with their diagnosis; beerdev fixes them first.
 
 **Steering:**
-- Veto or approve: `gh workflow run beerdev.yml -f action=veto -f issue=<n>` (or
-  `action=approve`). A veto closes queued work, stops a build at merge, or removes shipped work
-  through a new build.
+- **From the chat (owner only):** reply to one of beerdev's messages with "veto" or "approve",
+  or say "beerdev veto the gym tracker". Authority comes from the sender's GroupMe id, never from
+  the model. A veto closes queued work, stops a build at merge, or removes shipped work through a
+  new build. Approve makes a proposal or waiting ask buildable.
+- From a terminal: `gh workflow run beerdev.yml -f action=veto -f issue=<n>` (or `approve`).
 - Close an issue to cancel it quietly. Remove `beerdev-failed` to retry.
 - The inbox lists everything waiting on you:
   https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox

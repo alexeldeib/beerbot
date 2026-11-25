@@ -37,7 +37,8 @@ def test_chat_messages_page_back_to_window_and_skip_bots():
         headers={"X-Access-Token": "t"},
         transport=httpx.MockTransport(respond),
     )
-    assert beerdev.chat_messages(groupme, "g1", since) == [{"id": "4", "text": "zyn tracker pls"}]
+    expected = {"id": "4", "text": "zyn tracker pls", "owner": False, "reply_to": None}
+    assert beerdev.chat_messages(groupme, "g1", since) == [expected]
 
     empty = httpx.Client(
         base_url="https://api.groupme.test",
@@ -202,3 +203,52 @@ def test_propose_files_nothing_from_an_answer_without_a_plan(tmp_path):
     calls = []
     assert not beerdev.propose(github({}, calls), "o/r", [], plan)
     assert calls == []
+
+
+def test_owner_replies_get_their_target_and_only_owner_commands_count():
+    page = [
+        {
+            "id": "12",
+            "created_at": 1_400,
+            "sender_type": "user",
+            "user_id": "boss",
+            "text": "veto",
+            "attachments": [{"type": "reply", "reply_id": "10"}],
+        },
+        {
+            "id": "11",
+            "created_at": 1_300,
+            "sender_type": "user",
+            "user_id": "pal",
+            "text": "veto it",
+        },
+    ]
+
+    def respond(request):
+        if request.url.params.get("after_id") == "9":  # Fetching reply target 10 by id.
+            target = {"id": "10", "text": "💡 Queued: Gym tracker (https://x/issues/31)"}
+            return httpx.Response(200, json={"response": {"messages": [target]}})
+        if request.url.params.get("before_id"):
+            return httpx.Response(304)
+        return httpx.Response(200, json={"response": {"messages": page}})
+
+    groupme = httpx.Client(base_url="https://g.test", transport=httpx.MockTransport(respond))
+    messages = beerdev.chat_messages(groupme, "g1", datetime.fromtimestamp(1_000, UTC), "boss")
+    assert [(m["id"], m["owner"], m["reply_to"]) for m in messages] == [
+        ("11", False, None),
+        ("12", True, "10"),
+    ]
+    beerdev.add_reply_context(groupme, "g1", messages)
+    assert (
+        messages[1]["reply_to_text"].endswith("issues/31)") and "reply_to_text" not in messages[0]
+    )
+    # The model can claim anything; only the owner's own messages carry authority.
+    commands = [beerdev.Command(message_id=i, action="veto", issue=31) for i in ("11", "12", "99")]
+    assert [c.message_id for c in beerdev.authorized(commands, messages)] == ["12"]
+
+
+def test_approve_is_quiet_once_buildable():
+    issue = {"title": "Ops bot", "state": "open", "labels": [{"name": "beerdev"}]}
+    calls = []
+    assert beerdev.steer(github({3: issue}, calls), "o/r", [], "approve", 3) == ""
+    assert [method for method, _, _ in calls] == ["GET"]

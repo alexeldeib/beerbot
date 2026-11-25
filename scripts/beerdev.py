@@ -33,6 +33,11 @@ drink-tracking GroupMe bot. File a request when a message:
 - asks beerdev for anything else: kind "infra" if it needs credentials, new services or bots,
   monitoring, or deploy changes; otherwise "feature" or "bug".
 One message can hold asks of different kinds (say, a bug and an infra ask): file each separately.
+Messages marked "owner": true come from the bot's owner, who can also steer existing requests:
+stop, cancel, kill, or veto one -> a "veto" command; approve, OK, or green-light one that waits on
+a human -> an "approve" command. Use the issue number from "reply_to_text" (beerdev's own messages
+link their issue) or from the existing requests. Only owner messages can become commands, and a
+command is not also a request.
 Ignore drink logs, banter, stats questions, things the bot already does, and anything already
 covered by an existing request. Merge duplicate asks. Return [] when nothing qualifies, which is
 the usual case.
@@ -44,7 +49,7 @@ must provide. Never include people's names or IDs.
 What the bot can do today:
 {capabilities}
 
-Existing requests:
+Existing requests (number, state, title):
 {existing}
 
 Chat messages, oldest first (JSON):
@@ -66,6 +71,17 @@ class Request(BaseModel):
     kind: Literal["feature", "bug", "infra"]
     title: str
     spec: str
+
+
+class Command(BaseModel):
+    message_id: str
+    action: Literal["veto", "approve"]
+    issue: int
+
+
+class Scan(BaseModel):
+    requests: list[Request]
+    commands: list[Command]
 
 
 def capabilities(source: Path = TOOLS) -> str:
@@ -101,8 +117,10 @@ def scan_start(github: httpx.Client, repo: str, hours: str | None) -> datetime:
     return max(datetime.fromisoformat(runs[0]["run_started_at"]), now - MAX_LOOKBACK)
 
 
-def chat_messages(groupme: httpx.Client, group_id: str, since: datetime) -> list[dict]:
-    """Human text messages newer than `since`, oldest first."""
+def chat_messages(
+    groupme: httpx.Client, group_id: str, since: datetime, owner: str | None = None
+) -> list[dict]:
+    """Human text messages newer than `since`, oldest first, marking the owner's and replies."""
     found: list[dict] = []
     before = None
     while True:
@@ -115,18 +133,58 @@ def chat_messages(groupme: httpx.Client, group_id: str, since: datetime) -> list
             if message["created_at"] < since.timestamp():
                 return found[::-1]
             if message["sender_type"] == "user" and message.get("text"):
-                found.append({"id": message["id"], "text": message["text"]})
+                reply = next(
+                    (
+                        a.get("reply_id")
+                        for a in message.get("attachments") or []
+                        if a.get("type") == "reply"
+                    ),
+                    None,
+                )
+                found.append(
+                    {
+                        "id": message["id"],
+                        "text": message["text"],
+                        "owner": bool(owner) and message.get("user_id") == owner,
+                        "reply_to": reply,
+                    }
+                )
         if not page:
             break
         before = page[-1]["id"]
     return found[::-1]
 
 
-def classify(messages: list[dict], issues: list[dict]) -> list[Request]:
+def add_reply_context(groupme: httpx.Client, group_id: str, messages: list[dict]) -> None:
+    """Give the owner's replies the text they answer (often beerdev's line linking an issue)."""
+    for message in messages:
+        if not (message["owner"] and message["reply_to"]):
+            continue
+        previous = int(message["reply_to"]) - 1  # IDs increase, so this returns the target.
+        response = groupme.get(
+            f"/groups/{group_id}/messages", params={"after_id": previous, "limit": 1}
+        )
+        if response.is_success and (page := response.json()["response"]["messages"]):
+            if page[0]["id"] == message["reply_to"]:
+                message["reply_to_text"] = page[0].get("text") or ""
+
+
+def authorized(commands: list[Command], messages: list[dict]) -> list[Command]:
+    """Authority comes from GroupMe's sender id, never from the model's say-so."""
+    owners = {message["id"] for message in messages if message["owner"]}
+    return [command for command in commands if command.message_id in owners]
+
+
+def classify(messages: list[dict], issues: list[dict]) -> Scan:
+    existing = "\n".join(
+        f"- #{issue['number']} [{issue['state']}] {issue['title']}" for issue in issues
+    )
     prompt = PROMPT.format(
         capabilities=capabilities(),
-        existing="\n".join(f"- {issue['title']}" for issue in issues) or "(none)",
-        messages=json.dumps(messages, ensure_ascii=False),
+        existing=existing or "(none)",
+        messages=json.dumps(
+            [{k: v for k, v in m.items() if k != "reply_to"} for m in messages], ensure_ascii=False
+        ),
     )
     # Keep a reference: a garbage-collected genai.Client closes its HTTP client mid-request.
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -134,10 +192,10 @@ def classify(messages: list[dict], issues: list[dict]) -> list[Request]:
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=list[Request]
+            response_mime_type="application/json", response_schema=Scan
         ),
     )
-    return response.parsed or []
+    return response.parsed or Scan(requests=[], commands=[])
 
 
 def fresh(requests: list[Request], messages: list[dict], issues: list[dict]) -> list[Request]:
@@ -200,7 +258,10 @@ def steer(github: httpx.Client, repo: str, issues: list[dict], action: str, numb
     issue = github.get(f"/repos/{repo}/issues/{number}").raise_for_status().json()
     url, title = f"/repos/{repo}/issues/{number}", issue["title"]
     if action == "approve" and issue["state"] == "open":
-        labels = {label["name"] for label in issue["labels"]} - {"inbox", "beerdev-failed"}
+        labels = {label["name"] for label in issue["labels"]}
+        if "beerdev" in labels and "inbox" not in labels:
+            return ""
+        labels -= {"inbox", "beerdev-failed"}
         github.patch(url, json={"labels": sorted(labels | {"beerdev"})}).raise_for_status()
         return f"💡 Approved: {title}. Queued to build."
     if action != "veto":
@@ -334,9 +395,13 @@ def main(command: str = "scan", *args: str) -> None:
     )
     group = env["BEERDEV_GROUP_ID"]
     since = scan_start(github, repo, env.get("SINCE_HOURS"))
-    messages = chat_messages(groupme, group, since)
-    requests = fresh(classify(messages, issues), messages, issues) if messages else []
-    acks = []
+    messages = chat_messages(groupme, group, since, env.get("OWNER_USER_ID"))
+    add_reply_context(groupme, group, messages)
+    scan = classify(messages, issues) if messages else Scan(requests=[], commands=[])
+    requests = fresh(scan.requests, messages, issues)
+    acks = [
+        steer(github, repo, issues, c.action, c.issue) for c in authorized(scan.commands, messages)
+    ]
     for request in requests:
         body = f"{request.spec}\n\n<!-- beerdev:msg={request.message_id}:{request.kind} -->"
         created = github.post(
@@ -345,10 +410,13 @@ def main(command: str = "scan", *args: str) -> None:
         )
         issues.append(created.raise_for_status().json())
         acks.append(ack(request, issues[-1]["number"]))
-    say("\n".join(acks))
+    say("\n".join(line for line in acks if line))
     build = next_build(issues) is not None
     kinds = ", ".join(request.kind for request in requests) or "none"
-    print(f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; filed: {kinds}")
+    steered = len(authorized(scan.commands, messages))
+    print(
+        f"Scanned {len(messages)} messages since {since:%Y-%m-%d %H:%M} UTC; filed: {kinds}; commands: {steered}"
+    )
     write_output(build=str(build).lower())
 
 
