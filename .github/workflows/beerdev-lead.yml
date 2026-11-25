@@ -20,7 +20,7 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Read-only token; the agent's only output is its plan file.
+    # Read-only token, used only by the trusted gather step; the agent's only output is its answer.
     permissions:
       actions: read
       contents: read
@@ -31,27 +31,31 @@ jobs:
           fetch-depth: 100
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
+      # Trusted inputs only: issues by this repository's own workflows or its owner (anyone can
+      # open an issue on a public repository), plus recent CI runs. The agent gets no gh access.
+      - name: Gather issues and runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          mkdir -p /tmp/lead
+          gh issue list -R "$GITHUB_REPOSITORY" --state all --limit 60 \
+            --json number,title,state,stateReason,labels,author,body,closedAt \
+            | jq --arg owner "$OWNER" '[.[] | select(.author.login == $owner or .author.login == "app/github-actions" or .author.login == "github-actions[bot]")]' \
+            > /tmp/lead/issues.json
+          gh run list -R "$GITHUB_REPOSITORY" --limit 30 \
+            --json workflowName,event,status,conclusion,headSha,createdAt > /tmp/lead/runs.json
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-
-      - run: uv sync --frozen --extra dev
-
+      # Read-only tools, and the plan comes back as the final answer: the agent can neither
+      # write files nor run code while it holds the Claude token.
       - name: Plan with Claude Code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
         run: >-
-          mkdir -p /tmp/lead &&
           npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-lead-prompt.md)"
-          --add-dir /tmp/lead
-          --allowedTools Read Write Glob Grep
-          "Bash(gh issue list:*)" "Bash(gh issue view:*)" "Bash(gh run list:*)"
-          "Bash(git log:*)" "Bash(uv run pytest:*)"
+          --add-dir /tmp/lead --output-format json
+          --allowedTools Read Glob Grep "Bash(git log:*)"
+          | jq -r .result > /tmp/lead/plan.json
 
       - uses: actions/upload-artifact@v7
         with:

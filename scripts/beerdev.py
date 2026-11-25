@@ -270,7 +270,10 @@ def filed_requests(github: httpx.Client, repo: str) -> list[dict]:
 def propose(github: httpx.Client, repo: str, issues: list[dict], plan: Path) -> bool:
     """File the lead's plan: at most three items, skipping open duplicates. Work that needs a
     person (dependencies, infra, product calls) waits in the inbox until approved."""
-    proposals = TypeAdapter(list[Proposal]).validate_json(plan.read_text())[:3]
+    text = plan.read_text()  # The agent's final answer: tolerate a fence or a stray sentence.
+    start, end = text.find("["), text.rfind("]")
+    found = text[start : end + 1] if 0 <= start < end else "[]"
+    proposals = TypeAdapter(list[Proposal]).validate_json(found)[:3]
     open_titles = {i["title"].casefold() for i in issues if i["state"] == "open"}
     build = False
     for item in proposals:

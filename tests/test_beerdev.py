@@ -185,7 +185,7 @@ def test_propose_caps_dedupes_and_routes_owner_work_to_the_inbox(tmp_path):
         {"title": "Already open", "body": "b", "kind": "bug", "needs_owner": False},
         {"title": "Fourth", "body": "b", "kind": "feature", "needs_owner": False},
     ]
-    plan.write_text(json.dumps(items))
+    plan.write_text("Here's the plan:\n```json\n" + json.dumps(items) + "\n```")
     calls = []
     existing = [{"title": "already OPEN", "state": "open"}]
     assert beerdev.propose(github({}, calls), "o/r", existing, plan)
@@ -194,3 +194,11 @@ def test_propose_caps_dedupes_and_routes_owner_work_to_the_inbox(tmp_path):
         ("Index beers by group", ["beerdev", "refactor"]),
         ("Upgrade httpx", ["proposal", "inbox"]),
     ]
+
+
+def test_propose_files_nothing_from_an_answer_without_a_plan(tmp_path):
+    plan = tmp_path / "plan.json"
+    plan.write_text("Nothing worth doing this week.")
+    calls = []
+    assert not beerdev.propose(github({}, calls), "o/r", [], plan)
+    assert calls == []
