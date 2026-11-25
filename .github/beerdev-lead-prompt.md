@@ -13,10 +13,12 @@ Your final answer must be only a JSON list of at most three proposals, with no o
 The title is imperative and under 80 characters. The body says what to change, why, and how to
 verify it, written so a developer with no other context can do it.
 
-Prefer small, safe, testable changes that make Beerius more reliable or easier to change. Set
-`needs_owner` to true for anything touching dependencies, infrastructure (`.github/`, `scripts/`,
-`Dockerfile`, `fly.toml`, `pyproject.toml`, `uv.lock`, `src/beerbot/config.py`), costs, data deletion,
-or product decisions about how Beerius behaves; beerdev builds everything else without review.
+Prefer small, safe, testable changes that make Beerius more reliable or easier to change. beerdev
+may change infrastructure (workflows, scripts, Docker, Fly, dependencies) after an independent
+review, but never its kernel (`.github/workflows/beerdev-build.yml`, `.github/workflows/beerdev-lead.yml`,
+`.github/beerdev-*.md`, `.claude/`, `tests/test_policy.py`). Set `needs_owner` to true for kernel
+changes, new secrets or paid services, costs, data deletion, or product decisions about how Beerius
+behaves; beerdev builds everything else.
 Never propose work an open issue already covers. Fewer strong proposals beat more weak ones; write
 `[]` if nothing is worth doing this week.
 

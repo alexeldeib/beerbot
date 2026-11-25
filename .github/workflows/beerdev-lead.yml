@@ -54,7 +54,7 @@ jobs:
         run: >-
           npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-lead-prompt.md)"
           --add-dir /tmp/lead --output-format json
-          --allowedTools Read Glob Grep "Bash(git log:*)"
+          --allowedTools Read Glob Grep "Bash(git log:*)" --disallowedTools "Read(//proc/**)"
           | jq -r .result > /tmp/lead/plan.json
 
       - uses: actions/upload-artifact@v7
@@ -80,7 +80,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          enable-cache: true
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
 
       - uses: actions/download-artifact@v8
         with:

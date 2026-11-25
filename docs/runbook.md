@@ -9,7 +9,7 @@ something looks wrong. Commands assume `gh` and `fly` are logged in as the owner
 |---|---|---|
 | **Beerius** (GroupMe bot `beerius`, group `beerbot` 112172155) | Fly app `beerbot-groupme` | Receives every message at `/callback?token=…`, logs drinks, answers questions |
 | **beerdev scan** | GitHub Actions `beerdev.yml`: started by the app when Beerius hands over an ask, offered again hourly while unclaimed, plus a daily fallback | Pulls asks from the app: files issues, answers questions, steers (veto/approve), and replies in the chat as the beerdev bot; Monday digest |
-| **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue (incidents first), tests, merges, deploys, updates `CHANGELOG.md`, tells the chat |
+| **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue (incidents first) and tests it; an independent reviewer approves anything beyond app code; then it merges, deploys, updates `CHANGELOG.md`, and tells the chat |
 | **beerdev lead** | GitHub Actions `beerdev-lead.yml`, Mondays | Read-only review of code, incidents, and backlog; proposes up to three improvements |
 | **CI** | GitHub Actions `ci.yml`, on push to `main` or dispatch | Tests, then blue-green deploy to Fly, then verifies health, version, and DB |
 | **ops** | GitHub Actions `ops.yml`: hourly, on app failures, and on CI failures on `main` | Probes health, redeploys a stuck app, and files incidents with their diagnosis for beerdev to fix; never posts in the chat |
@@ -34,8 +34,9 @@ goes out blue-green.
 | `GITHUB_DISPATCH_TOKEN` (optional) | Fly | Starting beerdev when Beerius hands over an ask, and ops checks on failures | See "Enable instant triggers". Without it, asks wait for the daily fallback scan and ops for its hourly run |
 | `BEERBOT_BOT_ID` | Fly | Legacy default bot. Per-group bot IDs live in the `groups` table (`POST /admin/groups`) | GroupMe bot list |
 | `SMTP_*` | Fly | Email sign-in for `/app` | Mail provider |
-| `FLY_API_TOKEN` | GitHub | CI deploys | Deploy token `github-actions-beerbot`, expires 2027-08-30: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot -x 8760h \| gh secret set FLY_API_TOKEN` |
+| `FLY_API_TOKEN` | GitHub, `production` environment only (deploys from `main` only) | CI deploys | Deploy token `github-actions-beerbot-production`, expires 2027-11-25: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot-production -x 8760h \| gh secret set FLY_API_TOKEN --env production` |
 | `GROUPME_ACCESS_TOKEN` | Local `.env.local` only | Manual lookups (listing bots, reading history). No automation holds it | The owner's personal token, with full account access: https://dev.groupme.com/account/access-token |
+| `BEERDEV_SHIP_TOKEN` | GitHub, `beerdev` environment only | The ship job pushes and merges beerdev's changes, including workflow files; its merges start CI. Acts as the owner on GitHub | Fine-grained, this repository only: Contents, Pull requests, and Workflows read and write. Prefilled: https://github.com/settings/personal-access-tokens/new?name=beerdev-ship&description=beerdev+ship+job+pushes+and+merges+changes+including+workflows&target_name=alexeldeib&expires_in=366&contents=write&pull_requests=write&workflows=write. Then `gh secret set BEERDEV_SHIP_TOKEN --env beerdev`. Without it, changes to `.github/workflows` can't ship |
 | `CLAUDE_CODE_OAUTH_TOKEN` | GitHub | beerdev's coding agent | `claude setup-token` (valid one year), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` |
 | `BEERDEV_BOT_ID` | GitHub | beerdev posts announcements | `bot_id` of the `beerdev` bot from `GET https://api.groupme.com/v3/bots` |
 | `OWNER_USER_ID` | Fly (secret) | The owner's GroupMe id: Beerius follows their commands and passes their vetoes and approvals to beerdev | `13419729`; not a secret, kept out of the public code |
@@ -87,14 +88,43 @@ beerdev's `implement` job.
 | CI `test` | Repository | Nothing | `GITHUB_TOKEN` (contents: read) |
 | CI `deploy` | Repository | The Fly app | `FLY_API_TOKEN` (deploy token scoped to the app) |
 | beerdev scan | Asks from the app (`/admin/dev-requests`), issues, the repository (answers) | Issues, claims, beerdev's chat posts, build starts | `ADMIN_TOKEN`, `BEERDEV_BOT_ID`, `GEMINI_API_KEY` (answers: no tools, so nothing in the runner is reachable), `GITHUB_TOKEN` (issues, actions) |
-| beerdev `implement` (agent code) | Repository, its issue | A patch artifact only | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
-| beerdev `ship` | GitHub's copy of the issue, the patch | Branch, PR, merge, CI start, beerdev's chat post | `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID` |
+| beerdev `implement` (agent code) | Repository, its issue, PyPI (`uv add`) | A patch artifact only (refused if it holds anything credential-like) | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
+| beerdev `review` (agent) | The patch as data, GitHub's copy of the issue, the unchanged repository | A verdict only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN`; runs nothing the implement agent wrote |
+| beerdev `ship` | GitHub's copy of the issue, the patch, the verdict | Branch, PR, merge (or a held PR), CI start, beerdev's chat post | `BEERDEV_SHIP_TOKEN`, `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID` |
 | beerdev lead `plan` (agent) | Repository, issues, CI runs | A plan file only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN` |
 | beerdev lead `file` | The plan (schema-checked, at most three items) | Issues, build starts | `GITHUB_TOKEN` (issues, actions) |
 | ops | Health and admin status, CI runs and logs, issues | Issues, CI redeploys | `ADMIN_TOKEN`, `GITHUB_TOKEN` (issues, actions) |
 | Owner's machine | Everything | Everything | `gh` (repo scope), `fly` (org), `.env` (production database), `.env.local` |
 
+### beerdev's kernel and gates
+
+beerdev may change anything, including workflows, scripts, Docker, Fly, and dependencies, except
+its **kernel**: `.github/workflows/beerdev-build.yml`, `.github/workflows/beerdev-lead.yml`,
+`.github/beerdev-*.md`, `.claude/`, and `tests/test_policy.py`. Ship refuses a patch that touches
+them, including by rename. Three gates guard everything else:
+1. `tests/test_policy.py` checks that secrets stay in their jobs and only reach known hosts. It
+   checks that write permissions and triggers are no broader than today, and that only `main` runs
+   code holding credentials: branch pushes trigger nothing, and those jobs carry the exact non-PR
+   guard. It also checks that jobs holding credentials never restore a cache that agent code could
+   have saved, that agents hold no write access, and that deploys still verify and roll back. Two
+   app checks confirm that only the owner can steer beerdev and that webhooks and admin endpoints
+   require their secrets. The suite runs it, and the review job reruns the kernel's own copy
+   against the patched workflows before anything is pushed: pinned packages, outside the tree, so
+   no agent-written code runs there. To change an invariant on purpose, edit the test by hand in
+   the same PR.
+2. The independent reviewer must approve any change beyond `src/`, `docs/`, `README.md`, and
+   `tests/test_*.py`. If it doesn't, the change waits as an open PR, and its issue moves to the
+   inbox. Merge or close that PR yourself.
+3. CI rolls production back if a deploy fails verification.
+
+GitHub backs this up: the `production` (Fly token) and `beerdev` (ship token) environments accept
+only `main`, so a workflow on a beerdev branch can't read either.
+
 Known gaps, broadest first:
+- **Code can defeat the tests it runs under.** The policy test catches mistakes; the reviewer
+  judges intent. Neither proves a deliberately hostile change safe.
+- **`BEERDEV_SHIP_TOKEN` acts as the owner on GitHub:** beerdev's PRs and merges show the owner. A
+  GitHub App would give beerdev its own identity.
 - **`ADMIN_TOKEN` opens every admin endpoint,** but ops only reads `/admin/*/status` and beerdev
   only reads and claims `/admin/dev-requests`. Separate scoped tokens would remove their ability
   to invite, register, or retry.
@@ -139,7 +169,8 @@ Known gaps, broadest first:
   failure or once a day at 12:17 UTC, so Neon can sleep.
 - **Inbox:** https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox lists everything
   waiting on the owner: infra asks with their human setup, the weekly lead's `proposal`s,
-  incidents beerdev couldn't fix in code, and stuck replies. Everything else runs without you.
+  incidents beerdev couldn't fix in code, changes the reviewer held (each links its open PR), and
+  stuck replies. Everything else runs without you.
 - **Asking:** anyone can ask in the chat ("beerdev what's queued?", "how does the zyn tracker
   count?"). Beerius hands the question over, and beerdev replies within about a minute from the
   code, docs, and issue queue.

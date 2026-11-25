@@ -1,9 +1,14 @@
 name: beerdev build
 
 # Builds the oldest open `beerdev` issue; started by beerdev.yml.
-# - implement: Claude Code makes the change and every test runs, with only read-only credentials.
-# - ship: applies the patch to a fresh checkout without running it, merges, deploys through CI,
-#   appends CHANGELOG.md, and tells the chat (how-to note, ✅ Shipped, or 🤷 Skipping).
+# - implement: Claude Code makes the change and every test runs (tests/test_policy.py included),
+#   with only read-only credentials.
+# - review: for changes beyond routine app code (workflows, scripts, Docker, Fly, dependencies),
+#   an independent Claude Code reads the patch as data and approves or rejects it.
+# - ship: applies the patch to a fresh checkout without running it, refuses changes to the kernel
+#   (this file, the lead, agent prompts and settings, the policy test) and credential-like text,
+#   then merges, deploys through CI, appends CHANGELOG.md, and tells the chat. A change the
+#   reviewer did not approve waits as an unmerged PR in the owner's inbox.
 # Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
 # environment to approve every ship by hand.
 
@@ -81,7 +86,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          enable-cache: true
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
 
       - run: uv sync --frozen --extra dev
 
@@ -102,6 +107,8 @@ jobs:
           --add-dir /tmp/beerdev
           --allowedTools Read Edit Write Glob Grep
           "Bash(uv run pytest:*)" "Bash(uv run ruff:*)" "Bash(git diff:*)" "Bash(git status:*)"
+          "Bash(uv add:*)" "Bash(uv remove:*)" "Bash(uv lock:*)"
+          --disallowedTools "Read(//proc/**)"
 
       - name: Test, including the live chat e2e
         env:
@@ -117,6 +124,11 @@ jobs:
         run: |
           git add -A
           git diff --cached --binary > /tmp/beerdev/change.patch
+          # Artifacts of a public repository are downloadable: never upload a credential.
+          if grep -rqE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev; then
+            echo "::error::The change or its notes contain what looks like a credential"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -124,8 +136,102 @@ jobs:
           path: /tmp/beerdev/
           retention-days: 3
 
-  ship:
+  # Runs nothing the implement agent wrote: the reviewer only reads the patch, the request (fetched
+  # from GitHub, not the artifact), and the unchanged repository.
+  review:
     needs: [pick, implement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+      reason: ${{ steps.verdict.outputs.reason }}
+    env:
+      ISSUE: ${{ needs.pick.outputs.issue }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: beerdev
+          path: /tmp/beerdev
+
+      - name: What does it change?
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/review
+          [ -s /tmp/beerdev/change.patch ] || exit 0
+          echo "patch=true" >> "$GITHUB_OUTPUT"
+          cp /tmp/beerdev/change.patch /tmp/review/change.patch
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body > /tmp/review/request.json
+          git apply --index /tmp/beerdev/change.patch
+          changed="$(git diff --cached --name-only --no-renames)"
+          git reset -q --hard
+          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
+          if grep -vE "$routine" <<< "$changed" | grep -q .; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review with Claude Code
+        if: steps.scope.outputs.infra == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: >-
+          npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-review-prompt.md)"
+          --add-dir /tmp/review --output-format json
+          --allowedTools Read Glob Grep --disallowedTools "Read(//proc/**)"
+          | jq -r .result > /tmp/review/answer.txt
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        if: steps.scope.outputs.patch == 'true'
+        with:
+          enable-cache: false
+
+      # The kernel's policy checks (the base copy) on the patched workflows and scripts, read as
+      # data: pinned packages, run from outside the tree with no conftest, plugins, or project
+      # config, so nothing the implement agent wrote runs. It must pass before anything is pushed.
+      - name: Check the pipeline policy
+        if: steps.scope.outputs.patch == 'true'
+        run: |
+          mkdir -p /tmp/policy
+          cp tests/test_policy.py /tmp/policy/
+          git apply /tmp/review/change.patch
+          cd /tmp/policy
+          POLICY_ROOT="$GITHUB_WORKSPACE" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            uv run --no-config --no-project --with pyyaml==6.0.3 --with pytest==9.0.2 \
+            python -I -m pytest -q -p no:cacheprovider --noconftest -c /dev/null \
+            --rootdir /tmp/policy -k "not app" test_policy.py
+
+      # The reason lands in a public issue comment: one line, and never anything credential-like.
+      - name: Verdict
+        id: verdict
+        run: |
+          python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, re
+          answer = pathlib.Path("/tmp/review/answer.txt")
+          if not answer.exists():
+              print("verdict=none")
+              raise SystemExit
+          match = re.search(r"\{.*\}", answer.read_text(), re.S)
+          try:
+              found = json.loads(match.group(0)) if match else {}
+          except ValueError:
+              found = {}
+          reason = " ".join(str(found.get("reason") or "No verdict.").split())[:400]
+          if re.search(r"sk-ant-|AIza|gh[pousr]_|github_pat_", reason):
+              reason = "(withheld: it looked like a credential)"
+          print("verdict=" + ("approve" if found.get("approve") is True else "reject"))
+          print("reason=" + reason)
+          PY
+
+  ship:
+    needs: [pick, implement, review]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: beerdev
@@ -137,6 +243,8 @@ jobs:
     env:
       ISSUE: ${{ needs.pick.outputs.issue }}
       GH_TOKEN: ${{ github.token }}
+      VERDICT: ${{ needs.review.outputs.verdict }}
+      REASON: ${{ needs.review.outputs.reason }}
     steps:
       # A fresh checkout: nothing the agent wrote (code, hooks, git config) ever runs in this job.
       - uses: actions/checkout@v7
@@ -159,6 +267,10 @@ jobs:
             echo "The issue was closed during the build (vetoed or cancelled), so nothing ships."
             exit 0
           fi
+          if ! jq -e 'any(.labels[]; .name == "beerdev")' /tmp/request.json > /dev/null; then
+            echo "The issue is not queued for beerdev (no beerdev label), so nothing ships."
+            exit 0
+          fi
           from_chat() { jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; }
           if [ -s /tmp/beerdev/skip.md ]; then
             if jq -e 'any(.labels[]; .name == "ops")' /tmp/request.json > /dev/null; then
@@ -179,16 +291,30 @@ jobs:
             exit 1
           fi
           git apply --index /tmp/beerdev/change.patch
-          changed="$(git diff --cached --name-only)"
-          protected='^(\.github/|\.claude/|scripts/|Dockerfile$|\.dockerignore$|fly\.toml$|pyproject\.toml$|uv\.lock$|src/beerbot/config\.py$)'
-          if grep -E "$protected" <<< "$changed"; then
-            echo "::error::beerdev may not change infrastructure files"
+          # --no-renames lists both sides of a rename, so moving a kernel file is caught too.
+          changed="$(git diff --cached --name-only --no-renames)"
+          kernel='^(\.github/workflows/beerdev-(build|lead)\.yml|\.github/beerdev-[a-z-]+\.md|\.claude/.*|tests/test_policy\.py)$'
+          if grep -E "$kernel" <<< "$changed"; then
+            echo "::error::beerdev may not change its own kernel"
             exit 1
+          fi
+          if grep -qE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev/change.patch; then
+            echo "::error::The change contains what looks like a credential"
+            exit 1
+          fi
+          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
+          if grep -vE "$routine" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
+            echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code, and not approved.
           fi
           echo "ship=true" >> "$GITHUB_OUTPUT"
 
       - name: Merge, deploy, announce
         if: steps.apply.outputs.ship == 'true'
+        env:
+          # Can push workflow changes, and its merges start CI. Without it, only changes that
+          # leave .github/workflows alone can ship.
+          SHIP_TOKEN: ${{ secrets.BEERDEV_SHIP_TOKEN }}
+          HOLD: ${{ steps.apply.outputs.hold }}
         run: |
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
@@ -200,7 +326,8 @@ jobs:
           git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "feat: $title" -m "Closes #$ISSUE"
-          git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
+          token="${SHIP_TOKEN:-$GH_TOKEN}"
+          git push -q "https://x-access-token:$token@github.com/$GITHUB_REPOSITORY.git" \
             "HEAD:refs/heads/$branch"
           note=/tmp/beerdev/announcement.md
           if [ ! -s "$note" ]; then
@@ -208,17 +335,31 @@ jobs:
             jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
           fi
           { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
-          gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
-          gh pr merge "$branch" --squash
+          if [ "$HOLD" = true ]; then
+            # Not approved: the owner reviews and merges it by hand, or closes it.
+            printf '\n\n**Held for the owner.** The independent reviewer did not approve this change: %s\n' \
+              "${REASON:-it did not run}" >> /tmp/beerdev/pr.md
+            url="$(GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" \
+              --body-file /tmp/beerdev/pr.md)"
+            gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
+            gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
+            if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+              printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
+            fi
+            exit 0
+          fi
+          GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
+          GH_TOKEN="$token" gh pr merge "$branch" --squash
 
-          # Pushes made with GITHUB_TOKEN never trigger workflows, so start the CI deploy explicitly.
-          # CI re-runs the full suite on main before it deploys.
+          # A merge with the ship token starts CI by itself; one with GITHUB_TOKEN never does, so
+          # start it explicitly if no run shows up. CI re-runs the full suite before it deploys.
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          gh workflow run ci.yml --ref main
-          for _ in $(seq 30); do
-            run="$(gh run list --workflow ci.yml --event workflow_dispatch --commit "$sha" \
+          run=""
+          for attempt in $(seq 36); do
+            run="$(gh run list --workflow ci.yml --commit "$sha" \
               --json databaseId --jq '.[0].databaseId // empty')"
             [ -n "$run" ] && break
+            [ "$attempt" = 6 ] && gh workflow run ci.yml --ref main
             sleep 5
           done
           gh run watch "$run" --exit-status --interval 30 > /dev/null
@@ -244,7 +385,7 @@ jobs:
             || echo "::warning::could not post to the chat"
 
   flag:
-    needs: [pick, implement, ship]
+    needs: [pick, implement, review, ship]
     if: failure() && needs.pick.outputs.issue
     runs-on: ubuntu-latest
     permissions:

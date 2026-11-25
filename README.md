@@ -212,6 +212,7 @@ asks over and stays silent.
 | 🤓 … | An answer about the queue or how the bot works ("beerdev what's queued?") |
 | 👀 Filed for a human: … | Needs setup a person must do (it is in the inbox) |
 | 🛠️ New: … / ✅ Shipped: … | Deployed and verified |
+| 👀 Needs the owner's review: … | The independent reviewer held an infrastructure change for the owner |
 | 🤷 Skipping: … | beerdev declined it, with the reason |
 | 🚫 Vetoed: … | The owner stopped it, or it is being removed |
 | 📜 beerdev this week | Monday digest: shipped, declined, and waiting on a human |
@@ -222,13 +223,16 @@ asks over and stays silent.
    questions from the code, docs, and queue. `beerdev` (plus `bug`) marks code changes, and
    `beerdev-infra` + `inbox` marks asks that need a person.
 2. **build** (`beerdev-build.yml`): Claude Code takes the oldest `beerdev` issue, and incidents
-   first. Lint, the full suite, and the live chat e2e then run with only read-only credentials.
-   `ship` applies the patch to a fresh checkout, appends `CHANGELOG.md`, merges, deploys through
-   CI, and tells the chat. An issue closed mid-build (a veto) never ships.
+   first. Lint, the full suite (including the pipeline policy in `tests/test_policy.py`), and the
+   live chat e2e then run with only read-only credentials. Changes beyond app code (workflows,
+   scripts, Docker, Fly, dependencies) need an independent Claude reviewer's approval, or they
+   wait for the owner as an open PR. `ship` refuses changes to beerdev's own kernel, applies the
+   patch to a fresh checkout, appends `CHANGELOG.md`, merges, deploys through CI (which rolls back
+   a failed deploy), and tells the chat. An issue closed mid-build (a veto) never ships.
 3. **lead** (`beerdev-lead.yml`, Mondays) reviews the code, incidents, and backlog with
-   read-only access and proposes up to three improvements. beerdev builds the safe ones, and
-   anything touching dependencies, infrastructure, costs, or product calls waits in the inbox as a
-   `proposal`.
+   read-only access and proposes up to three improvements. beerdev builds them, except that
+   kernel changes, new secrets or paid services, costs, data deletion, and product calls wait in
+   the inbox as a `proposal`.
 4. **ops** (`ops.yml`) files production incidents with their diagnosis; beerdev fixes them first.
 
 **Steering:**
