@@ -93,6 +93,20 @@ jobs:
         if: steps.release.outputs.current == 'true'
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
+      # What is serving now is the last good release: a failed verification below always
+      # restores it, so this never points at a broken deploy.
+      - name: Remember the running release
+        id: previous
+        if: steps.release.outputs.current == 'true'
+        run: |
+          image="$(flyctl image show --app beerbot-groupme --json \
+            | jq -r 'first | "\(.Registry)/\(.Repository):\(.Tag)"')"
+          sha="$(curl --silent --max-time 15 https://beerbot-groupme.fly.dev/version | jq -r '.git_sha // empty')"
+          if [[ "$image" == registry.fly.io/* ]]; then
+            echo "image=$image" >> "$GITHUB_OUTPUT"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy with blue-green replacement
         if: steps.release.outputs.current == 'true'
         run: >-
@@ -104,6 +118,7 @@ jobs:
           --wait-timeout 10m
 
       - name: Verify production health and revision
+        id: verify
         if: steps.release.outputs.current == 'true'
         run: |
           curl --fail --silent --show-error --max-time 15 \
@@ -118,6 +133,28 @@ jobs:
             | jq --exit-status --arg sha "${GITHUB_SHA}" '.git_sha == $sha'
           # After cutover, validate DB connectivity and wake the NEW fleet to
           # recover any receipts committed during the old fleet's shutdown.
+          curl --fail --silent --show-error --max-time 15 \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            https://beerbot-groupme.fly.dev/ready/db
+
+      # The deploy went out but production is not healthy on it: put back what was running,
+      # including its fly.toml, then fail anyway so ops files the incident and beerdev fixes
+      # forward. Migrations are forward-only, so code must keep working on the previous schema.
+      - name: Roll back to the release that was running
+        if: failure() && steps.verify.outcome == 'failure' && steps.previous.outputs.image != ''
+        env:
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
+          PREVIOUS_SHA: ${{ steps.previous.outputs.sha }}
+        run: |
+          echo "::warning::Verification failed; rolling back to ${PREVIOUS_SHA:-the previous release}."
+          if [[ "$PREVIOUS_SHA" =~ ^[0-9a-f]{40}$ ]] && git fetch --quiet --depth 1 origin "$PREVIOUS_SHA"; then
+            git show "${PREVIOUS_SHA}:fly.toml" > fly.toml
+          fi
+          flyctl deploy --app beerbot-groupme --image "$PREVIOUS_IMAGE" \
+            --strategy bluegreen --wait-timeout 10m
+          curl --fail --silent --show-error --max-time 15 \
+            --retry 10 --retry-all-errors --retry-delay 3 \
+            https://beerbot-groupme.fly.dev/ready
           curl --fail --silent --show-error --max-time 15 \
             --retry 10 --retry-all-errors --retry-delay 3 \
             https://beerbot-groupme.fly.dev/ready/db

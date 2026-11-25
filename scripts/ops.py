@@ -210,6 +210,12 @@ def main() -> None:
 
     if (run_id := env.get("CI_RUN_ID")) and (failure := deploy_failure(github, repo, run_id)):
         key, text = failure
+        try:  # CI rolls back when verification fails; say what production runs now.
+            running = app.get("/version").raise_for_status().json().get("git_sha") or "?"
+        except httpx.HTTPError:
+            running = "?"
+        rolled_back = running != "?" and not running.startswith(key[7:])
+        text += f"\n\nProduction now runs {running[:7]}{' (rolled back)' if rolled_back else ''}."
         report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, INCIDENT))
         print(f"Reported failed CI run {run_id}")
 
