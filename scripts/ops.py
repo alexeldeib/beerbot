@@ -11,7 +11,7 @@ Run every 5 minutes, after CI on main, and right away when the app reports a fai
   - Otherwise, breakage within an hour of a deploy rolls back (rollback.yml), once per deploy.
   - Anything else gets the owner.
 - Each incident is one GitHub issue assigned to the owner, paged in the private "beerbot alerts"
-  GroupMe group on open, on a rollback, and on resolve.
+  GroupMe group on open, when a rollback fails, and on resolve. An `ack` label stops its pages.
 - It never posts in the main chat. Issues are public, so they carry exception types and this repo's
   stack frames, never message text. All state lives in issue bodies as markers.
 """
@@ -31,6 +31,9 @@ INCIDENT = ["ops", "beerdev", "bug"]
 NEEDS_OWNER = ["ops", "inbox"]
 INCIDENT_LABELS = ["ops", "incident"]
 DEPLOY_WINDOW = timedelta(minutes=60)  # Breakage this soon after a deploy rolls it back.
+# A deploy or rollback unfinished this long is stuck (a pending approval, a lost runner), not
+# changing production: waiting on it forever would leave ops blind.
+STALE_RUN = timedelta(minutes=30)
 QUEUE_LIMIT = 300  # Seconds a message or reply may wait before it counts as stuck.
 # A class closed this recently gets appended to instead of reopened as a new build: a fix that
 # didn't stick goes to a person rather than looping beerdev.
@@ -275,9 +278,13 @@ def trusted(run: dict, repo: str) -> bool:
     return run.get("event") in ("push", "workflow_dispatch") and head == repo
 
 
-def changing(found: list[dict]) -> bool:
+def changing(found: list[dict], now: datetime) -> bool:
     """A deploy or a rollback is changing production right now: wait for it."""
-    return any(run["status"] != "completed" for run in found)
+    return any(
+        run["status"] != "completed"
+        and now - datetime.fromisoformat(run["run_started_at"] or run["created_at"]) < STALE_RUN
+        for run in found
+    )
 
 
 def last_deploy(ci: list[dict], repo: str) -> dict | None:
@@ -324,6 +331,32 @@ def page(text: str) -> None:
         print(f"::warning::Page failed (HTTP {response.status_code})")
 
 
+def acked(incident: dict) -> bool:
+    """The owner labeled it `ack`: they're on it, so no more pages."""
+    return "ack" in {label["name"] for label in incident.get("labels") or []}
+
+
+def rollback_failed(github: httpx.Client, repo: str, incident: dict, rollbacks: list[dict]) -> bool:
+    """Tell the owner, once per run, that a rollback failed during the incident: production is
+    still broken and nothing automatic is left to try."""
+    opened = datetime.fromisoformat(incident["created_at"])
+    for run in rollbacks:
+        seen = f"<!-- ops:seen=rollback-{run['id']} -->"
+        body = incident.get("body") or ""
+        if run["conclusion"] != "failure" or seen in body:
+            continue
+        if datetime.fromisoformat(run["updated_at"]) < opened:
+            continue
+        incident["body"] = f"{body}\n{seen}"
+        path = f"/repos/{repo}/issues/{incident['number']}"
+        github.patch(path, json={"body": incident["body"]}).raise_for_status()
+        github.post(f"{path}/comments", json={"body": f"The [rollback]({run['html_url']}) failed."})
+        if not acked(incident):
+            page(f"🚨 The rollback failed: Beerius is still down and needs you. {run['html_url']}")
+        return True
+    return False
+
+
 def handle_incident(
     github: httpx.Client, repo: str, issues: list[dict], found: list[str], workers: dict
 ) -> str:
@@ -335,7 +368,7 @@ def handle_incident(
     now = datetime.now(UTC)
     if found:
         ci, rollbacks = runs(github, repo, "ci.yml"), runs(github, repo, "rollback.yml")
-        if changing(ci + rollbacks):
+        if changing(ci + rollbacks, now):
             return f"Symptoms during a deploy or rollback; checking again next run: {found}"
         if incident is None:
             action = mitigate(github, repo, workers, ci, rollbacks)
@@ -355,6 +388,8 @@ def handle_incident(
             url = created.json()["html_url"]
             page(f"🚨 Beerius: {'; '.join(found)}. {action.replace(ROLLED_BACK, '').strip()} {url}")
             return f"Opened an incident: {found}"
+        if rollback_failed(github, repo, incident, rollbacks):
+            return f"A rollback failed during the incident; told the owner: {found}"
         return f"Incident still open, no new action: {found}"
     if incident is None:
         return "Healthy"
@@ -364,10 +399,11 @@ def handle_incident(
     github.post(f"{path}/comments", json={"body": f"Resolved after {minutes} min."})
     github.patch(path, json={"state": "closed"}).raise_for_status()
     rolled_back = ROLLED_BACK in (incident.get("body") or "")
-    page(
-        f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
-        f"{incident['html_url']}"
-    )
+    if not acked(incident):
+        page(
+            f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
+            f"{incident['html_url']}"
+        )
     if rolled_back or "src/beerbot" in (incident.get("body") or ""):  # Code: the SWE's turn.
         text = (
             f"Follow-up to {incident['html_url']} (resolved after {minutes} min"

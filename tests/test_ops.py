@@ -310,6 +310,42 @@ def test_ops_waits_while_production_is_changing(monkeypatch):
     fake = FakeGitHub(ci=[run(1, status="in_progress"), run(3)])
     line, pages = incident_run(monkeypatch, fake, ["/health is failing"])
     assert pages == [] and fake.created == [] and "checking again next run" in line
+    # Queued behind an approval for 45 minutes is stuck, not a deploy: ops stops waiting.
+    fake = FakeGitHub(ci=[run(45, status="queued"), run(300)])
+    line, pages = incident_run(monkeypatch, fake, ["/health is failing"])
+    assert line.startswith("Opened an incident") and len(pages) == 1
+
+
+def test_a_failed_rollback_pages_once_and_ack_silences_an_incident(monkeypatch):
+    opened = (datetime.now(UTC) - timedelta(minutes=12)).isoformat()
+
+    def incident(*labels):
+        return {
+            "number": 7,
+            "state": "open",
+            "title": "Incident: /ready is failing",
+            "html_url": "https://g/7",
+            "created_at": opened,
+            "labels": [{"name": name} for name in labels],
+            "body": f"{ops.INCIDENT_MARKER} ... {ops.ROLLED_BACK}",
+        }
+
+    # The second failure finished before this incident opened: someone else's, never paged.
+    rollbacks = [run(2, conclusion="failure", id=9), run(30, conclusion="failure", id=8)]
+    live = incident()
+    _, pages = incident_run(monkeypatch, FakeGitHub(rollbacks=rollbacks), ["down"], issues=[live])
+    assert len(pages) == 1 and pages[0].startswith("🚨 The rollback failed")
+    assert "https://g/o/r/actions/runs/9" in pages[0]
+    _, pages = incident_run(monkeypatch, FakeGitHub(rollbacks=rollbacks), ["down"], issues=[live])
+    assert pages == []  # Once.
+
+    quiet = incident("ack")
+    _, pages = incident_run(monkeypatch, FakeGitHub(rollbacks=rollbacks), ["down"], issues=[quiet])
+    assert pages == [] and "ops:seen=rollback-9" in quiet["body"]  # Recorded, not paged.
+    fake = FakeGitHub()
+    _, pages = incident_run(monkeypatch, fake, [], issues=[quiet])
+    assert pages == [] and ("PATCH", "/repos/o/r/issues/7", {"state": "closed"}) in fake.calls
+    assert fake.created[0]["title"] == "Root cause: Incident: /ready is failing"
 
 
 def test_expiring_credentials_get_one_inbox_issue_each():
