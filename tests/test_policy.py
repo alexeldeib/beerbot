@@ -30,8 +30,9 @@ SECRETS = {
 }
 # Jobs whose GITHUB_TOKEN may write, and to what.
 WRITES = {
-    ("beerdev-build.yml", "ship"): {"actions", "contents", "issues", "pull-requests"},
+    ("beerdev-build.yml", "ship"): {"issues"},  # It pushes and merges with BEERDEV_SHIP_TOKEN.
     ("beerdev-build.yml", "flag"): {"issues"},
+    ("beerdev-build.yml", "next"): {"actions"},
     ("beerdev-lead.yml", "file"): {"actions", "issues"},
     ("ops.yml", "check"): {"actions", "issues"},
 }
@@ -48,6 +49,11 @@ KERNEL = [
     ".github/beerdev-review-prompt.md",
     ".github/beerdev-lead-prompt.md",
     ".claude/settings.json",
+    # Every Claude agent loads these as instructions, from any directory.
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "src/beerbot/CLAUDE.md",
+    "docs/notes/CLAUDE.local.md",
     "tests/test_policy.py",
 ]
 
@@ -166,17 +172,80 @@ def test_deploys_verify_production_and_roll_back():
     assert rollback and "--image" in rollback[0]["run"] and "/ready/db" in rollback[0]["run"]
 
 
+def test_every_job_has_a_timeout():
+    # A hung job holds its concurrency group (deploys, builds) for GitHub's six hours, and ops
+    # waits on an unfinished deploy.
+    for name, job, spec, _ in jobs():
+        assert "timeout-minutes" in spec, f"{name}/{job}"
+
+
+def test_the_image_installs_exactly_what_is_locked():
+    # Production holds every secret: no fallback may resolve fresh, unreviewed versions.
+    syncs = re.findall(r"uv sync[^\n]*", (ROOT / "Dockerfile").read_text())
+    assert syncs and all("--frozen" in sync and "||" not in sync for sync in syncs), syncs
+
+
 def test_beerdev_cannot_change_its_kernel():
     ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
     text = "\n".join(step.get("run", "") for step in ship["steps"])
     kernel = re.search(r"kernel='([^']+)'", text).group(1)
     for path in KERNEL:
         assert re.search(kernel, path), path
-    assert not re.search(kernel, "src/beerbot/tools.py")
+    for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "docs/NOTCLAUDE.md"):
+        assert not re.search(kernel, path), path
     assert "--no-renames" in text  # A rename must not hide a kernel file.
     assert "(pyproject\\.toml|uv\\.lock)" in text  # Dependency changes always wait for the owner.
     review = WORKFLOWS["beerdev-build.yml"]["jobs"]["review"]
     assert "review" in ship["needs"] and "claude-code" in yaml.safe_dump(review)
+
+
+def test_ship_never_merges_after_a_failure_or_from_a_fork():
+    ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
+    text = "\n".join(step.get("run", "") for step in ship["steps"])
+    # Never after a failed implement, review, or policy check. Skipped ones mean an approved
+    # held PR, which merges only from this repository's own branch, once its checks pass.
+    assert "!failure()" in ship["if"] and "!cancelled()" in ship["if"]
+    assert "isCrossRepository | not" in text and "gh run watch" in text
+    assert not re.search(r"git push[^\n]*(--force|\s-f\b|\s\+)", text)  # Never rewrites history.
+
+
+def test_builds_run_one_at_a_time_and_never_repick_an_issue():
+    workflow = WORKFLOWS["beerdev-build.yml"]
+    assert workflow["concurrency"] == {"group": "beerdev-build", "cancel-in-progress": False}
+    chain = workflow["jobs"]["next"]
+    # After flag, so a failed issue already carries beerdev-failed when the next one is picked.
+    assert {"ship", "flag"} <= set(chain["needs"]) and "!cancelled()" in chain["if"]
+    start = next(step for step in chain["steps"] if "gh workflow run" in str(step.get("run")))
+    assert "!= needs.pick.outputs.issue" in start["if"]
+
+
+def test_the_weekly_lead_sees_ci_runs():
+    steps = WORKFLOWS["beerdev-lead.yml"]["jobs"]["plan"]["steps"]
+    gather = next(step["run"] for step in steps if "gh run list" in str(step.get("run")))
+    assert "--workflow ci.yml" in gather  # Unscoped, the newest runs are all ops checks.
+
+
+def test_only_routine_code_ships_without_the_reviewer():
+    workflow = WORKFLOWS["beerdev-build.yml"]
+    routine = workflow["env"]["ROUTINE"]  # For grep -P, in syntax Python's re shares.
+    for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "tests/test_tools.py"):
+        assert re.search(routine, path), path
+    # Files that hold credentials or decide who may do what need the reviewer, like infra.
+    sensitive = ("beerdev", "main", "dispatch", "config", "database", "web")
+    for path in [f"src/beerbot/{name}.py" for name in sensitive] + [
+        "scripts/ops.py",
+        "Dockerfile",
+        "fly.toml",
+        "pyproject.toml",
+        "tests/conftest.py",
+        ".github/workflows/ci.yml",
+    ]:
+        assert not re.search(routine, path), path
+    for job in ("review", "ship"):  # One definition, read by both gates.
+        text = "\n".join(step.get("run", "") for step in workflow["jobs"][job]["steps"])
+        assert "routine=" not in text, job
+        # Fails closed: only grep's "every line matched" (1) counts as routine, never an error.
+        assert 'grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]' in text, job
 
 
 # The review job skips the two app checks below (`-k "not app"`): they import agent-written code.
@@ -225,16 +294,31 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
         )
 
 
-def test_the_rollback_goes_one_step_back_and_verifies():
+def test_the_rollback_restores_a_known_release_and_verifies():
     workflow = WORKFLOWS["rollback.yml"]
-    assert set(triggers(workflow)) == {"workflow_dispatch"}  # Started by ops or by hand only.
+    on = triggers(workflow)
+    assert set(on) == {"workflow_dispatch"}  # Started by ops or by hand only.
+    assert set(on["workflow_dispatch"]["inputs"]) == {"dry_run", "version"}
     job = workflow["jobs"]["rollback"]
     assert job["environment"] == "production"  # main-only: a branch can't roll production back.
     assert (
         workflow["concurrency"]["group"]
         == WORKFLOWS["ci.yml"]["jobs"]["deploy"]["concurrency"]["group"]
     )
+    steps = {step.get("id") or step.get("name"): step for step in job["steps"]}
     scripts = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "inputs." not in scripts  # Inputs reach scripts as env, never as code.
+    target = steps["target"]["run"]
+    # After any rollback, "the release before" is the broken one: refuse unless the owner names one.
+    assert "$VERSION" in target and "rolled back" in target
+    # The target's own fly.toml, found through the commit CI labels each image with.
+    assert ':fly.toml" > fly.toml' in target
+    ci_deploy = "\n".join(
+        str(step.get("run")) for step in WORKFLOWS["ci.yml"]["jobs"]["deploy"]["steps"]
+    )
+    assert '--image-label "${GITHUB_SHA}"' in ci_deploy
     assert "--strategy bluegreen" in scripts
-    verify = next(step["run"] for step in job["steps"] if step.get("name") == "Verify production")
+    for name in ("Deploy it blue-green", "Verify production"):
+        assert steps[name]["if"] == "${{ !inputs.dry_run }}", name
+    verify = steps["Verify production"]["run"]
     assert all(check in verify for check in ("health", "ready", "ready/db"))

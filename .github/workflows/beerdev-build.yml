@@ -1,14 +1,20 @@
 name: beerdev build
 
-# Builds the oldest open `beerdev` issue; started by beerdev.yml.
+# Builds the oldest open `beerdev` issue, incidents first. Started by the app (chat requests and
+# the owner's approvals and vetoes), the weekly lead, ops' tickets, and the build before it.
+# - pick: the issue. If it has an open PR (held, then approved by the owner), that PR ships as it
+#   is, without implement or review.
 # - implement: Claude Code makes the change and every test runs (tests/test_policy.py included),
 #   with only read-only credentials.
-# - review: for changes beyond routine app code (workflows, scripts, Docker, Fly, dependencies),
-#   an independent Claude Code reads the patch as data and approves or rejects it.
+# - review: for changes beyond routine app code (ROUTINE below: workflows, scripts, Docker, Fly,
+#   dependencies, and the app files that hold credentials or decide who may do what), an
+#   independent Claude Code reads the patch as data and approves or rejects it.
 # - ship: applies the patch to a fresh checkout without running it, refuses changes to the kernel
-#   (this file, the lead, agent prompts and settings, the policy test) and credential-like text,
-#   then merges, deploys through CI, appends CHANGELOG.md, and tells the chat. A change the
-#   reviewer did not approve waits as an unmerged PR in the owner's inbox.
+#   (this file, the lead, agent prompts and settings, CLAUDE.md files, the policy test) and
+#   credential-like text, then merges, deploys through CI, appends CHANGELOG.md, and tells the
+#   chat. A change the reviewer did not approve waits as an unmerged PR in the owner's inbox.
+# - next: starts the next build if anything else is buildable, so the queue drains one build at a
+#   time. A flagged (`beerdev-failed`) issue is never picked again.
 # Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
 # environment to approve every ship by hand.
 
@@ -16,6 +22,13 @@ on:
   workflow_dispatch:
 
 permissions: {}
+
+env:
+  # What ships without the independent reviewer (`grep -P`): app code, docs, and tests, except the
+  # app files that hold credentials or decide who may do what. tests/test_policy.py pins it.
+  ROUTINE: '^(?!src/beerbot/(beerdev|main|dispatch|config|database|web)\.py$)(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
+  # What a credential looks like (`grep -E`): never in an artifact or a pushed change.
+  CREDENTIAL: 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_'
 
 # One build at a time. A newer queued build replaces an older one, and each picks its issue when
 # it starts, so nothing is built twice.
@@ -30,14 +43,12 @@ jobs:
     permissions:
       contents: read
       issues: read
+      pull-requests: read
     outputs:
       issue: ${{ steps.pick.outputs.issue }}
+      held: ${{ steps.held.outputs.held }}
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -48,9 +59,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Held for the owner, then approved: its open PR ships as it is, without a new build.
+      - id: held
+        if: steps.pick.outputs.issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.pick.outputs.issue }}
+        run: |
+          held="$(gh pr list -R "$GITHUB_REPOSITORY" --head "beerdev/issue-$ISSUE" --state open \
+            --json isCrossRepository --jq 'any(.[]; .isCrossRepository | not)')"
+          echo "held=$held" >> "$GITHUB_OUTPUT"
+
   implement:
     needs: pick
-    if: needs.pick.outputs.issue
+    if: needs.pick.outputs.issue && needs.pick.outputs.held != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Everything agent-written runs here: a read-only token and no deploy or GroupMe credentials.
@@ -79,10 +101,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -134,7 +152,7 @@ jobs:
           git add -A
           git diff --cached --binary > /tmp/beerdev/change.patch
           # Artifacts of a public repository are downloadable: never upload a credential.
-          if grep -rqE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev; then
+          if grep -rqE "$CREDENTIAL" /tmp/beerdev; then
             echo "::error::The change or its notes contain what looks like a credential"
             exit 1
           fi
@@ -182,8 +200,9 @@ jobs:
           git apply --index /tmp/beerdev/change.patch
           changed="$(git diff --cached --name-only --no-renames)"
           git reset -q --hard
-          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
-          if grep -vE "$routine" <<< "$changed" | grep -q .; then
+          # grep -v exits 1 only when every file is routine; anything else, an error included
+          # (a grep without -P), needs the reviewer.
+          if grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -250,33 +269,44 @@ jobs:
 
   ship:
     needs: [pick, implement, review]
+    # Also when implement and review were skipped for an approved held PR; never after a failure.
+    if: ${{ !cancelled() && !failure() && needs.pick.outputs.issue }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: beerdev
+    # Pushes, PRs, and merges use the ship token; this job's own token only edits issues.
     permissions:
-      actions: write # dispatch and watch the CI deploy
-      contents: write
+      actions: read # watch the CI deploy
+      contents: read
       issues: write
-      pull-requests: write
     env:
       ISSUE: ${{ needs.pick.outputs.issue }}
+      HELD: ${{ needs.pick.outputs.held }}
       GH_TOKEN: ${{ github.token }}
       VERDICT: ${{ needs.review.outputs.verdict }}
       REASON: ${{ needs.review.outputs.reason }}
     steps:
       # A fresh checkout: nothing the agent wrote (code, hooks, git config) ever runs in this job.
+      # Full history, to bring a held PR up to date with main.
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
+        if: needs.pick.outputs.held != 'true'
         with:
           name: beerdev
           path: /tmp/beerdev
 
       # The artifact is agent-writable, so the issue itself (title, ask id) comes from GitHub.
+      # A chat request (its body holds the chat's message id) hears back in the chat.
       - name: Fetch the request
-        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels,state > /tmp/request.json
+        run: |
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels,state > /tmp/request.json
+          if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+            echo "FROM_CHAT=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Apply the change
         id: apply
@@ -289,7 +319,10 @@ jobs:
             echo "The issue is not queued for beerdev (no beerdev label), so nothing ships."
             exit 0
           fi
-          from_chat() { jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; }
+          if [ "$HELD" = true ]; then  # The owner approved its held PR: nothing new to apply.
+            echo "ship=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -s /tmp/beerdev/skip.md ]; then
             if jq -e 'any(.labels[]; .name == "ops")' /tmp/request.json > /dev/null; then
               # An incident with no code fix still needs someone: hand it to the owner.
@@ -298,7 +331,7 @@ jobs:
               exit 0
             fi
             gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
-            if from_chat; then  # Close the loop with whoever asked; quiet otherwise.
+            if [ "$FROM_CHAT" = true ]; then  # Close the loop with whoever asked; quiet otherwise.
               reason="$(tr '\n' ' ' < /tmp/beerdev/skip.md | cut -c1-240)"
               printf '🤷 Skipping: %s. %s' "$(jq -r .title /tmp/request.json)" "$reason" > /tmp/chat.txt
             fi
@@ -311,22 +344,22 @@ jobs:
           git apply --index /tmp/beerdev/change.patch
           # --no-renames lists both sides of a rename, so moving a kernel file is caught too.
           changed="$(git diff --cached --name-only --no-renames)"
-          kernel='^(\.github/workflows/beerdev-(build|lead)\.yml|\.github/beerdev-[a-z-]+\.md|\.claude/.*|tests/test_policy\.py)$'
+          # Every Claude agent loads CLAUDE.md files, in any directory, as instructions.
+          kernel='^(\.github/workflows/beerdev-(build|lead)\.yml|\.github/beerdev-[a-z-]+\.md|\.claude/.*|(.*/)?CLAUDE(\.local)?\.md|tests/test_policy\.py)$'
           if grep -E "$kernel" <<< "$changed"; then
             echo "::error::beerdev may not change its own kernel"
             exit 1
           fi
-          if grep -qE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev/change.patch; then
+          if grep -qE "$CREDENTIAL" /tmp/beerdev/change.patch; then
             echo "::error::The change contains what looks like a credential"
             exit 1
           fi
-          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
           if grep -qE '^(pyproject\.toml|uv\.lock)$' <<< "$changed"; then
             # A reviewer can't vet a package's provenance offline, and it runs with every secret.
             echo "hold=true" >> "$GITHUB_OUTPUT"
             echo "why=It changes dependencies, which always wait for the owner." >> "$GITHUB_OUTPUT"
-          elif grep -vE "$routine" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
-            echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code, and not approved.
+          elif { grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]; } && [ "$VERDICT" != approve ]; then
+            echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code (or grep failed), not approved.
             echo "why=The independent reviewer did not approve it: ${REASON:-it did not run}" >> "$GITHUB_OUTPUT"
           fi
           echo "ship=true" >> "$GITHUB_OUTPUT"
@@ -334,64 +367,89 @@ jobs:
       - name: Merge, deploy, announce
         if: steps.apply.outputs.ship == 'true'
         env:
-          # Can push workflow changes, and its merges start CI. Without it, only changes that
-          # leave .github/workflows alone can ship.
+          # Pushes (workflow changes included), opens PRs, and merges, and its merges start CI.
+          # Nothing ships without it.
           SHIP_TOKEN: ${{ secrets.BEERDEV_SHIP_TOKEN }}
           HOLD: ${{ steps.apply.outputs.hold }}
           WHY: ${{ steps.apply.outputs.why }}
         run: |
+          if [ -z "$SHIP_TOKEN" ]; then
+            echo "::error::BEERDEV_SHIP_TOKEN is not set, so nothing can ship"
+            exit 1
+          fi
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
-          git switch -c "$branch"
-          # The history of what shipped lives in the repository, one line per issue.
-          [ -f CHANGELOG.md ] || printf '# Changelog\n\nWhat beerdev shipped, oldest first.\n\n' > CHANGELOG.md
-          printf -- '- %s: %s (#%s)\n' "$(date -u +%Y-%m-%d)" "$title" "$ISSUE" >> CHANGELOG.md
-          git add CHANGELOG.md
-          git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "feat: $title" -m "Closes #$ISSUE"
-          token="${SHIP_TOKEN:-$GH_TOKEN}"
-          git push -q "https://x-access-token:$token@github.com/$GITHUB_REPOSITORY.git" \
-            "HEAD:refs/heads/$branch"
-          note=/tmp/beerdev/announcement.md
-          if [ ! -s "$note" ]; then
-            note=/tmp/request.md
-            jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
-          fi
-          { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
-          if [ "$HOLD" = true ]; then
-            # Not approved: the owner reviews and merges it by hand, or closes it.
-            printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
-            url="$(GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" \
-              --body-file /tmp/beerdev/pr.md)"
-            gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
-            gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
-            if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
-              printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
+          remote="https://x-access-token:$SHIP_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          as_bot=(-c core.hooksPath=/dev/null -c user.name="github-actions[bot]"
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com")
+          # The CI run for a commit: wait for it to start, then for it to pass.
+          watch_ci() {
+            run=""
+            for _ in $(seq 36); do
+              run="$(gh run list --workflow ci.yml --commit "$1" \
+                --json databaseId --jq '.[0].databaseId // empty')"
+              [ -n "$run" ] && break
+              sleep 5
+            done
+            gh run watch "$run" --exit-status --interval 30 > /dev/null
+          }
+          if [ "$HELD" = true ]; then
+            # The owner approved work held for them, and that approval is the review: merge its PR
+            # as it stands once it's up to date with main and its checks pass. Only this
+            # repository's own branch: a fork's PR can carry the same branch name.
+            pr="$(GH_TOKEN="$SHIP_TOKEN" gh pr list --head "$branch" --state open \
+              --json number,isCrossRepository \
+              --jq 'map(select(.isCrossRepository | not))[0].number // empty')"
+            if [ -z "$pr" ]; then
+              echo "::error::$branch has no open PR in this repository"
+              exit 1
             fi
-            exit 0
+            git switch -q -c "$branch" "origin/$branch"
+            # Changelog lines appended on both sides since the hold both stay.
+            echo 'CHANGELOG.md merge=union' >> .git/info/attributes
+            git "${as_bot[@]}" merge -q --no-edit origin/main
+            git push -q "$remote" "HEAD:refs/heads/$branch"
+            watch_ci "$(git rev-parse HEAD)"
+            GH_TOKEN="$SHIP_TOKEN" gh pr merge "$pr" --squash
+          else
+            git switch -c "$branch"
+            # The history of what shipped lives in the repository, one line per issue.
+            [ -f CHANGELOG.md ] || printf '# Changelog\n\nWhat beerdev shipped, oldest first.\n\n' > CHANGELOG.md
+            printf -- '- %s: %s (#%s)\n' "$(date -u +%Y-%m-%d)" "$title" "$ISSUE" >> CHANGELOG.md
+            git add CHANGELOG.md
+            git "${as_bot[@]}" commit -q -m "feat: $title" -m "Closes #$ISSUE"
+            git push -q "$remote" "HEAD:refs/heads/$branch"
+            note=/tmp/beerdev/announcement.md
+            if [ ! -s "$note" ]; then
+              note=/tmp/request.md
+              jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
+            fi
+            { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
+            if [ "$HOLD" = true ]; then
+              # Not approved: the owner merges it by hand, closes it, or approves the issue in the
+              # chat, which merges it here.
+              printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
+              url="$(GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" \
+                --body-file /tmp/beerdev/pr.md)"
+              gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
+              gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
+              if [ "$FROM_CHAT" = true ]; then
+                printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
+              fi
+              exit 0
+            fi
+            GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
+            GH_TOKEN="$SHIP_TOKEN" gh pr merge "$branch" --squash
           fi
-          GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
-          GH_TOKEN="$token" gh pr merge "$branch" --squash
 
-          # A merge with the ship token starts CI by itself; one with GITHUB_TOKEN never does, so
-          # start it explicitly if no run shows up. CI re-runs the full suite before it deploys.
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          run=""
-          for attempt in $(seq 36); do
-            run="$(gh run list --workflow ci.yml --commit "$sha" \
-              --json databaseId --jq '.[0].databaseId // empty')"
-            [ -n "$run" ] && break
-            [ "$attempt" = 6 ] && gh workflow run ci.yml --ref main
-            sleep 5
-          done
-          gh run watch "$run" --exit-status --interval 30 > /dev/null
+          # The ship token's merge starts CI, which re-runs the full suite before it deploys.
+          watch_ci "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
 
           # The agent's how-to note when the group would notice; else a short line for the asker.
           if [ -s /tmp/beerdev/announcement.md ]; then
             cp /tmp/beerdev/announcement.md /tmp/chat.txt
             gh issue comment "$ISSUE" --body-file /tmp/beerdev/announcement.md
-          elif jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+          elif [ "$FROM_CHAT" = true ]; then
             printf '✅ Shipped: %s.' "$title" > /tmp/chat.txt
           fi
 
@@ -411,6 +469,7 @@ jobs:
     needs: [pick, implement, review, ship]
     if: failure() && needs.pick.outputs.issue
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       issues: write
     env:
@@ -421,3 +480,34 @@ jobs:
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label beerdev-failed
           gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
             "beerdev could not ship this: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # When this build ends, shipped or flagged, start the next one, if anything is still buildable.
+  # flag runs first, so a failed issue already carries `beerdev-failed`, which next_build skips.
+  next:
+    needs: [pick, ship, flag]
+    if: ${{ !cancelled() && needs.pick.outputs.issue }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # start the next build
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
+
+      - id: next
+        run: uv run --frozen python scripts/beerdev.py next
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Never this build's issue again: whatever happened to it is already on its labels.
+      - if: steps.next.outputs.issue && steps.next.outputs.issue != needs.pick.outputs.issue
+        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

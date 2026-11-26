@@ -2,17 +2,18 @@
 rest. beerdev, the SWE, fixes what ops tickets.
 
 Run every 5 minutes, after CI on main, and right away when the app reports a failure, by
-.github/workflows/ops.yml.
+.github/workflows/ops.yml, plus a daily sweep in a run of its own.
 - Symptoms are what users feel: /health or /ready failing, or a message or reply waiting over
   5 minutes. They come from public endpoints and memory-only status, so a check never wakes the
   database.
 - The decision table runs with no model:
-  - A worker stalled after an error gets nudged (woken), never restarted.
-  - Breakage within an hour of a deploy rolls back (rollback.yml).
-  - A failing dependency is left alone.
+  - A failing dependency is left alone: there's nothing to undo.
+  - Otherwise, breakage within an hour of a deploy rolls back (rollback.yml), once per deploy.
   - Anything else gets the owner.
 - Each incident is one GitHub issue assigned to the owner, paged in the private "beerbot alerts"
-  GroupMe group on open, on a rollback, and on resolve.
+  GroupMe group on open, when a rollback fails, and on resolve. An `ack` label stops its pages.
+- Each new ticket for beerdev starts a build (beerdev-build.yml), unless beerdev's fixes keep
+  failing to deploy: then the owner gets it.
 - It never posts in the main chat. Issues are public, so they carry exception types and this repo's
   stack frames, never message text. All state lives in issue bodies as markers.
 """
@@ -32,25 +33,35 @@ INCIDENT = ["ops", "beerdev", "bug"]
 NEEDS_OWNER = ["ops", "inbox"]
 INCIDENT_LABELS = ["ops", "incident"]
 DEPLOY_WINDOW = timedelta(minutes=60)  # Breakage this soon after a deploy rolls it back.
+# A deploy or rollback unfinished this long is stuck (a pending approval, a lost runner), not
+# changing production: waiting on it forever would leave ops blind.
+STALE_RUN = timedelta(minutes=30)
 QUEUE_LIMIT = 300  # Seconds a message or reply may wait before it counts as stuck.
-# A class closed this recently gets appended to instead of reopened as a new build: a fix that
-# didn't stick goes to a person rather than looping beerdev.
+# A class back this soon after closing reopens in the owner's inbox instead of starting another
+# build: a fix that didn't stick goes to a person rather than looping beerdev.
 REPEAT_WINDOW = timedelta(days=7)
-DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Neon).
+# Deploy failures filed in a day before the next one goes to the owner instead of beerdev: its
+# fixes are failing to deploy too, and another build would only loop.
+DEPLOY_BREAKER = 2
 INCIDENT_MARKER = "<!-- ops:incident -->"
 ROLLED_BACK = "<!-- ops:rolled-back -->"
 # A worker error naming one of these means an outside dependency failed: there's nothing to undo.
+# Details read "module.Type [HTTP status] at frames", or a bare "Type at frames" from older
+# releases. Only outages count: a SQL or schema error, or a 4xx from the model, is a bad deploy's.
 DEPENDENCIES = {
     "the database": re.compile(
-        r"asyncpg|Postgres|ConnectionRefused|CannotConnect|TooManyConnections|InterfaceError",
-        re.I,
+        r"asyncpg\.[\w.]*(Connection|Shutdown)|ConnectionRefused|CannotConnect"
+        r"|TooManyConnections|ConnectionDoesNotExist|InterfaceError"
     ),
-    "the model provider": re.compile(r"ServerError|ResourceExhausted|Quota|\b429\b", re.I),
+    "the model provider": re.compile(
+        r"(google\.genai\.errors|openai)\.\w+ (429|5\d\d)\b|\bServerError at|ResourceExhausted"
+    ),
 }
 # Credentials that expire, from docs/runbook.md. ops opens an inbox issue 30 days ahead.
 EXPIRES = {
     "BEERDEV_GITHUB_TOKEN (Fly)": "2027-11-24",
     "BEERDEV_SHIP_TOKEN (GitHub, beerdev environment)": "2027-11-24",
+    "CLAUDE_CODE_OAUTH_TOKEN (GitHub)": "2027-11-07",  # Set 2026-11-07; one year.
     "FLY_API_TOKEN (GitHub, production environment)": "2027-11-25",
 }
 
@@ -116,7 +127,7 @@ def describe(key: str, rows: list[dict]) -> tuple[str, str, list[str]]:
 
 
 def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch: tuple) -> None:
-    """Append to the live issue for this key, or open one."""
+    """Append to the live issue for this key, or open one. A closed one reopens in the inbox."""
     title, text, labels = batch
     marker = f"<!-- ops:key={key} -->"
     now = datetime.now(UTC)
@@ -132,8 +143,14 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
     if live:
         issue = max(live, key=lambda i: i["number"])
         issue["body"] = f"{issue['body']}\n\n{text}"
+        update = {"body": issue["body"]}
+        if issue["state"] != "open":
+            names = {label["name"] for label in issue.get("labels") or []}
+            update |= {"state": "open", "labels": sorted(names - {"beerdev"} | {"inbox"})}
+            issue.update(state="open", labels=[{"name": name} for name in update["labels"]])
+            text = f"Back within a week: the fix didn't hold, so it waits for the owner.\n\n{text}"
         url = f"/repos/{repo}/issues/{issue['number']}"
-        github.patch(url, json={"body": issue["body"]}).raise_for_status()
+        github.patch(url, json=update).raise_for_status()
         github.post(f"{url}/comments", json={"body": text}).raise_for_status()
     else:
         body = f"{marker}\n{text}"
@@ -141,6 +158,27 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
             f"/repos/{repo}/issues", json={"title": title, "labels": labels, "body": body}
         )
         issues.append(created.raise_for_status().json())
+        if "beerdev" in labels:  # Builds start only when asked: ask now, not next Monday.
+            start_build(github, repo)
+
+
+def start_build(github: httpx.Client, repo: str) -> None:
+    """beerdev builds its queue one issue at a time, incidents first (beerdev-build.yml)."""
+    path = f"/repos/{repo}/actions/workflows/beerdev-build.yml/dispatches"
+    response = github.post(path, json={"ref": "main"})
+    if not response.is_success:  # The ticket is filed; the next build to start picks it up.
+        print(f"::warning::Could not start a beerdev build (HTTP {response.status_code})")
+
+
+def deploy_labels(issues: list[dict], now: datetime) -> list[str]:
+    """A deploy failure is beerdev's to fix, unless its last fixes kept failing to deploy too."""
+    filed = [
+        issue
+        for issue in issues
+        if "<!-- ops:key=deploy:" in (issue.get("body") or "")
+        and now - datetime.fromisoformat(issue["created_at"]) < timedelta(days=1)
+    ]
+    return INCIDENT if len(filed) < DEPLOY_BREAKER else [*NEEDS_OWNER, "bug"]
 
 
 def check_spend(
@@ -211,16 +249,11 @@ def failure_excerpt(lines: list[str], limit: int = 40) -> list[str]:
     )
 
 
-def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str] | None:
-    """Issue key and report for a failed CI run on main, with the failing steps' log tail."""
+def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str]:
+    """Issue key and report for a failed CI run on main, with the failing steps' log tail. Only
+    this repository's own runs get here (ops.yml's guard, latest_ci_failure): a fork's log would
+    reach beerdev's agent."""
     run = github.get(f"/repos/{repo}/actions/runs/{run_id}").raise_for_status().json()
-    trusted = (
-        run.get("event") in ("push", "workflow_dispatch")  # Deploys; never pull_request runs.
-        and run.get("head_branch") == "main"
-        and (run.get("head_repository") or {}).get("full_name") == repo  # Not a fork's "main".
-    )
-    if run["conclusion"] != "failure" or not trusted:
-        return None
     jobs = github.get(f"/repos/{repo}/actions/runs/{run_id}/jobs").raise_for_status().json()
     sections = []
     for job in jobs["jobs"]:
@@ -254,17 +287,6 @@ def symptoms(app: httpx.Client, workers: dict) -> list[str]:
     return found
 
 
-def nudge(app: httpx.Client, admin: dict) -> bool:
-    """A worker that hit an error waits for its next wake (up to an hour). Wake it, which is
-    harmless, and see whether it recovers before calling anyone."""
-    try:
-        app.post("/admin/messages/wake", headers=admin).raise_for_status()
-    except httpx.HTTPError:
-        return False
-    time.sleep(20)
-    return probe(app, attempts=1) is None
-
-
 def blame(workers: dict) -> str | None:
     """The outside dependency the workers' errors name, if any."""
     details = " ".join(e["detail"] for e in (workers.get("last_error") or {}).values() if e)
@@ -277,35 +299,47 @@ def runs(github: httpx.Client, repo: str, workflow: str, **params: str) -> list[
     return response.raise_for_status().json()["workflow_runs"]
 
 
-def changing(github: httpx.Client, repo: str) -> bool:
+def trusted(run: dict, repo: str) -> bool:
+    """This repository's own push or dispatch: a fork can name its branch main."""
+    head = (run.get("head_repository") or {}).get("full_name")
+    return run.get("event") in ("push", "workflow_dispatch") and head == repo
+
+
+def changing(found: list[dict], now: datetime) -> bool:
     """A deploy or a rollback is changing production right now: wait for it."""
     return any(
         run["status"] != "completed"
-        for workflow in ("ci.yml", "rollback.yml")
-        for run in runs(github, repo, workflow)
+        and now - datetime.fromisoformat(run["run_started_at"] or run["created_at"]) < STALE_RUN
+        for run in found
     )
 
 
-def last_deploy(github: httpx.Client, repo: str) -> dict | None:
-    """The newest successful deploy of main, if any."""
-    for run in runs(github, repo, "ci.yml", status="success"):
-        if run["event"] in ("push", "workflow_dispatch"):
-            return {"sha": run["head_sha"][:7], "at": datetime.fromisoformat(run["updated_at"])}
+def last_deploy(ci: list[dict], repo: str) -> dict | None:
+    """The deploy production runs, if CI finished it cleanly. CI fails a run whose deploy it rolled
+    back, and a failed run may never have deployed: either way, what runs is the release before,
+    which isn't ops' to roll back."""
+    run = next((run for run in ci if run["status"] == "completed" and trusted(run, repo)), None)
+    if run and run["conclusion"] == "success":
+        return {"sha": run["head_sha"][:7], "at": datetime.fromisoformat(run["updated_at"])}
     return None
 
 
-def mitigate(github: httpx.Client, repo: str, workers: dict) -> str:
+def mitigate(
+    github: httpx.Client, repo: str, workers: dict, ci: list[dict], rollbacks: list[dict]
+) -> str:
     """The decision table, run once as an incident opens: a deploy that landed during an incident
     is a fix attempt, not the cause. Returns what was done, or why not."""
-    deploy = last_deploy(github, repo)
+    if dependency := blame(workers):  # An outage: rolling back a healthy release fixes nothing.
+        return f"Waiting: {dependency} is failing, so there's nothing to undo or restart."
+    deploy = last_deploy(ci, repo)
     if deploy and datetime.now(UTC) - deploy["at"] < DEPLOY_WINDOW:
+        if any(datetime.fromisoformat(run["created_at"]) > deploy["at"] for run in rollbacks):
+            return f"A rollback already ran since {deploy['sha']} deployed, so this needs you."
         github.post(
             f"/repos/{repo}/actions/workflows/rollback.yml/dispatches",
             json={"ref": "main", "inputs": {"dry_run": "false"}},
         ).raise_for_status()
         return f"Rolling back {deploy['sha']}: it deployed under an hour ago. {ROLLED_BACK}"
-    if dependency := blame(workers):
-        return f"Waiting: {dependency} is failing, so there's nothing to undo or restart."
     return "No safe automatic fix: this needs you."
 
 
@@ -324,6 +358,32 @@ def page(text: str) -> None:
         print(f"::warning::Page failed (HTTP {response.status_code})")
 
 
+def acked(incident: dict) -> bool:
+    """The owner labeled it `ack`: they're on it, so no more pages."""
+    return "ack" in {label["name"] for label in incident.get("labels") or []}
+
+
+def rollback_failed(github: httpx.Client, repo: str, incident: dict, rollbacks: list[dict]) -> bool:
+    """Tell the owner, once for each failed rollback.yml run, that a rollback failed during the
+    incident: production is still broken and nothing automatic is left to try."""
+    opened = datetime.fromisoformat(incident["created_at"])
+    for run in rollbacks:
+        seen = f"<!-- ops:seen=rollback-{run['id']} -->"
+        body = incident.get("body") or ""
+        if run["conclusion"] != "failure" or seen in body:
+            continue
+        if datetime.fromisoformat(run["updated_at"]) < opened:
+            continue
+        incident["body"] = f"{body}\n{seen}"
+        path = f"/repos/{repo}/issues/{incident['number']}"
+        github.patch(path, json={"body": incident["body"]}).raise_for_status()
+        github.post(f"{path}/comments", json={"body": f"The [rollback]({run['html_url']}) failed."})
+        if not acked(incident):
+            page(f"🚨 The rollback failed: Beerius is still down and needs you. {run['html_url']}")
+        return True
+    return False
+
+
 def handle_incident(
     github: httpx.Client, repo: str, issues: list[dict], found: list[str], workers: dict
 ) -> str:
@@ -334,10 +394,11 @@ def handle_incident(
     )
     now = datetime.now(UTC)
     if found:
-        if changing(github, repo):
+        ci, rollbacks = runs(github, repo, "ci.yml"), runs(github, repo, "rollback.yml")
+        if changing(ci + rollbacks, now):
             return f"Symptoms during a deploy or rollback; checking again next run: {found}"
         if incident is None:
-            action = mitigate(github, repo, workers)
+            action = mitigate(github, repo, workers, ci, rollbacks)
             body = (
                 f"{INCIDENT_MARKER}\n**Opened {now:%Y-%m-%d %H:%M} UTC:** {'; '.join(found)}.\n\n"
                 f"{diagnose(workers)}\n\n**Action:** {action}"
@@ -354,6 +415,8 @@ def handle_incident(
             url = created.json()["html_url"]
             page(f"🚨 Beerius: {'; '.join(found)}. {action.replace(ROLLED_BACK, '').strip()} {url}")
             return f"Opened an incident: {found}"
+        if rollback_failed(github, repo, incident, rollbacks):
+            return f"A rollback failed during the incident; told the owner: {found}"
         return f"Incident still open, no new action: {found}"
     if incident is None:
         return "Healthy"
@@ -363,11 +426,13 @@ def handle_incident(
     github.post(f"{path}/comments", json={"body": f"Resolved after {minutes} min."})
     github.patch(path, json={"state": "closed"}).raise_for_status()
     rolled_back = ROLLED_BACK in (incident.get("body") or "")
-    page(
-        f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
-        f"{incident['html_url']}"
-    )
-    if rolled_back or "src/beerbot" in (incident.get("body") or ""):  # Code: the SWE's turn.
+    if not acked(incident):
+        page(
+            f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
+            f"{incident['html_url']}"
+        )
+    # Code was involved (a rollback, or this repo's frames, `delivery.py:126`): the SWE's turn.
+    if rolled_back or re.search(r"\.py:\d+", incident.get("body") or ""):
         text = (
             f"Follow-up to {incident['html_url']} (resolved after {minutes} min"
             f"{', by rolling back' if rolled_back else ''}). beerdev: find the root cause from the "
@@ -407,6 +472,45 @@ def check_expiry(github: httpx.Client, repo: str, issues: list[dict], today: dat
     return due
 
 
+def file_failures(
+    github: httpx.Client, repo: str, issues: list[dict], app: httpx.Client, admin: dict
+) -> list[str]:
+    """Ticket failed messages and stuck replies no issue mentions yet. The queue status reads
+    Postgres, so this runs only when the app reports a failure, and once a day."""
+    status = app.get("/admin/messages/status", headers=admin).raise_for_status().json()
+    groups = new_failures(status, issues)
+    for key, rows in groups.items():
+        report(github, repo, issues, key, describe(key, rows))
+    return list(groups)
+
+
+def sweep(
+    github: httpx.Client, repo: str, issues: list[dict], app: httpx.Client, admin: dict
+) -> str:
+    """The daily sweep: expiring credentials, failure classes, and spend. No probes or incidents:
+    the */5 checks own those."""
+    expiring = check_expiry(github, repo, issues, datetime.now(UTC).date())
+    classes = file_failures(github, repo, issues, app, admin)
+    spend = check_spend(github, repo, issues, app, admin)
+    return (
+        f"Credentials expiring within 30 days: {expiring or 'none'}; new failures in "
+        f"{len(classes)} class(es): {', '.join(classes) or 'none'}; {spend}"
+    )
+
+
+def latest_ci_failure(github: httpx.Client, repo: str) -> str | None:
+    """The newest completed CI run of main, if it failed. ops.yml's concurrency can drop the
+    workflow_run check that reports it, so every check looks."""
+    found = runs(github, repo, "ci.yml", status="completed")
+    run = next((run for run in found if trusted(run, repo)), None)
+    return str(run["id"]) if run and run["conclusion"] == "failure" else None
+
+
+def reported(issues: list[dict], run_id: str) -> bool:
+    """An ops issue already links this CI run."""
+    return any(re.search(rf"/actions/runs/{run_id}\b", i.get("body") or "") for i in issues)
+
+
 def main() -> None:
     env = os.environ
     repo = env["GITHUB_REPOSITORY"]
@@ -425,44 +529,32 @@ def main() -> None:
         .json()
     )
 
-    if (run_id := env.get("CI_RUN_ID")) and (failure := deploy_failure(github, repo, run_id)):
-        key, text = failure
+    if env.get("DAILY") == "true":  # A run of its own (ops.yml), so no */5 check can cancel it.
+        print(sweep(github, repo, issues, app, admin))
+        return
+
+    run_id = env.get("CI_RUN_ID") or latest_ci_failure(github, repo)
+    if run_id and reported(issues, run_id):  # Another check got to it first.
+        run_id = None
+    if run_id:
+        key, text = deploy_failure(github, repo, run_id)
         try:  # CI rolls back when verification fails; say what production runs now.
             running = app.get("/version").raise_for_status().json().get("git_sha") or "?"
         except httpx.HTTPError:
             running = "?"
         rolled_back = running != "?" and not running.startswith(key[7:])
         text += f"\n\nProduction now runs {running[:7]}{' (rolled back)' if rolled_back else ''}."
-        report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, INCIDENT))
+        if (labels := deploy_labels(issues, datetime.now(UTC))) != INCIDENT:
+            text += "\n\nbeerdev's last fixes failed to deploy too, so this one waits for you."
+        report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, labels))
         print(f"Reported failed CI run {run_id}")
 
     workers = worker_status(app, admin)
     found = symptoms(app, workers)
-    if found and any((workers.get("failed") or {}).values()) and nudge(app, admin):
-        print("A worker had stalled after an error; ops woke it and it recovered")
-        workers = worker_status(app, admin)
-        found = symptoms(app, workers)
     print(handle_incident(github, repo, issues, found, workers))
-    if found:
-        return
-
-    # The queue status reads Postgres, so only look when the app reports a new failure (it
-    # dispatches with a reason), or on the first run of the daily hour.
-    now = datetime.now(UTC)
-    daily = now.hour == DAILY_HOUR and now.minute < 5
-    if daily:
-        expiring = check_expiry(github, repo, issues, now.date())
-        print(f"Credentials expiring within 30 days: {expiring or 'none'}")
-    if not (env.get("REASON") or daily):
-        return
-    status = app.get("/admin/messages/status", headers=admin).raise_for_status().json()
-    groups = new_failures(status, issues)
-    for key, rows in groups.items():
-        report(github, repo, issues, key, describe(key, rows))
-    spend = check_spend(github, repo, issues, app, admin) if daily else "spend checked daily"
-    print(
-        f"Healthy; new failures in {len(groups)} class(es): {', '.join(groups) or 'none'}; {spend}"
-    )
+    if not found and env.get("REASON"):  # The app dispatched with a failure class to file.
+        classes = file_failures(github, repo, issues, app, admin)
+        print(f"Healthy; new failures in {len(classes)} class(es): {', '.join(classes) or 'none'}")
 
 
 if __name__ == "__main__":

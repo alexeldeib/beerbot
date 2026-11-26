@@ -17,9 +17,10 @@ Rules
   such changes before they ship, and dependency changes always wait for the owner, so keep them
   minimal and explain them in the announcement or code.
 - Never change your kernel: .github/workflows/beerdev-build.yml, .github/workflows/beerdev-lead.yml,
-  .github/beerdev-*.md, .claude/, or tests/test_policy.py. Keep every check in tests/test_policy.py
-  passing: no new secrets or secret uses, write permissions, triggers, or network hosts for code
-  that holds secrets, and keep deploy verification and rollback. Never print or store a secret.
+  .github/beerdev-*.md, .claude/, CLAUDE.md or CLAUDE.local.md in any directory, or
+  tests/test_policy.py. Keep every check in tests/test_policy.py passing: no new secrets or secret
+  uses, write permissions, triggers, or network hosts for code that holds secrets, and keep deploy
+  verification and rollback. Never print or store a secret.
 - Never weaken privacy or safety: no secrets or internal IDs in replies, no cross-group data, no
   bulk deletes.
 - Tests: add unit tests, plus at least one scenario in tests/test_live_chat.py that sends a

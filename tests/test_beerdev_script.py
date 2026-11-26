@@ -65,6 +65,22 @@ def test_digest_reports_the_week_and_skips_quiet_ones():
     assert beerdev.digest([issue("Old thing", days=30)], now) == ""
 
 
+def test_requests_list_each_issue_once_with_the_whole_inbox():
+    by_label = {
+        "beerdev": [{"number": 5, "title": "Approved proposal"}],
+        "beerdev-infra": [],
+        "proposal": [{"number": 5, "title": "Approved proposal"}],
+        # Held work loses `beerdev`; ops' own asks never had it. Both wait on a human.
+        "inbox": [{"number": 8, "title": "Held change"}, {"number": 9, "title": "Token expires"}],
+    }
+
+    def respond(request):
+        return httpx.Response(200, json=by_label[request.url.params["labels"]])
+
+    client = httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+    assert sorted(issue["number"] for issue in beerdev.filed_requests(client, "o/r")) == [5, 8, 9]
+
+
 def test_propose_caps_dedupes_and_routes_owner_work_to_the_inbox(tmp_path):
     plan = tmp_path / "plan.json"
     items = [
@@ -92,22 +108,17 @@ def test_propose_files_nothing_from_an_answer_without_a_plan(tmp_path):
     assert calls == []
 
 
-def test_say_posts_only_as_the_beerdev_bot_threaded_when_it_can(monkeypatch):
-    sent, refuse = [], {"attachments"}  # GroupMe may refuse a reply attachment from a bot.
+def test_say_posts_only_as_the_beerdev_bot(monkeypatch):
+    sent = []
 
     def post(url, json, timeout):
         sent.append(json)
-        return httpx.Response(400 if refuse & json.keys() else 202)
+        return httpx.Response(202)
 
     monkeypatch.setattr(beerdev.httpx, "post", post)
     monkeypatch.delenv("BEERDEV_BOT_ID", raising=False)
     assert not beerdev.say("hi")  # No bot id: nothing to post as.
     monkeypatch.setenv("BEERDEV_BOT_ID", "b1")
     assert not beerdev.say("  ")
-    assert beerdev.say("💡 Queued: x")
-    assert sent == [{"bot_id": "b1", "text": "💡 Queued: x"}]
-    sent.clear()
-    assert beerdev.say("🤓 Two.", reply_to="m2")  # Refused threaded, so posted plain.
-    assert [post.get("attachments", [{}])[0].get("reply_id") for post in sent] == ["m2", None]
-    sent.clear(), refuse.clear()
-    assert beerdev.say("🤓 Two.", reply_to="m2") and len(sent) == 1
+    assert beerdev.say("📜 beerdev this week")
+    assert sent == [{"bot_id": "b1", "text": "📜 beerdev this week"}]

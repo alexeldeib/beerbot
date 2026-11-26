@@ -15,18 +15,16 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
-# Copy only dependency files to leverage Docker cache
-COPY pyproject.toml uv.lock* ./
+# Install dependencies first (cached layer), exactly as locked: a lockfile uv can't use fails
+# the build rather than resolving fresh versions.
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev || \
-    uv sync --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev
 
 # Copy application source and install project
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev || \
-    uv sync --no-dev
+    uv sync --frozen --no-dev
 
 # ============================================================================
 # Runtime stage: Minimal production image
