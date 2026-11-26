@@ -171,7 +171,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         if not user:
             return {"error": "User not found", "removed": 0}
 
-        removed = await beer_repo.remove_beers_by_type(user.id, ctx.group_id, count, dt)
+        removed = await beer_repo.remove_beers(user.id, ctx.group_id, count, dt)
         new_total = await beer_repo.get_user_total_by_type(user.id, ctx.group_id, dt)
 
         return {

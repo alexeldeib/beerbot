@@ -178,7 +178,7 @@ class TestLogDrinks:
         user_mock.id = 42
         user_mock.name = "Alice"
         mock_user.get_by_groupme_id = AsyncMock(return_value=user_mock)
-        mock_beer.remove_beers_by_type = AsyncMock(return_value=1)
+        mock_beer.remove_beers = AsyncMock(return_value=1)
         mock_beer.get_user_total_by_type = AsyncMock(return_value=4)
 
         ctx = _make_ctx(
@@ -342,7 +342,7 @@ class TestRemoveDrinks:
     @patch("src.beerbot.tools.user_repo")
     async def test_removes_from_sender(self, mock_user, mock_beer):
         mock_user.get_by_groupme_id = AsyncMock(return_value=MagicMock(id=1, name="Alice"))
-        mock_beer.remove_beers_by_type = AsyncMock(return_value=3)
+        mock_beer.remove_beers = AsyncMock(return_value=3)
         mock_beer.get_user_total_by_type = AsyncMock(return_value=7)
 
         ctx = _make_ctx()

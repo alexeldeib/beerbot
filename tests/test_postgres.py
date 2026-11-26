@@ -231,6 +231,27 @@ async def test_pace_runs_from_the_first_recent_drink_to_now(pg):
     assert (await countdown())["pace_7d"] == 1.0
 
 
+async def test_leaderboard_and_removal_with_and_without_a_type(pg):
+    await database.init_db()
+    alice = (await user_repo.get_or_create("alice", "Alice")).id
+    bob = (await user_repo.get_or_create("bob", "Bob")).id
+    await pg.execute(
+        """INSERT INTO beers(user_id,group_id,quantity,drink_type,logged_at)
+           VALUES($1,'g1',5,'beer',now()-interval '1 hour'),($1,'g1',2,'wine',now()),
+                 ($2,'g1',4,'beer',now())""",
+        alice,
+        bob,
+    )
+    board = await beer_repo.get_leaderboard_with_breakdown("g1", limit=5)
+    assert [(name, total) for name, total, _ in board] == [("Alice", 7), ("Bob", 4)]
+    assert board[0][2] == {"beer": 5, "wine": 2, "cocktail": 0, "claw": 0}
+    wine = await beer_repo.get_leaderboard_with_breakdown("g1", DrinkType.WINE, 5)
+    assert [(name, total) for name, total, _ in wine] == [("Alice", 2)]  # Bob has none.
+    assert await beer_repo.remove_beers(alice, "g1", 3, DrinkType.BEER) == 3
+    assert await beer_repo.remove_beers(alice, "g1", 3) == 3  # Newest first: 2 wine, 1 beer.
+    assert await beer_repo.get_user_total(alice, "g1") == 1
+
+
 async def test_the_unused_dev_requests_table_is_dropped(pg):
     # It held request text forever, past the three-day retention.
     await database.init_db()

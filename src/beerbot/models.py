@@ -117,7 +117,6 @@ class GroupStats(BaseModel):
     total_beers: int
     unique_drinkers: int
     user_stats: list[UserStats]
-    period_description: str  # "all time", "today", "this week"
     drink_type_counts: dict[str, int] = {}  # {"beer": 10, "wine": 5, ...}
 
 
@@ -135,16 +134,6 @@ class SplitGGroupStats(BaseModel):
     total_splits: int
     unique_splitters: int
     user_stats: list[SplitGUserStats]
-
-
-class UserDebt(BaseModel):
-    """Simple debt tracking for a user (how many beers they owe the group)."""
-
-    id: int
-    user_id: int
-    group_id: str
-    amount: int
-    updated_at: datetime
 
 
 class DebtLeaderboardEntry(BaseModel):

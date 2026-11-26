@@ -254,24 +254,10 @@ class BeerRepository:
 
             drink_type_counts = {row["drink_type"]: int(row["count"]) for row in type_rows}
 
-            # Determine period description
-            if since is None:
-                period = "all time"
-            else:
-                now = datetime.now(EASTERN)
-                diff = now - since
-                if diff <= timedelta(days=1):
-                    period = "today"
-                elif diff <= timedelta(weeks=1):
-                    period = "this week"
-                else:
-                    period = f"since {since.strftime('%Y-%m-%d')}"
-
             return GroupStats(
                 total_beers=int(total),
                 unique_drinkers=len(user_stats),
                 user_stats=user_stats,
-                period_description=period,
                 drink_type_counts=drink_type_counts,
             )
 
@@ -329,57 +315,13 @@ class BeerRepository:
             )
             return row["quantity"] if row else 0
 
-    async def remove_beers(self, user_id: int, group_id: str, quantity: int) -> int:
-        """Remove a specific number of beers from a user in a group.
+    async def remove_beers(
+        self, user_id: int, group_id: str, quantity: int, drink_type: DrinkType | None = None
+    ) -> int:
+        """Remove drinks from a user in a group, of one type or any.
 
         Decrements quantity on most recent entries first. Only deletes entries
         when their quantity reaches 0.
-        Returns the actual number of beers removed (may be less if user has fewer).
-        """
-        pool = await get_pool()
-        removed = 0
-
-        async with pool.acquire() as conn:
-            while removed < quantity:
-                # Find most recent entry
-                row = await conn.fetchrow(
-                    """
-                    SELECT id, quantity FROM beers
-                    WHERE user_id = $1 AND group_id = $2
-                    ORDER BY logged_at DESC, id DESC
-                    LIMIT 1
-                    """,
-                    user_id,
-                    group_id,
-                )
-                if not row:
-                    break  # No more entries
-
-                entry_id = row["id"]
-                entry_qty = row["quantity"]
-                needed = quantity - removed
-
-                if entry_qty > needed:
-                    # Decrement quantity on this entry
-                    await conn.execute(
-                        "UPDATE beers SET quantity = quantity - $1 WHERE id = $2",
-                        needed,
-                        entry_id,
-                    )
-                    removed += needed
-                else:
-                    # Delete entire entry and continue
-                    await conn.execute("DELETE FROM beers WHERE id = $1", entry_id)
-                    removed += entry_qty
-
-        return removed
-
-    async def remove_beers_by_type(
-        self, user_id: int, group_id: str, quantity: int, drink_type: DrinkType
-    ) -> int:
-        """Remove a specific number of drinks of a specific type from a user.
-
-        Decrements quantity on most recent entries of that type first.
         Returns the actual number removed (may be less if user has fewer).
         """
         pool = await get_pool()
@@ -387,20 +329,20 @@ class BeerRepository:
 
         async with pool.acquire() as conn:
             while removed < quantity:
-                # Find most recent entry of this drink type
+                # Find most recent entry (of this drink type)
                 row = await conn.fetchrow(
                     """
                     SELECT id, quantity FROM beers
-                    WHERE user_id = $1 AND group_id = $2 AND drink_type = $3
+                    WHERE user_id = $1 AND group_id = $2 AND ($3::text IS NULL OR drink_type = $3)
                     ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
                     group_id,
-                    drink_type.value,
+                    drink_type.value if drink_type else None,
                 )
                 if not row:
-                    break  # No more entries of this type
+                    break  # No more entries
 
                 entry_id = row["id"]
                 entry_qty = row["quantity"]
@@ -602,41 +544,30 @@ class BeerRepository:
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            if drink_type:
-                # When filtered, rank by specific type
-                query = """
-                    SELECT u.name,
-                           SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) as total,
-                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
-                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
-                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
-                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1
-                    GROUP BY u.id, u.name
-                    HAVING SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) > 0
-                    ORDER BY total DESC
-                    LIMIT $3
+            # Ranked by the filtered type (members without any are left out), or by all drinks.
+            rows = await conn.fetch(
                 """
-                rows = await conn.fetch(query, group_id, drink_type.value, limit)
-            else:
-                # Unfiltered - rank by total of all types
-                query = """
-                    SELECT u.name,
-                           SUM(b.quantity) as total,
-                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
-                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
-                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
-                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1
-                    GROUP BY u.id, u.name
-                    ORDER BY total DESC
-                    LIMIT $2
-                """
-                rows = await conn.fetch(query, group_id, limit)
+                SELECT u.name,
+                       SUM(CASE WHEN $2::text IS NULL OR b.drink_type = $2
+                           THEN b.quantity ELSE 0 END) as total,
+                       SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
+                       SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
+                       SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END)
+                           as cocktail_count,
+                       SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
+                FROM beers b
+                JOIN users u ON b.user_id = u.id
+                WHERE b.group_id = $1
+                GROUP BY u.id, u.name
+                HAVING $2::text IS NULL
+                    OR SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) > 0
+                ORDER BY total DESC
+                LIMIT $3
+                """,
+                group_id,
+                drink_type.value if drink_type else None,
+                limit,
+            )
 
             results = []
             for row in rows:
