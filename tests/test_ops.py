@@ -313,6 +313,10 @@ def test_each_check_reports_a_ci_failure_whose_own_check_was_dropped(monkeypatch
     run_main(monkeypatch, fake, app)
     run_main(monkeypatch, fake, app, CI_RUN_ID="42")  # Its own check, arriving late.
     assert len(fake.created) == 1  # Filed once.
+    # A fork PR can name its branch main; its log is attacker-controlled: never reaches beerdev.
+    fake = FakeGitHub(ci=[run(3, conclusion="failure", event="pull_request", repo="evil/r")])
+    run_main(monkeypatch, fake, app)
+    assert fake.created == []
 
 
 def incident_run(monkeypatch, fake, found, workers=None, issues=None):
@@ -459,22 +463,8 @@ def test_expiring_credentials_get_one_inbox_issue_each():
 
 
 def test_deploy_failure_names_the_step_the_log_and_the_pr():
-    trusted = {"event": "push", "head_branch": "main", "head_repository": {"full_name": "o/r"}}
     routes = {
-        "/repos/o/r/actions/runs/1": {
-            **trusted,
-            "conclusion": "failure",
-            "head_sha": "abc1234def",
-            "html_url": "u",
-        },
-        "/repos/o/r/actions/runs/2": {**trusted, "conclusion": "success", "head_sha": "x"},
-        # A fork PR can name its branch main; its log is attacker-controlled.
-        "/repos/o/r/actions/runs/3": {
-            **trusted,
-            "conclusion": "failure",
-            "event": "pull_request",
-            "head_repository": {"full_name": "evil/r"},
-        },
+        "/repos/o/r/actions/runs/1": {"head_sha": "abc1234def", "html_url": "u"},
         "/repos/o/r/actions/runs/1/jobs": {
             "jobs": [
                 {"id": 8, "name": "test", "conclusion": "success", "steps": []},
@@ -504,8 +494,6 @@ def test_deploy_failure_names_the_step_the_log_and_the_pr():
     assert "**Deploy production** failed at Verify production health" in text
     assert "Run curl /ready" in text and "curl: (28) timed out" in text and "\x1b" not in text
     assert "##[error]" in text and "Removing creds" not in text  # Cleanup noise is dropped.
-    assert ops.deploy_failure(github, "o/r", "2") is None
-    assert ops.deploy_failure(github, "o/r", "3") is None  # Untrusted: never reaches beerdev.
 
 
 def test_failure_excerpt_keeps_the_step_header_when_output_is_long():
