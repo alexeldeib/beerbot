@@ -199,7 +199,7 @@ def test_beerdev_cannot_change_its_kernel():
     assert "review" in ship["needs"] and "claude-code" in yaml.safe_dump(review)
 
 
-def test_ship_merges_only_what_passed_or_what_the_owner_approved():
+def test_ship_never_merges_after_a_failure_or_from_a_fork():
     ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
     text = "\n".join(step.get("run", "") for step in ship["steps"])
     # Never after a failed implement, review, or policy check. Skipped ones mean an approved
@@ -225,7 +225,7 @@ def test_the_weekly_lead_sees_ci_runs():
     assert "--workflow ci.yml" in gather  # Unscoped, the newest runs are all ops checks.
 
 
-def test_only_routine_app_code_ships_without_the_reviewer():
+def test_only_routine_code_ships_without_the_reviewer():
     workflow = WORKFLOWS["beerdev-build.yml"]
     routine = workflow["env"]["ROUTINE"]  # For grep -P, in syntax Python's re shares.
     for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "tests/test_tools.py"):
