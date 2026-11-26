@@ -12,6 +12,7 @@ import logging
 import secrets
 import smtplib
 import ssl
+import time
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -19,7 +20,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -95,6 +96,36 @@ def check_origin(request: Request) -> None:
     # A configured origin, never a client-supplied Host/X-Forwarded-Host.
     if request.headers.get("origin") != settings.web_origin.rstrip("/"):
         raise HTTPException(403, "Untrusted request origin")
+
+
+def client_ip(request: Request) -> str:
+    # Fly's proxy sets Fly-Client-IP on everything it forwards; local runs fall back.
+    return request.headers.get("fly-client-ip") or (request.client.host if request.client else "")
+
+
+# Sign-in requests: ten per source, and one a minute and three per source and email,
+# per 15 minutes. The email limit is per source so a stranger who knows a member's
+# email cannot spend the member's own requests; the global cap in request_login
+# still bounds the codes all sources together can send to one inbox.
+# ponytail: in memory, for the one Fly machine. More machines multiply these limits
+# and a restart forgets them; move them to Postgres before running a second machine.
+SIGN_IN_WINDOW = 900
+_sign_ins: dict[str, list[float]] = {}
+
+
+def sign_in_throttled(ip: str, email: str, now: float) -> bool:
+    if len(_sign_ins) > 10_000:  # beyond this many live keys only the global cap applies
+        for key in [k for k, times in _sign_ins.items() if now - times[-1] >= SIGN_IN_WINDOW]:
+            del _sign_ins[key]
+        if len(_sign_ins) > 10_000:
+            _sign_ins.clear()
+    pair = ip + " " + digest(email)
+    source = [t for t in _sign_ins.get(ip, ()) if now - t < SIGN_IN_WINDOW]
+    sent = [t for t in _sign_ins.get(pair, ()) if now - t < SIGN_IN_WINDOW]
+    if len(source) >= 10 or len(sent) >= 3 or (sent and now - sent[-1] < 60):
+        return True
+    _sign_ins[ip], _sign_ins[pair] = source + [now], sent + [now]
+    return False
 
 
 def cookie(response: Response, name: str, value: str, max_age: int) -> None:
@@ -272,14 +303,19 @@ async def web_config():
 
 
 @router.post("/app/api/login", dependencies=[Depends(check_origin)])
-async def request_login(data: EmailInput, response: Response):
+async def request_login(
+    data: EmailInput, request: Request, response: Response, background: BackgroundTasks
+):
     if not email_configured():
         raise HTTPException(503, "Email sign-in is not available yet")
+    # Before any database access, so a flood neither wakes Neon nor takes the lock below.
+    if sign_in_throttled(client_ip(request), data.email, time.monotonic()):
+        raise HTTPException(429, "Too many sign-in requests. Wait a minute, then try again.")
     token, code = secrets.token_urlsafe(32), f"{secrets.randbelow(100_000_000):08d}"
     pool = await get_pool()
     send = False
     async with pool.acquire() as conn, conn.transaction():
-        # Serialize rate-limit checks across machines. This is separate from the bot queue.
+        # Serialize the global cap across machines. This is separate from the bot queue.
         await conn.execute("SELECT pg_advisory_xact_lock(825437119)")
         await conn.execute("DELETE FROM login_challenges WHERE created_at < now()-interval '1 day'")
         await conn.execute("DELETE FROM web_sessions WHERE expires_at < now()")
@@ -292,35 +328,34 @@ async def request_login(data: EmailInput, response: Response):
             "SELECT count(*) FROM login_challenges WHERE created_at>now()-interval '15 minutes'"
         )
         if account_id and recent < 100:
-            limited = await conn.fetchval(
-                """SELECT count(*)>=3 OR coalesce(max(created_at)>now()-interval '1 minute',false)
-                   FROM login_challenges WHERE account_id=$1
-                   AND created_at>now()-interval '15 minutes'""",
+            await conn.execute(
+                """INSERT INTO login_challenges(token_hash,account_id,code_hash)
+                   VALUES($1,$2,$3)""",
+                digest(token),
                 account_id,
+                digest(token + code),
             )
-            if not limited:
-                await conn.execute(
-                    """INSERT INTO login_challenges(token_hash,account_id,code_hash)
-                       VALUES($1,$2,$3)""",
-                    digest(token),
-                    account_id,
-                    digest(token + code),
-                )
-                send = True
+            send = True
     if send:
-        try:
-            await send_code(data.email, code)
-        except Exception:
-            logger.warning("Web sign-in email delivery failed; code invalidated")
-            # Never log SMTP errors, recipients, codes, or credentials. Failed codes
-            # cannot authenticate; keep the generic response to avoid enumeration.
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE login_challenges SET consumed_at=now() WHERE token_hash=$1",
-                    digest(token),
-                )
+        # After the response, so its timing cannot reveal whether the email is invited.
+        background.add_task(deliver_code, data.email, code, token)
     cookie(response, CHALLENGE_COOKIE, token, 600)
     return {"status": "check_email"}
+
+
+async def deliver_code(email: str, code: str, token: str) -> None:
+    try:
+        await send_code(email, code)
+    except Exception:
+        logger.warning("Web sign-in email delivery failed; code invalidated")
+        # Never log SMTP errors, recipients, codes, or credentials. A failed code
+        # cannot authenticate, and the response was already the generic one.
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE login_challenges SET consumed_at=now() WHERE token_hash=$1",
+                digest(token),
+            )
 
 
 @router.post("/app/api/verify", dependencies=[Depends(check_origin)])

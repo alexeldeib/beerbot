@@ -21,6 +21,7 @@ async def browser(pg, monkeypatch):
     monkeypatch.setattr(web.settings, "smtp_host", "smtp.example.test")
     monkeypatch.setattr(web.settings, "smtp_from", "beerbot@example.test")
     monkeypatch.setattr(web, "send_code", AsyncMock())
+    monkeypatch.setattr(web, "_sign_ins", {})
     async with pg.acquire() as conn:
         await conn.execute(
             "INSERT INTO people(id,display_name) VALUES('ace','Ace Test'),('other','Other')"
@@ -136,15 +137,89 @@ async def test_unknown_email_rate_limit_and_delivery_failure(browser, pg):
     assert not web.send_code.called
     known = await browser.post("/app/api/login", json={"email": "ace@example.test"})
     assert unknown.json() == known.json()
-    await browser.post("/app/api/login", json={"email": "ace@example.test"})
-    assert web.send_code.call_count == 1
-    async with pg.acquire() as conn:
-        await conn.execute("UPDATE login_challenges SET created_at=now()-interval '2 minutes'")
+    again = await browser.post("/app/api/login", json={"email": "ace@example.test"})
+    assert again.status_code == 429 and web.send_code.call_count == 1
+    web._sign_ins.clear()  # a minute later
     web.send_code.side_effect = RuntimeError("secret SMTP details")
     result = await browser.post("/app/api/login", json={"email": "ace@example.test"})
     assert result.json() == unknown.json()
     code = web.send_code.call_args.args[1]
     assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 400
+
+
+def test_sign_in_limits_are_per_source_and_email():
+    web._sign_ins.clear()
+    member, stranger = "198.51.100.1", "203.0.113.9"
+    assert not web.sign_in_throttled(member, "ace@example.test", 0)
+    assert not web.sign_in_throttled(stranger, "ace@example.test", 1)  # never spends ours
+    assert web.sign_in_throttled(member, "ace@example.test", 59)  # one a minute
+    assert not web.sign_in_throttled(member, "ace@example.test", 61)
+    assert not web.sign_in_throttled(member, "ace@example.test", 122)
+    assert web.sign_in_throttled(member, "ace@example.test", 183)  # three per 15 minutes
+    assert not web.sign_in_throttled(member, "ace@example.test", 901)
+    for i in range(7):  # ten per source in the window (t=0 has left it), whichever emails
+        assert not web.sign_in_throttled(member, f"user{i}@example.test", 902)
+    assert web.sign_in_throttled(member, "another@example.test", 903)
+    assert not web.sign_in_throttled(stranger, "another@example.test", 903)
+    web._sign_ins.clear()
+
+
+async def test_throttled_sign_in_never_reaches_the_database(browser, monkeypatch):
+    for i in range(10):
+        response = await browser.post("/app/api/login", json={"email": f"u{i}@example.test"})
+        assert response.status_code == 200
+    real = web.get_pool
+    monkeypatch.setattr(web, "get_pool", AsyncMock(side_effect=AssertionError("database")))
+    flood = await browser.post("/app/api/login", json={"email": "u10@example.test"})
+    assert flood.status_code == 429
+    monkeypatch.setattr(web, "get_pool", real)
+    elsewhere = {"Fly-Client-IP": "198.51.100.7"}
+    response = await browser.post(
+        "/app/api/login", json={"email": "u10@example.test"}, headers=elsewhere
+    )
+    assert response.status_code == 200
+
+
+async def test_a_stranger_cannot_lock_a_member_out(browser):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=ORIGIN,
+        headers={"Origin": ORIGIN, "Fly-Client-IP": "203.0.113.9"},
+    ) as stranger:
+        for _ in range(5):
+            await stranger.post("/app/api/login", json={"email": "ace@example.test"})
+    assert web.send_code.call_count == 1
+    await login(browser)  # the member's own request still sends a code right away
+
+
+async def test_code_email_is_sent_after_the_response(browser):
+    events = []
+    web.send_code.side_effect = lambda email, code: events.append("email")
+    body = b'{"email":"ace@example.test"}'
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/app/api/login",
+        "raw_path": b"/app/api/login",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"origin", ORIGIN.encode()), (b"content-type", b"application/json")],
+        "client": ("198.51.100.1", 1234),
+        "server": ("beerbot-groupme.fly.dev", 443),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and not message.get("more_body"):
+            events.append("response")
+
+    await app(scope, receive, send)
+    assert events == ["response", "email"]
 
 
 @pytest.mark.parametrize("change", ["expired", "disabled", "merged"])

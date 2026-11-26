@@ -397,9 +397,7 @@ async def test_admin_invitation_takes_over_an_email_squatted_by_a_group_owner(
         assert (await squatter.post("/app/api/verify", json={"code": phished})).status_code == 400
     async with pg.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM accounts") == 2
-        # Until the per-account cap is per source, the squatter's request locks this out.
-        await conn.execute("UPDATE login_challenges SET created_at=now()-interval '2 minutes'")
-    async with client() as friend:
+    async with client() as friend:  # the squatter's request did not lock this out
         await friend.post("/app/api/login", json={"email": "other@example.test"})
         code = web.send_code.call_args.args[1]
         assert (await friend.post("/app/api/verify", json={"code": code})).status_code == 200
