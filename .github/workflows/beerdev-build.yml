@@ -1,6 +1,9 @@
 name: beerdev build
 
-# Builds the oldest open `beerdev` issue; started by beerdev.yml.
+# Builds the oldest open `beerdev` issue, incidents first. Started by the app (chat requests and
+# the owner's approvals and vetoes), the weekly lead, ops' tickets, and the build before it.
+# - pick: the issue. If it has an open PR (held, then approved by the owner), that PR ships as it
+#   is, without implement or review.
 # - implement: Claude Code makes the change and every test runs (tests/test_policy.py included),
 #   with only read-only credentials.
 # - review: for changes beyond routine app code (ROUTINE below: workflows, scripts, Docker, Fly,
@@ -8,9 +11,10 @@ name: beerdev build
 #   independent Claude Code reads the patch as data and approves or rejects it.
 # - ship: applies the patch to a fresh checkout without running it, refuses changes to the kernel
 #   (this file, the lead, agent prompts and settings, CLAUDE.md files, the policy test) and
-#   credential-like text,
-#   then merges, deploys through CI, appends CHANGELOG.md, and tells the chat. A change the
-#   reviewer did not approve waits as an unmerged PR in the owner's inbox.
+#   credential-like text, then merges, deploys through CI, appends CHANGELOG.md, and tells the
+#   chat. A change the reviewer did not approve waits as an unmerged PR in the owner's inbox.
+# - next: starts the next build if anything else is buildable, so the queue drains one build at a
+#   time. A flagged (`beerdev-failed`) issue is never picked again.
 # Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
 # environment to approve every ship by hand.
 
@@ -476,3 +480,34 @@ jobs:
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label beerdev-failed
           gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
             "beerdev could not ship this: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # When this build ends, shipped or flagged, start the next one, if anything is still buildable.
+  # flag runs first, so a failed issue already carries `beerdev-failed`, which next_build skips.
+  next:
+    needs: [pick, ship, flag]
+    if: ${{ !cancelled() && needs.pick.outputs.issue }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # start the next build
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false # It holds credentials: never restore a cache agent code saved.
+
+      - id: next
+        run: uv run --frozen python scripts/beerdev.py next
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Never this build's issue again: whatever happened to it is already on its labels.
+      - if: steps.next.outputs.issue && steps.next.outputs.issue != needs.pick.outputs.issue
+        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

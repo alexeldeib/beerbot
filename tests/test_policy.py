@@ -32,6 +32,7 @@ SECRETS = {
 WRITES = {
     ("beerdev-build.yml", "ship"): {"issues"},  # It pushes and merges with BEERDEV_SHIP_TOKEN.
     ("beerdev-build.yml", "flag"): {"issues"},
+    ("beerdev-build.yml", "next"): {"actions"},
     ("beerdev-lead.yml", "file"): {"actions", "issues"},
     ("ops.yml", "check"): {"actions", "issues"},
 }
@@ -200,6 +201,16 @@ def test_ship_merges_only_what_passed_or_what_the_owner_approved():
     assert "!failure()" in ship["if"] and "!cancelled()" in ship["if"]
     assert "isCrossRepository | not" in text and "gh run watch" in text
     assert not re.search(r"git push[^\n]*(--force|\s-f\b|\s\+)", text)  # Never rewrites history.
+
+
+def test_builds_run_one_at_a_time_and_never_repick_an_issue():
+    workflow = WORKFLOWS["beerdev-build.yml"]
+    assert workflow["concurrency"] == {"group": "beerdev-build", "cancel-in-progress": False}
+    chain = workflow["jobs"]["next"]
+    # After flag, so a failed issue already carries beerdev-failed when the next one is picked.
+    assert {"ship", "flag"} <= set(chain["needs"]) and "!cancelled()" in chain["if"]
+    start = next(step for step in chain["steps"] if "gh workflow run" in str(step.get("run")))
+    assert "!= needs.pick.outputs.issue" in start["if"]
 
 
 def test_only_routine_app_code_ships_without_the_reviewer():
