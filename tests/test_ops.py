@@ -457,7 +457,8 @@ def test_expiring_credentials_get_one_inbox_issue_each():
     fake = FakeGitHub()
     issues = []
     due = ops.check_expiry(fake.client(), "o/r", issues, datetime(2027, 11, 1).date())
-    assert len(due) == 3 and len(fake.created) == 3
+    assert len(due) == 4 and len(fake.created) == 4
+    assert "CLAUDE_CODE_OAUTH_TOKEN (GitHub)" in due  # Due 2027-11-07, set a year before.
     assert all(issue["labels"] == ops.NEEDS_OWNER for issue in fake.created)
     assert ops.check_expiry(fake.client(), "o/r", issues, datetime(2027, 1, 1).date()) == []
 

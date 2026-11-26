@@ -61,6 +61,7 @@ DEPENDENCIES = {
 EXPIRES = {
     "BEERDEV_GITHUB_TOKEN (Fly)": "2027-11-24",
     "BEERDEV_SHIP_TOKEN (GitHub, beerdev environment)": "2027-11-24",
+    "CLAUDE_CODE_OAUTH_TOKEN (GitHub)": "2027-11-07",  # Set 2026-11-07; one year.
     "FLY_API_TOKEN (GitHub, production environment)": "2027-11-25",
 }
 
