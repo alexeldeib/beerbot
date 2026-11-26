@@ -23,6 +23,11 @@ MAX_DELIVERY_ATTEMPTS = 5
 # Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
 # Postgres; the durable record is the failed rows themselves.
 TERMINAL_FAILURES: Counter[str] = Counter()
+# Accepted-but-unfinished messages (inbox id) and enqueued-but-undelivered replies (outbox id), with
+# when each started waiting. Memory-only, so ops can see a stuck queue without waking Postgres.
+UNPROCESSED: dict[int, float] = {}
+UNDELIVERED: dict[int, float] = {}
+STARTED_AT = datetime.now(UTC).isoformat()
 
 
 def failure_detail(exc: BaseException) -> str:
@@ -79,7 +84,15 @@ class QueueRuntime:
             "next_scan": self.next_scan.copy(),
             "terminal_failures": dict(TERMINAL_FAILURES),
             "last_error": self.last_error.copy(),
+            "started_at": STARTED_AT,
+            "git_sha": settings.git_sha,
+            "oldest_unprocessed_seconds": _oldest(UNPROCESSED),
+            "oldest_undelivered_seconds": _oldest(UNDELIVERED),
         }
+
+
+def _oldest(waiting: dict[int, float]) -> int | None:
+    return round(time.time() - min(waiting.values())) if waiting else None
 
 
 async def next_work_delay(name: str, recovery_delay: float) -> float:
@@ -118,6 +131,8 @@ async def accept_message(message: GroupMeMessage, agent: str = "beerius") -> dic
             message.model_dump_json(),
             agent,
         )
+    if row:
+        UNPROCESSED[row["id"]] = time.time()
     return {"status": "ok", "action": "queued" if row else "duplicate"}
 
 
@@ -169,6 +184,7 @@ async def execute_one(agent) -> bool:
             # takes over after the first completed run and survives restarts.
             history_before = copy.deepcopy(agent._get_history(group_id))
             bucket_before = copy.deepcopy(agent._get_bucket(group_id))
+            finished, outbox_id = False, None
             try:
                 async with conn.transaction():
                     await conn.execute("SET LOCAL statement_timeout = '10s'")
@@ -226,10 +242,11 @@ async def execute_one(agent) -> bool:
                             reply,
                             trace,
                         )
+                        finished = True
                         if reply:
-                            await conn.execute(
+                            outbox_id = await conn.fetchval(
                                 """INSERT INTO message_outbox(inbox_id,group_id,body)
-                                   VALUES($1,$2,$3)""",
+                                   VALUES($1,$2,$3) RETURNING id""",
                                 row["id"],
                                 group_id,
                                 reply,
@@ -257,8 +274,14 @@ async def execute_one(agent) -> bool:
                     failure_detail(exc),
                 )
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
-                if state == "failed":
+                finished = state == "failed"
+                if finished:
                     record_terminal(code)
+        # Committed: the outside watchdog's queue ages follow what is now durable.
+        if finished:
+            UNPROCESSED.pop(row["id"], None)
+        if outbox_id is not None:
+            UNDELIVERED[outbox_id] = time.time()
         await usage.flush(conn)  # Awake anyway: this message's tokens, even if it failed.
     return True
 
@@ -319,6 +342,8 @@ async def deliver_one(client) -> bool:
             delay,
         )
         logger.info("Reply delivery: outbox=%s state=%s code=%s", row["id"], state, code)
+        if state != "pending":  # Sent, or a terminal state that ops tickets instead.
+            UNDELIVERED.pop(row["id"], None)
         if state in ("failed", "uncertain"):
             record_terminal(f"delivery_{state}")
     return True

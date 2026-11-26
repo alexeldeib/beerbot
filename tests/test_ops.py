@@ -78,20 +78,6 @@ def test_report_appends_to_a_live_issue_and_otherwise_opens_one():
             assert calls[0][1] == "/repos/o/r/issues/4" and "inbox-9" in issues[0]["body"]
 
 
-def test_redeploy_waits_out_the_cooldown():
-    def runs(created):
-        def respond(request):
-            if request.method == "GET":
-                return httpx.Response(200, json={"workflow_runs": [{"created_at": created}]})
-            return httpx.Response(204)
-
-        return httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
-
-    now = datetime.now(UTC)
-    assert "did not redeploy" in ops.redeploy(runs((now - timedelta(minutes=5)).isoformat()), "o/r")
-    assert "redeployed" in ops.redeploy(runs((now - timedelta(hours=2)).isoformat()), "o/r")
-
-
 def test_diagnose_reports_what_the_workers_last_saw():
     def workers(payload):
         respond = lambda _: httpx.Response(200, json=payload)  # noqa: E731
@@ -99,13 +85,162 @@ def test_diagnose_reports_what_the_workers_last_saw():
 
     error = {"at": "01:31", "detail": "InvalidCachedStatementError at delivery.py:126 execute_one"}
     status = {"failed": {"execution": True}, "last_error": {"execution": error, "delivery": None}}
-    text = ops.diagnose(workers(status), {})
+    text = ops.diagnose(ops.worker_status(workers(status), {}))
     assert "execution worker (failing)" in text and "InvalidCachedStatementError" in text
-    assert ops.diagnose(workers({"last_error": {}}), {}) == "Workers report no errors."
+    assert ops.diagnose(ops.worker_status(workers({"last_error": {}}), {})) == (
+        "Workers report no errors."
+    )
     down = httpx.Client(
         base_url="https://x.test", transport=httpx.MockTransport(lambda _: httpx.Response(503))
     )
-    assert ops.diagnose(down, {}).startswith("Worker status unavailable")
+    assert ops.diagnose(ops.worker_status(down, {})).startswith("Worker status unavailable")
+
+
+def test_symptoms_are_what_users_feel(monkeypatch):
+    healthy = httpx.Client(
+        base_url="https://x.test", transport=httpx.MockTransport(lambda _: httpx.Response(200))
+    )
+    assert ops.symptoms(healthy, {"oldest_unprocessed_seconds": 60}) == []
+    stuck = {"oldest_unprocessed_seconds": 420, "oldest_undelivered_seconds": 900}
+    assert ops.symptoms(healthy, stuck) == [
+        "a message has waited 7 min to be answered",
+        "a reply has waited 15 min to be posted",
+    ]
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+    down = httpx.Client(
+        base_url="https://x.test", transport=httpx.MockTransport(lambda _: httpx.Response(503))
+    )
+    assert ops.symptoms(down, {}) == ["/health is failing: the app is down or crashing"]
+
+
+def test_blame_names_failing_dependencies_only():
+    def workers(detail):
+        return {"last_error": {"execution": {"at": "x", "detail": detail}}}
+
+    assert ops.blame(workers("ConnectionRefusedError at database.py:40 get_pool")) == "the database"
+    assert ops.blame(workers("ServerError at model_runtime.py:180 next_turn")) == (
+        "the model provider"
+    )
+    assert ops.blame(workers("KeyError at tools.py:88 log_drinks")) is None  # Our bug: no blame.
+    assert ops.blame({}) is None
+
+
+class FakeGitHub:
+    """Enough of the GitHub API for the incident lifecycle: runs, issues, dispatches."""
+
+    def __init__(self, deployed_minutes_ago=None, changing=False):
+        self.calls, self.created, self.dispatched = [], [], []
+        self.deployed = deployed_minutes_ago
+        self.changing = changing
+
+    def client(self):
+        def respond(request):
+            path, method = request.url.path, request.method
+            body = json.loads(request.content or "null")
+            self.calls.append((method, path, body))
+            if path.endswith("/runs"):
+                status = request.url.params.get("status")
+                runs = []
+                if self.changing and not status:
+                    runs.append({"status": "in_progress"})
+                if self.deployed is not None:
+                    at = datetime.now(UTC) - timedelta(minutes=self.deployed)
+                    runs.append(
+                        {
+                            "status": "completed",
+                            "event": "push",
+                            "head_sha": "abcdef1234",
+                            "updated_at": at.isoformat(),
+                        }
+                    )
+                return httpx.Response(200, json={"workflow_runs": runs})
+            if path.endswith("/dispatches"):
+                self.dispatched.append(path.split("/")[-2])
+                return httpx.Response(204)
+            if method == "POST" and path.endswith("/issues"):
+                self.created.append(body)
+                number = 100 + len(self.created)
+                return httpx.Response(
+                    201,
+                    json={
+                        "number": number,
+                        "html_url": f"https://g/{number}",
+                        "body": body["body"],
+                        "state": "open",
+                    },
+                )
+            return httpx.Response(200, json={})
+
+        return httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+
+
+def incident_run(monkeypatch, fake, found, workers=None, issues=None):
+    pages = []
+    monkeypatch.setattr(ops, "page", pages.append)
+    issues = issues if issues is not None else []
+    line = ops.handle_incident(fake.client(), "o/r", issues, found, workers or {})
+    return line, pages
+
+
+def test_breakage_right_after_a_deploy_rolls_it_back_and_pages(monkeypatch):
+    fake = FakeGitHub(deployed_minutes_ago=12)
+    line, pages = incident_run(monkeypatch, fake, ["/ready is failing"])
+    assert fake.dispatched == ["rollback.yml"] and line.startswith("Opened an incident")
+    incident = fake.created[0]
+    assert incident["labels"] == ops.INCIDENT_LABELS and incident["assignees"] == ["o"]
+    assert ops.ROLLED_BACK in incident["body"]
+    assert len(pages) == 1 and pages[0].startswith(
+        "🚨 Beerius: /ready is failing. Rolling back abcdef1"
+    )
+
+
+def test_without_a_recent_deploy_ops_never_restarts_it_pages(monkeypatch):
+    dependency = {"last_error": {"execution": {"at": "x", "detail": "ServerError at model.py:1"}}}
+    for workers, expected in [
+        (dependency, "Waiting: the model provider is failing"),
+        ({}, "No safe automatic fix: this needs you."),
+    ]:
+        fake = FakeGitHub(deployed_minutes_ago=300)
+        _, pages = incident_run(monkeypatch, fake, ["/ready is failing"], workers)
+        assert fake.dispatched == [] and expected in pages[0]
+
+
+def test_an_open_incident_pages_once_and_resolves_with_a_follow_up(monkeypatch):
+    opened = (datetime.now(UTC) - timedelta(minutes=12)).isoformat()
+    incident = {
+        "number": 7,
+        "state": "open",
+        "title": "Incident: /ready is failing",
+        "html_url": "https://g/7",
+        "created_at": opened,
+        "body": f"{ops.INCIDENT_MARKER} ... {ops.ROLLED_BACK}",
+    }
+    fake = FakeGitHub(deployed_minutes_ago=5)  # A fix landed: never roll it back mid-incident.
+    line, pages = incident_run(monkeypatch, fake, ["/ready is failing"], issues=[incident])
+    assert pages == [] and fake.dispatched == [] and "still open" in line
+
+    fake = FakeGitHub()
+    line, pages = incident_run(monkeypatch, fake, [], issues=[incident])
+    assert pages == ["✅ Resolved after 12 min (rolled back). https://g/7"]
+    assert ("PATCH", "/repos/o/r/issues/7", {"state": "closed"}) in fake.calls
+    follow_up = fake.created[0]
+    assert follow_up["title"] == "Root cause: Incident: /ready is failing"
+    assert follow_up["labels"] == ops.INCIDENT  # The SWE (beerdev) takes it from here.
+
+
+def test_ops_waits_while_production_is_changing(monkeypatch):
+    fake = FakeGitHub(deployed_minutes_ago=1, changing=True)
+    line, pages = incident_run(monkeypatch, fake, ["/health is failing"])
+    assert pages == [] and fake.created == [] and "checking again next run" in line
+
+
+def test_expiring_credentials_get_one_inbox_issue_each():
+    fake = FakeGitHub()
+    issues = []
+    due = ops.check_expiry(fake.client(), "o/r", issues, datetime(2027, 11, 1).date())
+    assert len(due) == 3 and len(fake.created) == 3
+    assert all(issue["labels"] == ops.NEEDS_OWNER for issue in fake.created)
+    assert ops.check_expiry(fake.client(), "o/r", issues, datetime(2027, 1, 1).date()) == []
 
 
 def test_deploy_failure_names_the_step_the_log_and_the_pr():

@@ -1,15 +1,27 @@
-"""ops monitor: health probes, self-healing redeploys, and one issue per failure class.
+"""ops, the SRE: watch production from outside, mitigate what's safe, page the owner, ticket the
+rest. beerdev, the SWE, fixes what ops tickets.
 
-Run hourly, and right away on failures when the app can dispatch, by .github/workflows/ops.yml.
-It never posts to the chat. Issues are public, so they carry exception types and this repo's
-stack frames, never message text. All state lives in issue bodies as markers.
+Run every 5 minutes, after CI on main, and right away when the app reports a failure, by
+.github/workflows/ops.yml.
+- Symptoms are what users feel: /health or /ready failing, or a message or reply waiting over
+  5 minutes. They come from public endpoints and memory-only status, so a check never wakes the
+  database.
+- The decision table runs with no model:
+  - A worker stalled after an error gets nudged (woken), never restarted.
+  - Breakage within an hour of a deploy rolls back (rollback.yml).
+  - A failing dependency is left alone.
+  - Anything else gets the owner.
+- Each incident is one GitHub issue assigned to the owner, paged in the private "beerbot alerts"
+  GroupMe group on open, on a rollback, and on resolve.
+- It never posts in the main chat. Issues are public, so they carry exception types and this repo's
+  stack frames, never message text. All state lives in issue bodies as markers.
 """
 
 import os
 import re
 import time
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
@@ -18,12 +30,29 @@ APP = "https://beerbot-groupme.fly.dev"
 # the owner's inbox (beerdev-build.yml), so every incident gets a fix attempt or a person.
 INCIDENT = ["ops", "beerdev", "bug"]
 NEEDS_OWNER = ["ops", "inbox"]
-REDEPLOY_COOLDOWN = timedelta(minutes=30)
+INCIDENT_LABELS = ["ops", "incident"]
+DEPLOY_WINDOW = timedelta(minutes=60)  # Breakage this soon after a deploy rolls it back.
+QUEUE_LIMIT = 300  # Seconds a message or reply may wait before it counts as stuck.
 # A class closed this recently gets appended to instead of reopened as a new build: a fix that
 # didn't stick goes to a person rather than looping beerdev.
 REPEAT_WINDOW = timedelta(days=7)
 DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Neon).
-UNHEALTHY = "<!-- ops:key=unhealthy -->"
+INCIDENT_MARKER = "<!-- ops:incident -->"
+ROLLED_BACK = "<!-- ops:rolled-back -->"
+# A worker error naming one of these means an outside dependency failed: there's nothing to undo.
+DEPENDENCIES = {
+    "the database": re.compile(
+        r"asyncpg|Postgres|ConnectionRefused|CannotConnect|TooManyConnections|InterfaceError",
+        re.I,
+    ),
+    "the model provider": re.compile(r"ServerError|ResourceExhausted|Quota|\b429\b", re.I),
+}
+# Credentials that expire, from docs/runbook.md. ops opens an inbox issue 30 days ahead.
+EXPIRES = {
+    "BEERDEV_GITHUB_TOKEN (Fly)": "2027-11-24",
+    "BEERDEV_SHIP_TOKEN (GitHub, beerdev environment)": "2027-11-24",
+    "FLY_API_TOKEN (GitHub, production environment)": "2027-11-25",
+}
 
 
 def probe(app: httpx.Client, attempts: int = 3, pause: float = 30) -> str | None:
@@ -146,12 +175,18 @@ def check_spend(
     return line
 
 
-def diagnose(app: httpx.Client, admin: dict) -> str:
-    """What the app reports about its workers. Memory-only, so it never wakes the database."""
+def worker_status(app: httpx.Client, admin: dict) -> dict:
+    """The app's memory-only status (never wakes the database), or why it's unavailable."""
     try:
-        workers = app.get("/admin/workers/status", headers=admin).raise_for_status().json()
+        return app.get("/admin/workers/status", headers=admin).raise_for_status().json()
     except httpx.HTTPError as exc:
-        return f"Worker status unavailable ({type(exc).__name__})."
+        return {"unavailable": type(exc).__name__}
+
+
+def diagnose(workers: dict) -> str:
+    """What the app reports about its workers."""
+    if "unavailable" in workers:
+        return f"Worker status unavailable ({workers['unavailable']})."
     lines = [
         f"- {name} worker ({'failing' if workers.get('failed', {}).get(name) else 'recovered'}), "
         f"last error at {error['at']}: `{error['detail']}`"
@@ -207,18 +242,169 @@ def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, s
     return f"deploy:{sha[:7]}", text
 
 
-def redeploy(github: httpx.Client, repo: str) -> str:
-    """Redeploy through CI, unless CI ran recently (that run may be the fix, or this a loop)."""
-    runs = (
-        github.get(f"/repos/{repo}/actions/workflows/ci.yml/runs", params={"per_page": 1})
-        .raise_for_status()
-        .json()["workflow_runs"]
+def symptoms(app: httpx.Client, workers: dict) -> list[str]:
+    """What users would feel right now, or nothing."""
+    found = [problem] if (problem := probe(app)) else []
+    for key, what in (
+        ("oldest_unprocessed_seconds", "a message has waited {} min to be answered"),
+        ("oldest_undelivered_seconds", "a reply has waited {} min to be posted"),
+    ):
+        if (age := workers.get(key)) is not None and age > QUEUE_LIMIT:
+            found.append(what.format(age // 60))
+    return found
+
+
+def nudge(app: httpx.Client, admin: dict) -> bool:
+    """A worker that hit an error waits for its next wake (up to an hour). Wake it, which is
+    harmless, and see whether it recovers before calling anyone."""
+    try:
+        app.post("/admin/messages/wake", headers=admin).raise_for_status()
+    except httpx.HTTPError:
+        return False
+    time.sleep(20)
+    return probe(app, attempts=1) is None
+
+
+def blame(workers: dict) -> str | None:
+    """The outside dependency the workers' errors name, if any."""
+    details = " ".join(e["detail"] for e in (workers.get("last_error") or {}).values() if e)
+    return next((name for name, pattern in DEPENDENCIES.items() if pattern.search(details)), None)
+
+
+def runs(github: httpx.Client, repo: str, workflow: str, **params: str) -> list[dict]:
+    path = f"/repos/{repo}/actions/workflows/{workflow}/runs"
+    response = github.get(path, params={"branch": "main", "per_page": 5, **params})
+    return response.raise_for_status().json()["workflow_runs"]
+
+
+def changing(github: httpx.Client, repo: str) -> bool:
+    """A deploy or a rollback is changing production right now: wait for it."""
+    return any(
+        run["status"] != "completed"
+        for workflow in ("ci.yml", "rollback.yml")
+        for run in runs(github, repo, workflow)
     )
-    started = datetime.fromisoformat(runs[0]["created_at"]) if runs else None
-    if started and datetime.now(UTC) - started < REDEPLOY_COOLDOWN:
-        return "CI ran within 30 minutes, so ops did not redeploy."
-    github.post(f"/repos/{repo}/actions/workflows/ci.yml/dispatches", json={"ref": "main"})
-    return "Ops redeployed through CI, which starts the app on a fresh machine."
+
+
+def last_deploy(github: httpx.Client, repo: str) -> dict | None:
+    """The newest successful deploy of main, if any."""
+    for run in runs(github, repo, "ci.yml", status="success"):
+        if run["event"] in ("push", "workflow_dispatch"):
+            return {"sha": run["head_sha"][:7], "at": datetime.fromisoformat(run["updated_at"])}
+    return None
+
+
+def mitigate(github: httpx.Client, repo: str, workers: dict) -> str:
+    """The decision table, run once as an incident opens: a deploy that landed during an incident
+    is a fix attempt, not the cause. Returns what was done, or why not."""
+    deploy = last_deploy(github, repo)
+    if deploy and datetime.now(UTC) - deploy["at"] < DEPLOY_WINDOW:
+        github.post(
+            f"/repos/{repo}/actions/workflows/rollback.yml/dispatches",
+            json={"ref": "main", "inputs": {"dry_run": "false"}},
+        ).raise_for_status()
+        return f"Rolling back {deploy['sha']}: it deployed under an hour ago. {ROLLED_BACK}"
+    if dependency := blame(workers):
+        return f"Waiting: {dependency} is failing, so there's nothing to undo or restart."
+    return "No safe automatic fix: this needs you."
+
+
+def page(text: str) -> None:
+    """Post to the private "beerbot alerts" GroupMe group (only the owner and the ops bot)."""
+    bot = os.environ.get("OPS_ALERT_BOT_ID")
+    if not bot:
+        print("::warning::OPS_ALERT_BOT_ID isn't set, so nobody was paged")
+        return
+    response = httpx.post(
+        "https://api.groupme.com/v3/bots/post",
+        json={"bot_id": bot, "text": text[:1000]},
+        timeout=20,
+    )
+    if not response.is_success:
+        print(f"::warning::Page failed (HTTP {response.status_code})")
+
+
+def handle_incident(
+    github: httpx.Client, repo: str, issues: list[dict], found: list[str], workers: dict
+) -> str:
+    """Open, act on, or resolve the one incident. Returns a line for the log."""
+    incident = next(
+        (i for i in issues if i["state"] == "open" and INCIDENT_MARKER in (i.get("body") or "")),
+        None,
+    )
+    now = datetime.now(UTC)
+    if found:
+        if changing(github, repo):
+            return f"Symptoms during a deploy or rollback; checking again next run: {found}"
+        if incident is None:
+            action = mitigate(github, repo, workers)
+            body = (
+                f"{INCIDENT_MARKER}\n**Opened {now:%Y-%m-%d %H:%M} UTC:** {'; '.join(found)}.\n\n"
+                f"{diagnose(workers)}\n\n**Action:** {action}"
+            )
+            created = github.post(
+                f"/repos/{repo}/issues",
+                json={
+                    "title": f"Incident: {found[0]}",
+                    "labels": INCIDENT_LABELS,
+                    "assignees": [repo.split("/")[0]],
+                    "body": body,
+                },
+            ).raise_for_status()
+            url = created.json()["html_url"]
+            page(f"🚨 Beerius: {'; '.join(found)}. {action.replace(ROLLED_BACK, '').strip()} {url}")
+            return f"Opened an incident: {found}"
+        return f"Incident still open, no new action: {found}"
+    if incident is None:
+        return "Healthy"
+    opened = datetime.fromisoformat(incident["created_at"])
+    minutes = max(1, round((now - opened).total_seconds() / 60))
+    path = f"/repos/{repo}/issues/{incident['number']}"
+    github.post(f"{path}/comments", json={"body": f"Resolved after {minutes} min."})
+    github.patch(path, json={"state": "closed"}).raise_for_status()
+    rolled_back = ROLLED_BACK in (incident.get("body") or "")
+    page(
+        f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
+        f"{incident['html_url']}"
+    )
+    if rolled_back or "src/beerbot" in (incident.get("body") or ""):  # Code: the SWE's turn.
+        text = (
+            f"Follow-up to {incident['html_url']} (resolved after {minutes} min"
+            f"{', by rolling back' if rolled_back else ''}). beerdev: find the root cause from the "
+            "incident's diagnosis and the changes around it, reproduce it with a failing test, "
+            "and fix it."
+        )
+        report(
+            github,
+            repo,
+            issues,
+            f"followup-{incident['number']}",
+            (f"Root cause: {incident['title']}", text, INCIDENT),
+        )
+    return f"Resolved an incident after {minutes} min"
+
+
+def check_expiry(github: httpx.Client, repo: str, issues: list[dict], today: date) -> list[str]:
+    """Inbox issues for credentials that expire within 30 days, once each."""
+    due = []
+    for name, day in EXPIRES.items():
+        if (date.fromisoformat(day) - today).days > 30:
+            continue
+        marker = f"<!-- ops:key=expiry-{name.split()[0]}-{day} -->"
+        due.append(name)
+        if not any(marker in (i.get("body") or "") for i in issues):
+            body = (
+                f"{marker}\n{name} expires on {day}. Mint a new one: docs/runbook.md, Credentials."
+            )
+            github.post(
+                f"/repos/{repo}/issues",
+                json={
+                    "title": f"Credential expires {day}: {name}",
+                    "labels": NEEDS_OWNER,
+                    "body": body,
+                },
+            ).raise_for_status()
+    return due
 
 
 def main() -> None:
@@ -238,7 +424,6 @@ def main() -> None:
         .raise_for_status()
         .json()
     )
-    unhealthy = [i for i in issues if i["state"] == "open" and UNHEALTHY in (i.get("body") or "")]
 
     if (run_id := env.get("CI_RUN_ID")) and (failure := deploy_failure(github, repo, run_id)):
         key, text = failure
@@ -251,34 +436,24 @@ def main() -> None:
         report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, INCIDENT))
         print(f"Reported failed CI run {run_id}")
 
-    if problem := probe(app):
-        diagnosis = diagnose(app, admin)
-        if unhealthy:  # Already redeployed once; repeating the same deploy won't help.
-            url = f"/repos/{repo}/issues/{unhealthy[0]['number']}/comments"
-            text = f"Still unhealthy: {problem}.\n\n{diagnosis}"
-            github.post(url, json={"body": text}).raise_for_status()
-        else:
-            body = (
-                f"{UNHEALTHY}\nDetected: {problem}.\n\n{diagnosis}\n\n{redeploy(github, repo)}"
-                "\n\nbeerdev: find the cause from the errors above and recent changes, reproduce "
-                "it with a failing test, and fix it."
-            )
-            github.post(
-                f"/repos/{repo}/issues",
-                json={"title": "Production is unhealthy", "labels": INCIDENT, "body": body},
-            ).raise_for_status()
-        print(f"Unhealthy: {problem}")
+    workers = worker_status(app, admin)
+    found = symptoms(app, workers)
+    if found and any((workers.get("failed") or {}).values()) and nudge(app, admin):
+        print("A worker had stalled after an error; ops woke it and it recovered")
+        workers = worker_status(app, admin)
+        found = symptoms(app, workers)
+    print(handle_incident(github, repo, issues, found, workers))
+    if found:
         return
-    for issue in unhealthy:
-        url = f"/repos/{repo}/issues/{issue['number']}"
-        github.post(f"{url}/comments", json={"body": "Recovered: /health and /ready pass."})
-        github.patch(url, json={"state": "closed"}).raise_for_status()
 
-    # The queue status reads Postgres, so only look when something says to (or once a day).
-    workers = app.get("/admin/workers/status", headers=admin).raise_for_status().json()
-    daily = datetime.now(UTC).hour == DAILY_HOUR
-    if not (env.get("REASON") or workers.get("terminal_failures") or daily):
-        print("Healthy; no failures since the last restart")
+    # The queue status reads Postgres, so only look when the app reports a new failure (it
+    # dispatches with a reason), or on the first run of the daily hour.
+    now = datetime.now(UTC)
+    daily = now.hour == DAILY_HOUR and now.minute < 5
+    if daily:
+        expiring = check_expiry(github, repo, issues, now.date())
+        print(f"Credentials expiring within 30 days: {expiring or 'none'}")
+    if not (env.get("REASON") or daily):
         return
     status = app.get("/admin/messages/status", headers=admin).raise_for_status().json()
     groups = new_failures(status, issues)

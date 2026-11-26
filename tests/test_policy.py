@@ -25,7 +25,8 @@ SECRETS = {
     ("beerdev-lead.yml", "plan"): {"CLAUDE_CODE_OAUTH_TOKEN"},
     ("beerdev.yml", "digest"): {"BEERDEV_BOT_ID"},
     ("ci.yml", "deploy"): {"FLY_API_TOKEN"},
-    ("ops.yml", "check"): {"OPS_TOKEN"},  # Read-only; the admin token never leaves Fly.
+    ("ops.yml", "check"): {"OPS_TOKEN", "OPS_ALERT_BOT_ID"},  # Never the admin token.
+    ("rollback.yml", "rollback"): {"FLY_API_TOKEN"},
 }
 # Jobs whose GITHUB_TOKEN may write, and to what.
 WRITES = {
@@ -196,13 +197,18 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
 
     from src.beerbot import main
 
-    # Every admin route needs the admin token; only these reads also take the ops token.
-    reads = {"/admin/workers/status", "/admin/messages/status", "/admin/usage"}
+    # Every admin route needs the admin token; ops' token reaches exactly these.
+    ops_routes = {
+        ("GET", "/admin/workers/status"),
+        ("GET", "/admin/messages/status"),
+        ("GET", "/admin/usage"),
+        ("POST", "/admin/messages/wake"),  # A harmless nudge, never a restart.
+    }
     admin = [route for route in main.app.routes if getattr(route, "path", "").startswith("/admin")]
     for route in admin:
         calls = [dependency.call for dependency in route.dependant.dependencies]
-        if route.path in reads and route.methods == {"GET"}:
-            assert main.verify_read_token in calls, route.path
+        if {(method, route.path) for method in route.methods} <= ops_routes:
+            assert main.verify_ops_token in calls, route.path
         else:
             assert main.verify_admin_token in calls, route.path
     for workflow in (ROOT / ".github/workflows").glob("*.y*ml"):
@@ -217,3 +223,18 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
             client.get("/admin/groups", headers={"Authorization": "Bearer reader"}).status_code
             == 403
         )
+
+
+def test_the_rollback_goes_one_step_back_and_verifies():
+    workflow = WORKFLOWS["rollback.yml"]
+    assert set(triggers(workflow)) == {"workflow_dispatch"}  # Started by ops or by hand only.
+    job = workflow["jobs"]["rollback"]
+    assert job["environment"] == "production"  # main-only: a branch can't roll production back.
+    assert (
+        workflow["concurrency"]["group"]
+        == WORKFLOWS["ci.yml"]["jobs"]["deploy"]["concurrency"]["group"]
+    )
+    scripts = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "--strategy bluegreen" in scripts
+    verify = next(step["run"] for step in job["steps"] if step.get("name") == "Verify production")
+    assert all(check in verify for check in ("health", "ready", "ready/db"))

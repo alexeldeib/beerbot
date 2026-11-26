@@ -13,7 +13,7 @@ something looks wrong. Commands assume `gh` and `fly` are logged in as the owner
 | **beerdev build** | GitHub Actions `beerdev-build.yml`, started by scans | Claude Code implements the oldest `beerdev` issue (incidents first) and tests it; an independent reviewer approves anything beyond app code; then it merges, deploys, updates `CHANGELOG.md`, and tells the chat |
 | **beerdev lead** | GitHub Actions `beerdev-lead.yml`, Mondays | Read-only review of code, incidents, and backlog; proposes up to three improvements |
 | **CI** | GitHub Actions `ci.yml`, on push to `main` or dispatch | Tests, then blue-green deploy to Fly, then verifies health, version, and DB |
-| **ops** | GitHub Actions `ops.yml`: hourly, on app failures, and on CI failures on `main` | Probes health, redeploys a stuck app, and files incidents with their diagnosis for beerdev to fix; never posts in the chat |
+| **ops** (the SRE) | GitHub Actions `ops.yml`: every 5 minutes, after CI on `main`, and when the app reports a failure | Watches symptoms from outside Fly, applies only safe fixes (nudge, roll back a fresh deploy), pages the owner in the private "beerbot alerts" GroupMe group, and opens tickets for beerdev (the SWE). See "Incidents". Never posts in the main chat |
 | **Database** | Neon PostgreSQL | All durable state; sleeps when idle (see `idle-compute.md`) |
 
 The `beerius` bot in the Beerbeta test group points at `/callback-fake` on purpose, which
@@ -32,11 +32,12 @@ goes out blue-green.
 | `DATABASE_URL` | Fly; also the local `.env` | Neon production database | Neon console. The local `.env` points at **production**: run read-only SQL only (`BEGIN READ ONLY`) |
 | `GEMINI_API_KEY` | Fly (Beerius and beerdev); GitHub (live e2e) | Model calls | Google AI Studio. Prefer a separate low-quota key for GitHub, because agent-written tests can read it |
 | `ADMIN_TOKEN` | Fly; local `.env.local`. **Never GitHub** | Every `/admin/*` endpoint | `openssl rand -hex 32`, then set the same value in both places |
-| `OPS_TOKEN` | Fly; GitHub (ops) | Read-only: `GET /admin/workers/status`, `/admin/messages/status`, `/admin/usage`. Nothing else | `openssl rand -hex 32`, then `gh secret set OPS_TOKEN` and `fly secrets import --stage` with the same value |
+| `OPS_TOKEN` | Fly; GitHub (ops) | `GET /admin/workers/status`, `/admin/messages/status`, `/admin/usage`, and `POST /admin/messages/wake` (a harmless nudge). Nothing else | `openssl rand -hex 32`, then `gh secret set OPS_TOKEN` and `fly secrets import --stage` with the same value |
 | `BEERDEV_GITHUB_TOKEN` | Fly | beerdev files and steers requests and reads deploys. The app starts builds and ops checks | Fine-grained, this repository only, Issues and Actions read and write. It can't push code or change workflows. Prefilled: https://github.com/settings/personal-access-tokens/new?name=beerdev-app&description=Fly+app%3A+beerdev+files+and+steers+requests%2C+starts+builds+and+ops&target_name=alexeldeib&expires_in=366&issues=write&actions=write. The old name `GITHUB_DISPATCH_TOKEN` is still read. Without it, beerdev says it can't reach GitHub |
 | `BEERBOT_BOT_ID` | Fly | Legacy default bot. Per-group bot IDs live in the `groups` table (`POST /admin/groups`) | GroupMe bot list |
 | `SMTP_*` | Fly | Email sign-in for `/app` | Mail provider |
-| `FLY_API_TOKEN` | GitHub, `production` environment only (deploys from `main` only) | CI deploys | Deploy token `github-actions-beerbot-production`, expires 2027-11-25: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot-production -x 8760h \| gh secret set FLY_API_TOKEN --env production` |
+| `OPS_ALERT_BOT_ID` | GitHub (ops) | Pages: the `ops` bot can only post to the private "beerbot alerts" group | `bot_id` of the `ops` bot from `GET https://api.groupme.com/v3/bots` |
+| `FLY_API_TOKEN` | GitHub, `production` environment only (deploys from `main` only) | CI deploys and `rollback.yml` | Deploy token `github-actions-beerbot-production`, expires 2027-11-25: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot-production -x 8760h \| gh secret set FLY_API_TOKEN --env production` |
 | `GROUPME_ACCESS_TOKEN` | Local `.env.local` only | Manual lookups (listing bots, reading history). No automation holds it | The owner's personal token, with full account access: https://dev.groupme.com/account/access-token |
 | `BEERDEV_SHIP_TOKEN` | GitHub, `beerdev` environment only | The ship job pushes and merges beerdev's changes, including workflow files; its merges start CI. Acts as the owner on GitHub | Fine-grained, this repository only: Contents, Pull requests, and Workflows read and write. Prefilled: https://github.com/settings/personal-access-tokens/new?name=beerdev-ship&description=beerdev+ship+job+pushes+and+merges+changes+including+workflows&target_name=alexeldeib&expires_in=366&contents=write&pull_requests=write&workflows=write. Then `gh secret set BEERDEV_SHIP_TOKEN --env beerdev`. Without it, changes to `.github/workflows` can't ship |
 | `CLAUDE_CODE_OAUTH_TOKEN` | GitHub | beerdev's coding agent | `claude setup-token` (valid one year), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` |
@@ -73,7 +74,8 @@ beerdev's `implement` job.
 | beerdev `ship` | GitHub's copy of the issue, the patch, the verdict | Branch, PR, merge (or a held PR), CI start, beerdev's chat post | `BEERDEV_SHIP_TOKEN`, `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID` |
 | beerdev lead `plan` (agent) | Repository, issues, CI runs | A plan file only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN` |
 | beerdev lead `file` | The plan (schema-checked, at most three items) | Issues, build starts | `GITHUB_TOKEN` (issues, actions) |
-| ops | Health, status, and spend (read-only), CI runs and logs, issues | Issues, CI redeploys | `OPS_TOKEN`, `GITHUB_TOKEN` (issues, actions) |
+| ops | Health, status, and spend; CI runs and logs; issues | Incidents and tickets, rollback starts, queue wakes, pages to the alerts group | `OPS_TOKEN`, `OPS_ALERT_BOT_ID`, `GITHUB_TOKEN` (issues, actions) |
+| `rollback.yml` | Fly releases | Production: the release before the current one, verified | `FLY_API_TOKEN` (`production` environment, main only) |
 | Owner's machine | Everything | Everything | `gh` (repo scope), `fly` (org), `.env` (production database), `.env.local` |
 
 ### beerdev's kernel and gates
@@ -126,9 +128,48 @@ Known gaps, broadest first:
   (noting the rollback) and beerdev fixes forward. Migrations are forward-only: code must keep
   working on the previous schema (add columns, never `SELECT *`).
 - Run `fly deploy` by hand only if CI itself is broken, then call `/ready/db`.
-- To roll back by hand, run `fly releases -a beerbot-groupme --image` and then
-  `fly deploy -a beerbot-groupme --image <ref> --strategy bluegreen`. To revert the code,
+- To roll back by hand, run `gh workflow run rollback.yml --ref main`. It goes one release back,
+  blue-green, and verifies. Add `-f dry_run=true` to only print the target. To revert the code,
   run `gh pr revert <number>` and merge it.
+
+## Incidents
+
+ops is the SRE and beerdev is the SWE. ops follows standard practice:
+- alert on what users feel
+- page only when it's urgent and actionable
+- automate only fixes that are safe and usually right
+- hand the root cause to engineering
+
+**Signals,** every 5 minutes from GitHub Actions. All come from public endpoints and memory-only
+status, so checks never wake the database:
+- `/health` and `/ready` must answer. Each probe retries 3 times over a minute, so blips don't
+  page.
+- No message may wait over 5 minutes to be answered (`oldest_unprocessed_seconds`).
+- No reply may wait over 5 minutes to be posted (`oldest_undelivered_seconds`).
+
+**Response,** a fixed decision table with no model, decided once as the incident opens:
+
+| Situation | ops does | You get |
+|---|---|---|
+| A worker stalled after an error (`/ready` red, workers `failed`) | Wakes the queue; if that fixes it, no incident | Nothing |
+| It broke within 60 minutes of a deploy | Runs `rollback.yml` (one release back) | 🚨 page, then ✅ when resolved |
+| Worker errors name the database or the model provider | Nothing; there's nothing to undo or restart | 🚨 page: "waiting on …" |
+| Anything else | Nothing | 🚨 page: "needs you" |
+| A deploy failed and CI rolled it back | Ticket for beerdev (fix forward) | No page |
+| Messages failed with code errors | Ticket per failure class for beerdev | No page |
+| Over budget, or a credential expiring within 30 days | Inbox ticket | No page |
+
+**Lifecycle:**
+- Each incident is one issue labeled `incident` and assigned to you. That's the record and the
+  email backup.
+- Pages go to the private **beerbot alerts** GroupMe group (only you and the `ops` bot): one when
+  the incident opens, and one when it resolves.
+- When the signals pass again, ops closes the issue. If code was involved (a rollback, or errors
+  in this repo's frames), it opens a **Root cause** ticket for beerdev, which reproduces the
+  problem with a failing test and fixes it.
+- ops never restarts the app; Fly restarts crashed processes by itself.
+- While a deploy or rollback is running, ops waits.
+- To silence an incident you've handled, close its issue.
 
 ## Watching it
 
@@ -144,10 +185,9 @@ Known gaps, broadest first:
   for an unhealthy app, or the failing step's log for a failed deploy. They are labeled
   `beerdev` + `bug`, so beerdev builds a fix **before** any feature. If the cause isn't in the code
   (database, network, provider, credentials), beerdev writes what a person must do and moves the
-  issue to the inbox. "Production is unhealthy" also redeploys once (at most every 30 minutes)
-  and closes itself on recovery. A failure class that recurs within 7 days of closing is appended
-  to the closed issue instead of starting another build. Ops reads the database only after a
-  failure or once a day at 12:17 UTC, so Neon can sleep.
+  issue to the inbox. A failure class that recurs within 7 days of closing is appended to the
+  closed issue instead of starting another build. Outages are incidents (see "Incidents"). Ops
+  reads the database only when the app reports a failure, or at 12:00 UTC, so Neon can sleep.
 - **Inbox:** https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox lists everything
   waiting on the owner: infra asks with their human setup, the weekly lead's `proposal`s,
   incidents beerdev couldn't fix in code, changes the reviewer held (each links its open PR), and
