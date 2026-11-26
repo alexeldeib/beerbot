@@ -1,13 +1,22 @@
 name: ops
 
-# Watches production without ever posting to the chat: probes health and readiness, redeploys
-# through CI when the app is stuck, and files one issue per failure class (code-level ones are
-# go to beerdev first, which fixes them or hands them to the owner's inbox). The app starts this the moment a message fails
-# when BEERDEV_GITHUB_TOKEN is set; otherwise the hourly run catches it. See docs/runbook.md.
+# ops, the SRE (scripts/ops.py). Every 5 minutes it checks, from outside Fly, what users would
+# feel: /health and /ready, and whether a message or reply has waited over 5 minutes. Those come
+# from memory-only status, so checks never wake the database.
+#
+# It fixes only what's safe, using a fixed decision table with no model:
+# - nudge a stalled worker (wake the queue)
+# - roll back a deploy that broke production within the hour (rollback.yml)
+# - wait out a failing dependency
+#
+# Anything else pages the owner in the private "beerbot alerts" GroupMe group, with one incident
+# issue assigned to them. Code-level failures become tickets for beerdev (the SWE). It never posts
+# in the main chat. The app starts this the moment a message fails. See docs/runbook.md
+# (Incidents).
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       reason:
@@ -21,6 +30,7 @@ on:
 
 permissions: {}
 
+# One check at a time, so two runs never open the same incident.
 concurrency:
   group: ops
   cancel-in-progress: false
@@ -37,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write # redeploy through CI
+      actions: write # read CI runs; start a rollback
       contents: read
       issues: write
     steps:
@@ -54,6 +64,7 @@ jobs:
       - run: uv run --frozen python scripts/ops.py
         env:
           GH_TOKEN: ${{ github.token }}
-          OPS_TOKEN: ${{ secrets.OPS_TOKEN }} # Read-only: status and usage, nothing else
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }} # Status and usage reads, and waking the queue
+          OPS_ALERT_BOT_ID: ${{ secrets.OPS_ALERT_BOT_ID }} # Posts only to the owner's alerts group
           REASON: ${{ inputs.reason }}
           CI_RUN_ID: ${{ github.event.workflow_run.id }}

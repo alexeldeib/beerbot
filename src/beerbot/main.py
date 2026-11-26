@@ -266,8 +266,9 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
-async def verify_read_token(authorization: str | None = Header(None)) -> None:
-    """The status and usage endpoints also take the read-only OPS_TOKEN (ops.yml holds it)."""
+async def verify_ops_token(authorization: str | None = Header(None)) -> None:
+    """ops (ops.yml) holds OPS_TOKEN: it may read status and usage, and wake the queue, a harmless
+    nudge for a worker waiting after an error. Every other admin route needs ADMIN_TOKEN."""
     supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
     if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
         return
@@ -307,12 +308,12 @@ async def set_app_access(workspace_id: str, grant: AccessGrant):
     return await grant_access(workspace_id, grant)
 
 
-@app.get("/admin/messages/status", dependencies=[Depends(verify_read_token)])
+@app.get("/admin/messages/status", dependencies=[Depends(verify_ops_token)])
 async def message_status():
     return await queue_status()
 
 
-@app.get("/admin/workers/status", dependencies=[Depends(verify_read_token)])
+@app.get("/admin/workers/status", dependencies=[Depends(verify_ops_token)])
 async def worker_status(request: Request):
     """In-memory diagnostics do not wake Postgres."""
     runtime = getattr(request.app.state, "queue_runtime", None)
@@ -320,7 +321,7 @@ async def worker_status(request: Request):
     return status | {"model_usage_since_boot": usage.since_boot()}
 
 
-@app.get("/admin/usage", dependencies=[Depends(verify_read_token)])
+@app.get("/admin/usage", dependencies=[Depends(verify_ops_token)])
 async def model_usage():
     """Model tokens and list-price spend this month, by source, against the budget."""
     pool = await get_pool()
@@ -329,7 +330,7 @@ async def model_usage():
         return await usage.report(conn)
 
 
-@app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])
+@app.post("/admin/messages/wake", dependencies=[Depends(verify_ops_token)])
 async def wake_messages(request: Request):
     runtime = getattr(request.app.state, "queue_runtime", None)
     if runtime is None:

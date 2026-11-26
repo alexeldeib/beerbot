@@ -262,3 +262,25 @@ async def test_recap_completion_is_cached_without_repeated_database_checks(monke
         await _recap_scheduler()
     groups.assert_awaited_once()
     sent.assert_awaited_once()
+
+
+async def test_queue_ages_show_a_stuck_message_without_touching_the_database(pg, monkeypatch):
+    # ops pages on these ages from outside, so they live in memory and follow committed state.
+    await setup(pg)
+    monkeypatch.setattr(delivery, "UNPROCESSED", {})
+    monkeypatch.setattr(delivery, "UNDELIVERED", {})
+    runtime = delivery.QueueRuntime()
+    assert runtime.snapshot()["oldest_unprocessed_seconds"] is None
+    await delivery.accept_message(message())
+    monkeypatch.setattr(delivery.time, "time", lambda: 10_000.0)  # Pretend 3 minutes pass:
+    delivery.UNPROCESSED.update({key: 10_000.0 - 180 for key in delivery.UNPROCESSED})
+    assert runtime.snapshot()["oldest_unprocessed_seconds"] == 180
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", AsyncMock(return_value="Test reply"))
+    assert await delivery.execute_one(agent)
+    snapshot = runtime.snapshot()
+    assert snapshot["oldest_unprocessed_seconds"] is None  # Answered,
+    assert snapshot["oldest_undelivered_seconds"] == 0  # and its reply waits to be posted.
+    sender = MagicMock(deliver_message=AsyncMock(return_value=DeliveryResult("sent")))
+    assert await delivery.deliver_one(sender)
+    assert runtime.snapshot()["oldest_undelivered_seconds"] is None

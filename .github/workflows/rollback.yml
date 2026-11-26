@@ -1,0 +1,70 @@
+name: Roll back production
+
+# ops starts this when production breaks within an hour of a deploy, the one automatic mitigation.
+# You can also run it by hand. It redeploys the release before the current one, blue-green, and
+# verifies it. One step back only: run it again to go further.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only print what would be deployed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never alongside a CI deploy: one change to production at a time.
+concurrency:
+  group: beerbot-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      # The newest complete release with a different image than what runs now. Releases that only
+      # changed secrets share an image, so they're skipped.
+      - name: Find the release before the current one
+        id: target
+        run: |
+          releases="$(flyctl releases --app beerbot-groupme --image --json)"
+          current="$(jq -r '[.[] | select(.Status == "complete")][0].ImageRef' <<< "$releases")"
+          previous="$(jq -r --arg current "$current" \
+            '[.[] | select(.Status == "complete" and .ImageRef != $current)][0] | "\(.ImageRef) v\(.Version) \(.CreatedAt)"' \
+            <<< "$releases")"
+          echo "Running: $current"
+          echo "Rolling back to: $previous"
+          image="${previous%% *}"
+          if [[ "$image" != registry.fly.io/* ]]; then
+            echo "::error::No earlier release to roll back to"
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy it blue-green
+        if: ${{ !inputs.dry_run }}
+        env:
+          IMAGE: ${{ steps.target.outputs.image }}
+        run: flyctl deploy --app beerbot-groupme --image "$IMAGE" --strategy bluegreen --wait-timeout 10m
+
+      - name: Verify production
+        if: ${{ !inputs.dry_run }}
+        run: |
+          for check in health ready ready/db; do
+            curl --fail --silent --show-error --max-time 15 \
+              --retry 10 --retry-all-errors --retry-delay 3 \
+              "https://beerbot-groupme.fly.dev/$check" > /dev/null
+          done
+          curl --fail --silent --max-time 15 https://beerbot-groupme.fly.dev/version | jq -r '"Now serving \(.git_sha)"'
