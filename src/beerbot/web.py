@@ -27,7 +27,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
-from .activity import CAN_SIGN_IN, LIVE_ACCOUNT, LIVE_PERSON, PRODUCTION_WORKSPACE, Command
+from .activity import CAN_SIGN_IN, DISPLAY_NAME, LIVE_ACCOUNT, LIVE_PERSON, Command
+from .activity import PRODUCTION_WORKSPACE
 from . import app_groups
 
 router = APIRouter()
@@ -412,7 +413,8 @@ async def signed_in_person(request: Request) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            f"""SELECT p.id,p.display_name,e.email,a.id AS account_id FROM web_sessions s
+            f"""SELECT p.id,{DISPLAY_NAME} AS display_name,e.email,a.id AS account_id
+               FROM web_sessions s
                JOIN accounts a ON a.id=s.account_id JOIN account_emails e ON e.account_id=a.id
                JOIN people p ON p.id=a.person_id WHERE s.token_hash=$1 AND s.expires_at>now()
                AND {LIVE_ACCOUNT}""",

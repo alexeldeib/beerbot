@@ -11,7 +11,7 @@ import asyncpg
 from fastapi import HTTPException
 from pydantic import Field
 
-from .activity import LIVE_ACCOUNT, PRODUCTION_WORKSPACE, Command, receipted
+from .activity import DISPLAY_NAME, LIVE_ACCOUNT, PRODUCTION_WORKSPACE, Command, receipted
 from .config import settings
 from .database import get_pool
 
@@ -63,7 +63,7 @@ async def live_invitation(conn, invitation_id: UUID):
         workspace_id,
     )
     invitation = await conn.fetchrow(
-        f"""SELECT i.workspace_id,i.email,i.expires_at,i.accepted_at,p.display_name AS inviter
+        f"""SELECT i.workspace_id,i.email,i.expires_at,i.accepted_at,{DISPLAY_NAME} AS inviter
            FROM app_group_invitations i
            JOIN app_workspace_access m ON m.account_id=i.created_by_account_id AND m.workspace_id=i.workspace_id
            JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
@@ -151,9 +151,10 @@ async def group_details(person: dict, workspace_id: str):
     async with pool.acquire() as conn, conn.transaction():
         group = await native_workspace(conn, workspace_id, person["account_id"])
         members = await conn.fetch(
-            """SELECT m.account_id,m.role,p.display_name FROM app_workspace_access m
+            f"""SELECT m.account_id,m.role,{DISPLAY_NAME} AS display_name
+               FROM app_workspace_access m
                JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
-               WHERE m.workspace_id=$1 AND m.active ORDER BY m.role,p.display_name,m.account_id""",
+               WHERE m.workspace_id=$1 AND m.active ORDER BY m.role,display_name,m.account_id""",
             workspace_id,
         )
         invites = []

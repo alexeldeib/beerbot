@@ -28,6 +28,12 @@ CAN_SIGN_IN = (
     f"a.status IN ('active','pending') AND {LIVE_PERSON}"
     " AND (e.verified_at IS NOT NULL OR e.invite_expires_at>now())"
 )
+# A person's name for p: their newest GroupMe name, which every chat message refreshes;
+# people.display_name is a snapshot, so it only stands in for people without one.
+DISPLAY_NAME = (
+    "coalesce((SELECT u.name FROM users u WHERE u.person_id=p.id"
+    " ORDER BY u.updated_at DESC NULLS LAST,u.id DESC LIMIT 1),p.display_name)"
+)
 
 
 async def lock_account(conn, person: dict):

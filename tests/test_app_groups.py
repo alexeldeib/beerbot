@@ -128,6 +128,20 @@ async def test_unavailable_invitation_cannot_create_account(owner, pg, case):
         assert await conn.fetchval("SELECT count(*) FROM accounts") == 1
 
 
+async def test_group_views_use_the_newest_groupme_name(owner, pg):
+    invitation, _ = await invite(owner)
+    owner_client, workspace = owner
+    async with pg.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET name='Ace Renamed',updated_at=now() WHERE groupme_user_id='1'"
+        )
+    async with client() as friend:
+        preview = (await friend.get("/app/api/invitations/" + invitation)).json()
+        assert preview["inviter"] == "Ace Renamed"
+    members = (await owner_client.get("/app/api/groups/" + workspace)).json()["members"]
+    assert [m["display_name"] for m in members] == ["Ace Renamed"]
+
+
 async def test_wrong_verified_email_cannot_join(owner):
     invitation, _ = await invite(owner)
     owner_client, _ = owner

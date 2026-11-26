@@ -96,6 +96,22 @@ async def test_personal_scope_groups_week_boundaries_and_xss(browser, pg):
     assert (await browser.get("/app/api/me?person_id=other")).json()["totals"]["drinks"] == 9
 
 
+async def test_greeting_uses_the_newest_groupme_name(browser, pg):
+    await login(browser)
+    async with pg.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO users(groupme_user_id,name,person_id,updated_at)
+               VALUES('9','Ace Old','ace',now()-interval '1 day')"""
+        )
+        await conn.execute(
+            "UPDATE users SET name='Ace Renamed',updated_at=now() WHERE groupme_user_id='1'"
+        )
+    assert (await browser.get("/app/api/me")).json()["person"]["name"] == "Ace Renamed"
+    async with pg.acquire() as conn:
+        await conn.execute("UPDATE users SET person_id=NULL WHERE person_id='ace'")
+    assert (await browser.get("/app/api/me")).json()["person"]["name"] == "Ace Test"
+
+
 async def test_csrf_and_secure_cookie(browser):
     result = await browser.post(
         "/app/api/login",
