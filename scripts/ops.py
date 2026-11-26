@@ -12,6 +12,8 @@ Run every 5 minutes, after CI on main, and right away when the app reports a fai
   - Anything else gets the owner.
 - Each incident is one GitHub issue assigned to the owner, paged in the private "beerbot alerts"
   GroupMe group on open, when a rollback fails, and on resolve. An `ack` label stops its pages.
+- Each new ticket for beerdev starts a build (beerdev-build.yml), unless beerdev's fixes keep
+  failing to deploy: then the owner gets it.
 - It never posts in the main chat. Issues are public, so they carry exception types and this repo's
   stack frames, never message text. All state lives in issue bodies as markers.
 """
@@ -38,6 +40,9 @@ QUEUE_LIMIT = 300  # Seconds a message or reply may wait before it counts as stu
 # A class back this soon after closing reopens in the owner's inbox instead of starting another
 # build: a fix that didn't stick goes to a person rather than looping beerdev.
 REPEAT_WINDOW = timedelta(days=7)
+# Deploy failures filed in a day before the next one goes to the owner instead of beerdev: its
+# fixes are failing to deploy too, and another build would only loop.
+DEPLOY_BREAKER = 2
 DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Neon).
 INCIDENT_MARKER = "<!-- ops:incident -->"
 ROLLED_BACK = "<!-- ops:rolled-back -->"
@@ -153,6 +158,27 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
             f"/repos/{repo}/issues", json={"title": title, "labels": labels, "body": body}
         )
         issues.append(created.raise_for_status().json())
+        if "beerdev" in labels:  # Builds start only when asked: ask now, not next Monday.
+            start_build(github, repo)
+
+
+def start_build(github: httpx.Client, repo: str) -> None:
+    """beerdev builds its queue one issue at a time, incidents first (beerdev-build.yml)."""
+    path = f"/repos/{repo}/actions/workflows/beerdev-build.yml/dispatches"
+    response = github.post(path, json={"ref": "main"})
+    if not response.is_success:  # The ticket is filed; the next build to start picks it up.
+        print(f"::warning::Could not start a beerdev build (HTTP {response.status_code})")
+
+
+def deploy_labels(issues: list[dict], now: datetime) -> list[str]:
+    """A deploy failure is beerdev's to fix, unless its last fixes kept failing to deploy too."""
+    filed = [
+        issue
+        for issue in issues
+        if "<!-- ops:key=deploy:" in (issue.get("body") or "")
+        and now - datetime.fromisoformat(issue["created_at"]) < timedelta(days=1)
+    ]
+    return INCIDENT if len(filed) < DEPLOY_BREAKER else [*NEEDS_OWNER, "bug"]
 
 
 def check_spend(
@@ -477,7 +503,9 @@ def main() -> None:
             running = "?"
         rolled_back = running != "?" and not running.startswith(key[7:])
         text += f"\n\nProduction now runs {running[:7]}{' (rolled back)' if rolled_back else ''}."
-        report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, INCIDENT))
+        if (labels := deploy_labels(issues, datetime.now(UTC))) != INCIDENT:
+            text += "\n\nbeerdev's last fixes failed to deploy too, so this one waits for you."
+        report(github, repo, issues, key, (f"Deploy failed at {key[7:]}", text, labels))
         print(f"Reported failed CI run {run_id}")
 
     workers = worker_status(app, admin)

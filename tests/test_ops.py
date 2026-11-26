@@ -99,6 +99,25 @@ def test_a_failure_back_soon_after_closing_reopens_for_the_owner():
     assert "state" not in json.loads(calls[0][2])  # Open now: later batches just append.
 
 
+def test_new_beerdev_tickets_start_a_build_and_deploy_failures_trip_a_breaker():
+    fake = FakeGitHub()
+    github, issues = fake.client(), []
+    ops.report(github, "o/r", issues, "failed:KeyError", ("t", "x", ops.INCIDENT))
+    ops.report(github, "o/r", issues, "failed:KeyError", ("t", "y", ops.INCIDENT))  # Appends.
+    ops.report(github, "o/r", issues, "delivery", ("t", "z", ops.NEEDS_OWNER))
+    assert fake.dispatched == ["beerdev-build.yml"]  # Once, for the one new beerdev ticket.
+
+    now = datetime.now(UTC)
+
+    def filed(hours_ago):
+        at = (now - timedelta(hours=hours_ago)).isoformat()
+        return {"body": "<!-- ops:key=deploy:abc1234 -->\nx", "created_at": at}
+
+    assert ops.deploy_labels([filed(2), filed(30)], now) == ops.INCIDENT
+    # Two deploy failures today: beerdev's fixes aren't deploying, so the owner gets the third.
+    assert ops.deploy_labels([filed(2), filed(20)], now) == [*ops.NEEDS_OWNER, "bug"]
+
+
 def test_diagnose_reports_what_the_workers_last_saw():
     def workers(payload):
         respond = lambda _: httpx.Response(200, json=payload)  # noqa: E731

@@ -5,13 +5,13 @@ name: ops
 # from memory-only status, so checks never wake the database.
 #
 # It fixes only what's safe, using a fixed decision table with no model:
-# - roll back a deploy that broke production within the hour (rollback.yml)
 # - wait out a failing dependency
+# - roll back a deploy that broke production within the hour (rollback.yml), once
 #
 # Anything else pages the owner in the private "beerbot alerts" GroupMe group, with one incident
-# issue assigned to them. Code-level failures become tickets for beerdev (the SWE). It never posts
-# in the main chat. The app starts this the moment a message fails. See docs/runbook.md
-# (Incidents).
+# issue assigned to them. Code-level failures become tickets for beerdev (the SWE), and each new
+# one starts a build. It never posts in the main chat. The app starts this the moment a message
+# fails. See docs/runbook.md (Incidents).
 
 on:
   schedule:
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write # read CI runs; start a rollback
+      actions: write # read CI runs; start a rollback or a beerdev build
       contents: read
       issues: write
     steps:
