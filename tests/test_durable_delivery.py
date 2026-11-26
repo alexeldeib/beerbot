@@ -414,6 +414,40 @@ async def test_history_is_the_stored_chat_before_the_message(pg, monkeypatch):
     assert seen == {"current": [("Alice", "+1 beer"), ("beerius", "+1🍺 for Alice")]}
 
 
+async def test_history_is_the_last_ten_live_group_messages_oldest_first(pg, monkeypatch):
+    await setup(pg)
+    for n in range(2):  # Past retention: payload removed, id kept.
+        await delivery.accept_context(message(f"expired-{n}", text=f"expired {n}"), "beerius")
+    await pg.execute("UPDATE message_inbox SET created_at=NOW()-INTERVAL '4 days'")
+    await maintain_queue()
+    assert await pg.fetchval("SELECT COUNT(*) FROM message_inbox WHERE payload IS NULL") == 2
+    for n in range(12):  # Every third row is a stored bot post, alternating the two bots.
+        post = n % 3 == 0
+        bot = "beerdev" if n % 6 == 0 else "beerius"
+        msg = message(f"m{n}", text=f"live {n}")
+        if post:
+            msg = msg.model_copy(update={"sender_type": "bot", "name": bot})
+        await delivery.accept_context(msg, bot if post else "beerius")
+        if n == 5:  # Another group's chat interleaves with this one's.
+            await delivery.accept_context(message("other", "g2", "other group"), "beerius")
+    await accept_message(message("current", text="how many?"))
+    await delivery.accept_context(message("after", text="after"), "beerius")
+    seen = {}
+
+    async def process(msg, history):
+        seen[msg.id] = [(m.name, m.text) for m in history]
+        return None
+
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", process)
+    assert await execute_one(agent)
+    expected = [
+        ("beerdev" if n % 6 == 0 else "beerius" if n % 3 == 0 else "Alice", f"live {n}")
+        for n in range(2, 12)
+    ]
+    assert seen == {"current": expected}
+
+
 def google_turn(*calls):
     """One model turn calling these (name, arguments) tools."""
     from google.genai import types
