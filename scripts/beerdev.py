@@ -83,16 +83,18 @@ def digest(issues: list[dict], now: datetime) -> str:
 
 
 def filed_requests(github: httpx.Client, repo: str) -> list[dict]:
-    """Every beerdev issue, buildable or not, so nothing is filed twice."""
-    return [
-        issue
-        for label in ("beerdev", "beerdev-infra", "proposal")
+    """Every beerdev issue, buildable or not, so nothing is filed twice, and the owner's whole
+    inbox (held work loses `beerdev`). Each issue once, however many of these labels it has."""
+    found = {
+        issue["number"]: issue
+        for label in ("beerdev", "beerdev-infra", "proposal", "inbox")
         for issue in github.get(
             f"/repos/{repo}/issues", params={"labels": label, "state": "all", "per_page": 100}
         )
         .raise_for_status()
         .json()
-    ]
+    }
+    return list(found.values())
 
 
 def propose(github: httpx.Client, repo: str, issues: list[dict], plan: Path) -> bool:

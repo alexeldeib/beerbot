@@ -65,6 +65,22 @@ def test_digest_reports_the_week_and_skips_quiet_ones():
     assert beerdev.digest([issue("Old thing", days=30)], now) == ""
 
 
+def test_requests_list_each_issue_once_with_the_whole_inbox():
+    by_label = {
+        "beerdev": [{"number": 5, "title": "Approved proposal"}],
+        "beerdev-infra": [],
+        "proposal": [{"number": 5, "title": "Approved proposal"}],
+        # Held work loses `beerdev`; ops' own asks never had it. Both wait on a human.
+        "inbox": [{"number": 8, "title": "Held change"}, {"number": 9, "title": "Token expires"}],
+    }
+
+    def respond(request):
+        return httpx.Response(200, json=by_label[request.url.params["labels"]])
+
+    client = httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+    assert sorted(issue["number"] for issue in beerdev.filed_requests(client, "o/r")) == [5, 8, 9]
+
+
 def test_propose_caps_dedupes_and_routes_owner_work_to_the_inbox(tmp_path):
     plan = tmp_path / "plan.json"
     items = [
