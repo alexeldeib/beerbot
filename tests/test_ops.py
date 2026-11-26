@@ -465,7 +465,14 @@ def test_expiring_credentials_get_one_inbox_issue_each():
 
 def test_deploy_failure_names_the_step_the_log_and_the_pr():
     routes = {
-        "/repos/o/r/actions/runs/1": {"head_sha": "abc1234def", "html_url": "u"},
+        "/repos/o/r/actions/runs/1": {
+            "head_sha": "abc1234def",
+            "html_url": "u",
+            "conclusion": "failure",
+            "head_branch": "main",
+            "event": "push",
+            "head_repository": {"full_name": "o/r"},
+        },
         "/repos/o/r/actions/runs/1/jobs": {
             "jobs": [
                 {"id": 8, "name": "test", "conclusion": "success", "steps": []},
@@ -495,6 +502,14 @@ def test_deploy_failure_names_the_step_the_log_and_the_pr():
     assert "**Deploy production** failed at Verify production health" in text
     assert "Run curl /ready" in text and "curl: (28) timed out" in text and "\x1b" not in text
     assert "##[error]" in text and "Removing creds" not in text  # Cleanup noise is dropped.
+    # A fork's run (it can name its branch main) or a PR's never reaches beerdev, whoever asks.
+    for spoof in ({"head_repository": {"full_name": "fork/r"}}, {"event": "pull_request"}):
+        routes["/repos/o/r/actions/runs/1"] = routes["/repos/o/r/actions/runs/1"] | spoof
+        assert ops.deploy_failure(github, "o/r", "1") is None
+        routes["/repos/o/r/actions/runs/1"] |= {
+            "event": "push",
+            "head_repository": {"full_name": "o/r"},
+        }
 
 
 def test_failure_excerpt_keeps_the_step_header_when_output_is_long():
