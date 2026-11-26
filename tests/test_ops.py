@@ -7,6 +7,8 @@ import httpx
 
 from scripts import ops
 
+CLIENT = httpx.Client  # The real one, while run_main() patches it.
+
 
 def client(routes: dict, calls: list | None = None) -> httpx.Client:
     def respond(request):
@@ -189,6 +191,7 @@ def run(minutes_ago=1, status="completed", conclusion="success", event="push", r
         "conclusion": conclusion if status == "completed" else None,
         "event": event,
         "head_sha": "abcdef1234",
+        "head_branch": "main",
         "head_repository": {"full_name": repo},
         "html_url": f"https://g/o/r/actions/runs/{id}",
         "created_at": at,
@@ -200,9 +203,10 @@ def run(minutes_ago=1, status="completed", conclusion="success", event="push", r
 class FakeGitHub:
     """Enough of the GitHub API for ops: workflow runs (newest first), issues, dispatches."""
 
-    def __init__(self, ci=(), rollbacks=()):
+    def __init__(self, ci=(), rollbacks=(), issues=()):
         self.calls, self.created, self.dispatched = [], [], []
         self.runs = {"ci.yml": list(ci), "rollback.yml": list(rollbacks)}
+        self.issues = list(issues)
 
     def transport(self):
         def respond(request):
@@ -214,23 +218,32 @@ class FakeGitHub:
                 if status := request.url.params.get("status"):
                     found = [r for r in found if status in (r["status"], r["conclusion"])]
                 return httpx.Response(200, json={"workflow_runs": found})
+            if "/actions/runs/" in path:  # One run, or its jobs.
+                run_id = int(path.split("/actions/runs/")[1].split("/")[0])
+                if path.endswith("/jobs"):
+                    return httpx.Response(200, json={"jobs": []})
+                every = [run for found in self.runs.values() for run in found]
+                return httpx.Response(200, json=next(r for r in every if r["id"] == run_id))
+            if path.endswith("/pulls"):
+                return httpx.Response(200, json=[])
             if path.endswith("/dispatches"):
                 self.dispatched.append(path.split("/")[-2])
                 return httpx.Response(204)
             if method == "GET" and path.endswith("/issues"):
-                return httpx.Response(200, json=[])
+                return httpx.Response(200, json=self.issues)
             if method == "POST" and path.endswith("/issues"):
                 self.created.append(body)
                 number = 100 + len(self.created)
-                return httpx.Response(
-                    201,
-                    json={
-                        "number": number,
-                        "html_url": f"https://g/{number}",
-                        "body": body["body"],
-                        "state": "open",
-                    },
-                )
+                issue = {
+                    "number": number,
+                    "html_url": f"https://g/{number}",
+                    "body": body["body"],
+                    "state": "open",
+                    "labels": [{"name": name} for name in body.get("labels", [])],
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
+                self.issues.append(issue)
+                return httpx.Response(201, json=issue)
             return httpx.Response(200, json={})
 
         return httpx.MockTransport(respond)
@@ -241,16 +254,17 @@ class FakeGitHub:
 
 def run_main(monkeypatch, fake, app, **env):
     """ops.main() against a fake GitHub and an app that answers with `app(request)`."""
-    real = httpx.Client
     transports = {"https://api.github.com": fake.transport(), ops.APP: httpx.MockTransport(app)}
 
     def connect(base_url, **_):
-        return real(base_url=base_url, transport=transports[base_url])
+        return CLIENT(base_url=base_url, transport=transports[base_url])
 
     monkeypatch.setattr(ops.httpx, "Client", connect)
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
     pages = []
     monkeypatch.setattr(ops, "page", pages.append)
+    for key in ("CI_RUN_ID", "REASON", "DAILY"):
+        monkeypatch.delenv(key, raising=False)
     env = {"GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "t", "OPS_TOKEN": "o", **env}
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -271,6 +285,34 @@ def test_ops_only_reads_the_app(monkeypatch):
 
     pages = run_main(monkeypatch, FakeGitHub(), app)
     assert set(seen) == {"GET"} and len(pages) == 1  # Paged once, and changed nothing.
+
+
+def test_the_daily_sweep_files_failures_and_spend_without_probing(monkeypatch):
+    seen = []
+    spend = {"month": "2026-11", "usd": 1.0, "projected_usd": 2.0, "budget_usd": 5.0}
+    status = {"failed_executions": [{"id": 3, "error_code": "KeyError", "attempts": 3}]}
+
+    def app(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json=spend if request.url.path == "/admin/usage" else status)
+
+    fake = FakeGitHub()
+    pages = run_main(monkeypatch, fake, app, DAILY="true")
+    assert seen == ["/admin/messages/status", "/admin/usage"] and pages == []  # No probes.
+    assert [issue["title"] for issue in fake.created] == ["Messages failing with KeyError"]
+
+
+def test_each_check_reports_a_ci_failure_whose_own_check_was_dropped(monkeypatch):
+    def app(request):
+        return httpx.Response(200, json={"git_sha": "abcdef1234"})
+
+    fake = FakeGitHub(ci=[run(3, conclusion="failure", id=42), run(30, id=41)])
+    run_main(monkeypatch, fake, app)  # A */5 check: no workflow_run event reached ops.
+    assert [issue["title"] for issue in fake.created] == ["Deploy failed at abcdef1"]
+    assert "/actions/runs/42)" in fake.created[0]["body"]
+    run_main(monkeypatch, fake, app)
+    run_main(monkeypatch, fake, app, CI_RUN_ID="42")  # Its own check, arriving late.
+    assert len(fake.created) == 1  # Filed once.
 
 
 def incident_run(monkeypatch, fake, found, workers=None, issues=None):

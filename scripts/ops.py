@@ -2,7 +2,7 @@
 rest. beerdev, the SWE, fixes what ops tickets.
 
 Run every 5 minutes, after CI on main, and right away when the app reports a failure, by
-.github/workflows/ops.yml.
+.github/workflows/ops.yml, plus a daily sweep in a run of its own.
 - Symptoms are what users feel: /health or /ready failing, or a message or reply waiting over
   5 minutes. They come from public endpoints and memory-only status, so a check never wakes the
   database.
@@ -43,7 +43,6 @@ REPEAT_WINDOW = timedelta(days=7)
 # Deploy failures filed in a day before the next one goes to the owner instead of beerdev: its
 # fixes are failing to deploy too, and another build would only loop.
 DEPLOY_BREAKER = 2
-DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Neon).
 INCIDENT_MARKER = "<!-- ops:incident -->"
 ROLLED_BACK = "<!-- ops:rolled-back -->"
 # A worker error naming one of these means an outside dependency failed: there's nothing to undo.
@@ -477,6 +476,45 @@ def check_expiry(github: httpx.Client, repo: str, issues: list[dict], today: dat
     return due
 
 
+def file_failures(
+    github: httpx.Client, repo: str, issues: list[dict], app: httpx.Client, admin: dict
+) -> list[str]:
+    """Ticket failed messages and stuck replies no issue mentions yet. The queue status reads
+    Postgres, so this runs only when the app reports a failure, and once a day."""
+    status = app.get("/admin/messages/status", headers=admin).raise_for_status().json()
+    groups = new_failures(status, issues)
+    for key, rows in groups.items():
+        report(github, repo, issues, key, describe(key, rows))
+    return list(groups)
+
+
+def sweep(
+    github: httpx.Client, repo: str, issues: list[dict], app: httpx.Client, admin: dict
+) -> str:
+    """The daily sweep: expiring credentials, failure classes, and spend. No probes or incidents:
+    the */5 checks own those."""
+    expiring = check_expiry(github, repo, issues, datetime.now(UTC).date())
+    classes = file_failures(github, repo, issues, app, admin)
+    spend = check_spend(github, repo, issues, app, admin)
+    return (
+        f"Credentials expiring within 30 days: {expiring or 'none'}; new failures in "
+        f"{len(classes)} class(es): {', '.join(classes) or 'none'}; {spend}"
+    )
+
+
+def latest_ci_failure(github: httpx.Client, repo: str) -> str | None:
+    """The newest completed CI run of main, if it failed. ops.yml's concurrency can drop the
+    workflow_run check that reports it, so every check looks."""
+    found = runs(github, repo, "ci.yml", status="completed")
+    run = next((run for run in found if trusted(run, repo)), None)
+    return str(run["id"]) if run and run["conclusion"] == "failure" else None
+
+
+def reported(issues: list[dict], run_id: str) -> bool:
+    """An ops issue already links this CI run."""
+    return any(re.search(rf"/actions/runs/{run_id}\b", i.get("body") or "") for i in issues)
+
+
 def main() -> None:
     env = os.environ
     repo = env["GITHUB_REPOSITORY"]
@@ -495,7 +533,14 @@ def main() -> None:
         .json()
     )
 
-    if (run_id := env.get("CI_RUN_ID")) and (failure := deploy_failure(github, repo, run_id)):
+    if env.get("DAILY") == "true":  # A run of its own (ops.yml), so no */5 check can cancel it.
+        print(sweep(github, repo, issues, app, admin))
+        return
+
+    run_id = env.get("CI_RUN_ID") or latest_ci_failure(github, repo)
+    if run_id and reported(issues, run_id):  # Another check got to it first.
+        run_id = None
+    if run_id and (failure := deploy_failure(github, repo, run_id)):
         key, text = failure
         try:  # CI rolls back when verification fails; say what production runs now.
             running = app.get("/version").raise_for_status().json().get("git_sha") or "?"
@@ -511,26 +556,9 @@ def main() -> None:
     workers = worker_status(app, admin)
     found = symptoms(app, workers)
     print(handle_incident(github, repo, issues, found, workers))
-    if found:
-        return
-
-    # The queue status reads Postgres, so only look when the app reports a new failure (it
-    # dispatches with a reason), or on the first run of the daily hour.
-    now = datetime.now(UTC)
-    daily = now.hour == DAILY_HOUR and now.minute < 5
-    if daily:
-        expiring = check_expiry(github, repo, issues, now.date())
-        print(f"Credentials expiring within 30 days: {expiring or 'none'}")
-    if not (env.get("REASON") or daily):
-        return
-    status = app.get("/admin/messages/status", headers=admin).raise_for_status().json()
-    groups = new_failures(status, issues)
-    for key, rows in groups.items():
-        report(github, repo, issues, key, describe(key, rows))
-    spend = check_spend(github, repo, issues, app, admin) if daily else "spend checked daily"
-    print(
-        f"Healthy; new failures in {len(groups)} class(es): {', '.join(groups) or 'none'}; {spend}"
-    )
+    if not found and env.get("REASON"):  # The app dispatched with a failure class to file.
+        classes = file_failures(github, repo, issues, app, admin)
+        print(f"Healthy; new failures in {len(classes)} class(es): {', '.join(classes) or 'none'}")
 
 
 if __name__ == "__main__":

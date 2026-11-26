@@ -11,11 +11,13 @@ name: ops
 # Anything else pages the owner in the private "beerbot alerts" GroupMe group, with one incident
 # issue assigned to them. Code-level failures become tickets for beerdev (the SWE), and each new
 # one starts a build. It never posts in the main chat. The app starts this the moment a message
-# fails. See docs/runbook.md (Incidents).
+# fails. Once a day a separate run sweeps what needs the database (failure classes and spend) and
+# expiring credentials, with no probes. See docs/runbook.md (Incidents).
 
 on:
   schedule:
     - cron: "*/5 * * * *"
+    - cron: "23 12 * * *" # The daily sweep (DAILY below)
   workflow_dispatch:
     inputs:
       reason:
@@ -29,9 +31,11 @@ on:
 
 permissions: {}
 
-# One check at a time, so two runs never open the same incident.
+# One check at a time, so two runs never open the same incident. A newer pending run replaces an
+# older pending one, so the daily sweep has a group of its own, and each check also catches a CI
+# failure whose own check was replaced (scripts/ops.py).
 concurrency:
-  group: ops
+  group: ${{ github.event.schedule == '23 12 * * *' && 'ops-daily' || 'ops' }}
   cancel-in-progress: false
 
 jobs:
@@ -67,3 +71,4 @@ jobs:
           OPS_ALERT_BOT_ID: ${{ secrets.OPS_ALERT_BOT_ID }} # Posts only to the owner's alerts group
           REASON: ${{ inputs.reason }}
           CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          DAILY: ${{ github.event.schedule == '23 12 * * *' }}
