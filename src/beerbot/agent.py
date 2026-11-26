@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 from .config import settings
 from .database import execution_scope
+from .delivery import reply_target
 from .llm import model_profile
 from .model_runtime import Media, GoogleSession, CompatibleSession, ModelProtocolError, run_tools
 from .models import GroupMeAttachment, GroupMeMessage
@@ -85,7 +86,7 @@ When someone corrects a previous log ("that was a wine not a cocktail", "actuall
 1. Remove the wrong entry: call remove_drinks with the WRONG type/count.
 2. Log the correct entry: call log_drinks with the RIGHT type/count.
 For simple undos ("undo that", "take that back"): call undo_last_drink.
-CRITICAL: If the context shows "Replying to [Name] (id: X)", the correction targets user X — use their ID as target_user_id. Do NOT correct the sender unless they are correcting their own message.
+CRITICAL: If the context shows "Replying to [Name] (id: X)" or "Replying to [beerius]'s answer to [Name] (id: X)", the correction targets user X — use their ID as target_user_id. Do NOT correct the sender unless they are correcting their own message.
 Otherwise, corrections apply to the sender unless they mention someone else.
 
 === RESPONSE FORMAT ===
@@ -281,6 +282,7 @@ class BeerAgent:
         message: GroupMeMessage,
         history: list[GroupMeMessage],
         replied: GroupMeMessage | None,
+        answered: GroupMeMessage | None = None,
     ) -> str:
         """Build context section for system prompt."""
         from datetime import datetime
@@ -304,8 +306,12 @@ class BeerAgent:
             lines.append(f"Mentioned: [{mentions_str}]")
 
         if replied:
-            id_hint = "" if replied.sender_type == "bot" else f" (id: {replied.user_id})"
-            lines.append(f"Replying to [{replied.name}]{id_hint}: {_shown(replied)[:200]}")
+            who = f"[{replied.name}]"
+            if replied.sender_type != "bot":
+                who += f" (id: {replied.user_id})"
+            elif answered:
+                who += f"'s answer to [{answered.name}] (id: {answered.user_id})"
+            lines.append(f"Replying to {who}: {_shown(replied)[:200]}")
 
         visible = [msg for msg in history if msg.text]
         if visible:
@@ -341,7 +347,8 @@ class BeerAgent:
             return None
 
         mentioned = extract_mentioned_users(message.text, message.attachments)
-        replied = next((msg for msg in history if msg.id == message.reply_id), None)
+        replied, answered = await reply_target(message)
+        target = answered or replied  # A reply to Beerius's post is about who it answered.
         ctx = ToolContext(
             group_id=message.group_id,
             message_id=message.id,
@@ -349,15 +356,17 @@ class BeerAgent:
             sender_name=message.name,
             sender_avatar_url=message.avatar_url,
             mentioned_users=mentioned,
-            replied_to_user=(replied.user_id, replied.name)
-            if replied and replied.sender_type != "bot"
+            replied_to_user=(target.user_id, target.name)
+            if target and target.sender_type != "bot"
             else None,
             is_owner=message.user_id == settings.owner_user_id,
         )
         tools = create_tools(ctx)
 
         # Build system prompt with context
-        system_prompt = SYSTEM_PROMPT + self._build_context_lines(message, history, replied)
+        system_prompt = SYSTEM_PROMPT + self._build_context_lines(
+            message, history, replied, answered
+        )
 
         # Build multimodal contents
         contents = await self._build_contents(message)

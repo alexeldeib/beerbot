@@ -216,6 +216,12 @@ class TestReplyContext:
         context = BeerAgent()._build_context_lines(_make_message(text="undo that"), [], post)
         assert "Replying to [beerius]: Logged 1 beer!" in context
 
+    def test_reply_context_names_who_beerius_answered(self):
+        jerry = _make_message(id="msg-040", text="+1 cocktail", name="Jerry", user_id="jerry")
+        post = _bot_post(id="msg-041", text="+1🍸 for Jerry")
+        context = BeerAgent()._build_context_lines(_make_message(), [], post, jerry)
+        assert "Replying to [beerius]'s answer to [Jerry] (id: jerry): +1🍸 for Jerry" in context
+
     def test_reply_context_names_media_without_text(self):
         photo = _make_message(text=None, attachments=[GroupMeAttachment(type="image")])
         video = _make_message(text=None, attachments=[GroupMeAttachment(type="video")])
@@ -238,11 +244,15 @@ class TestReplyContext:
 
 
 class TestRepliedToUser:
-    """Who a reply targets: the replied-to sender, never a bot."""
+    """Who a reply targets: the replied-to sender, or whoever Beerius's post answered; never a
+    bot. The inbox lookup itself is tested against Postgres in test_durable_delivery."""
 
-    async def replied_to(self, monkeypatch, target, history):
+    async def replied_to(self, monkeypatch, replied, answered=None):
         monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
         monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(
+            agent_module, "reply_target", AsyncMock(return_value=(replied, answered))
+        )
         captured = {}
 
         def spy(ctx):
@@ -253,23 +263,27 @@ class TestRepliedToUser:
         agent.client = MagicMock()
         agent.client.aio.models.generate_content = AsyncMock(return_value=empty_response())
         monkeypatch.setattr(agent_module, "create_tools", spy)
-        reply = GroupMeAttachment(type="reply", reply_id=target)
-        msg = _make_message(id="msg-099", text="that was a wine", name="Bob", attachments=[reply])
-        await agent.process_message(msg, history)
+        msg = _make_message(id="msg-099", text="that was a wine", name="Bob", user_id="user-bob")
+        await agent.process_message(msg, [])
         return captured["ctx"].replied_to_user
 
     async def test_reply_to_a_member_targets_them(self, monkeypatch):
         alice = _make_message(id="msg-050", text="+1 cocktail", user_id="user-042")
-        assert await self.replied_to(monkeypatch, "msg-050", [alice]) == ("user-042", "Alice")
+        assert await self.replied_to(monkeypatch, alice) == ("user-042", "Alice")
 
     async def test_reply_to_a_photo_targets_its_sender(self, monkeypatch):
         photo = _make_message(id="msg-070", text=None, name="Bryan", user_id="user-bryan")
-        assert await self.replied_to(monkeypatch, "msg-070", [photo]) == ("user-bryan", "Bryan")
+        assert await self.replied_to(monkeypatch, photo) == ("user-bryan", "Bryan")
+
+    async def test_reply_to_beerius_targets_who_it_answered(self, monkeypatch):
+        jerry = _make_message(id="msg-040", text="+1 cocktail", name="Jerry", user_id="jerry")
+        post = _bot_post(id="msg-041", text="+1🍸 for Jerry")
+        assert await self.replied_to(monkeypatch, post, jerry) == ("jerry", "Jerry")
 
     async def test_reply_to_a_bot_or_an_unknown_message_targets_nobody(self, monkeypatch):
         post = _bot_post(id="msg-060", text="+1🍺 for Bob")
-        assert await self.replied_to(monkeypatch, "msg-060", [post]) is None
-        assert await self.replied_to(monkeypatch, "msg-999", [post]) is None
+        assert await self.replied_to(monkeypatch, post) is None
+        assert await self.replied_to(monkeypatch, None) is None
 
 
 def media_server(monkeypatch, handler):

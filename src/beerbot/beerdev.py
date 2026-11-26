@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import usage
+from . import delivery, usage
 from .config import settings
 from .database import get_pool
 from .dispatch import dispatch
@@ -117,16 +117,8 @@ async def addressed(message: GroupMeMessage) -> bool:
 
 async def replied_text(message: GroupMeMessage) -> str:
     """Text of the message this one replies to, while the inbox still holds it (three days)."""
-    if not (reply_id := _reply_id(message)):
-        return ""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        text = await conn.fetchval(
-            "SELECT payload->>'text' FROM message_inbox WHERE group_id = $1 AND message_id = $2",
-            message.group_id,
-            reply_id,
-        )
-    return text or ""
+    replied, _ = await delivery.reply_target(message)
+    return (replied and replied.text) or ""
 
 
 def _words(text: str) -> set[str]:
@@ -240,9 +232,7 @@ def create_tools(ctx: Context) -> list:
         """The bot's live health: recent failed messages (error type and code location, never
         message text), the message queue, failures since the last restart, model spend this month
         against the budget, and the running version."""
-        from .delivery import TERMINAL_FAILURES, queue_status  # delivery routes messages here
-
-        status = await queue_status()
+        status = await delivery.queue_status()
         pool = await get_pool()
         async with pool.acquire() as conn:
             spend = await usage.report(conn)
@@ -254,7 +244,7 @@ def create_tools(ctx: Context) -> list:
                 "oldest_pending_seconds": status["oldest_pending_seconds"],
                 "recent_failures": status["failed_executions"][:10],
                 "deliveries_needing_attention": status["deliveries_needing_attention"][:10],
-                "failures_since_restart": dict(TERMINAL_FAILURES),
+                "failures_since_restart": dict(delivery.TERMINAL_FAILURES),
                 "spend": spend,
             }
         )

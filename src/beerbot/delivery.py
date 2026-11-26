@@ -176,6 +176,33 @@ async def accept_context(message: GroupMeMessage, agent: str) -> None:
         )
 
 
+async def reply_target(
+    message: GroupMeMessage,
+) -> tuple[GroupMeMessage | None, GroupMeMessage | None]:
+    """The message this one replies to, while the inbox still holds it (three days), and, when
+    that is one of Beerius's posts, the message the post answered (its outbox row has the post's
+    text): a correction made by replying to "+1🍸 for Jerry" is about Jerry's drink."""
+    if not message.reply_id:
+        return None, None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT t.payload, (SELECT a.payload FROM message_outbox o
+                    JOIN message_inbox a ON a.id=o.inbox_id
+                    WHERE t.agent='beerius' AND t.payload->>'sender_type'='bot'
+                      AND o.group_id=t.group_id AND o.body=t.payload->>'text'
+                    ORDER BY o.id DESC LIMIT 1) AS answered
+               FROM message_inbox t
+               WHERE t.group_id=$1 AND t.message_id=$2 AND t.payload IS NOT NULL""",
+            message.group_id,
+            message.reply_id,
+        )
+    if row is None:
+        return None, None
+    answered = row["answered"] and GroupMeMessage.model_validate_json(row["answered"])
+    return GroupMeMessage.model_validate_json(row["payload"]), answered
+
+
 async def execute_one(agent) -> bool:
     """Claim a group's oldest pending message, then commit all its DB effects together.
 

@@ -12,7 +12,7 @@ import pytest
 
 from src.beerbot import beerdev, database
 from src.beerbot.agent import BeerAgent
-from src.beerbot.delivery import accept_message, execute_one
+from src.beerbot.delivery import accept_context, accept_message, execute_one
 from src.beerbot.models import GroupMeMessage
 
 pytestmark = pytest.mark.skipif(
@@ -47,6 +47,23 @@ async def chat(pg):
         assert row["state"] == "completed"
         return row["reply"]
 
+    async def echo(text: str) -> str:
+        """GroupMe posting Beerius's reply back to the callback. Returns the post's id."""
+        number = await pg.fetchval("SELECT COUNT(*) FROM message_inbox")
+        post = GroupMeMessage(
+            id=f"live-{number}",
+            group_id="g1",
+            user_id="beerius-bot",
+            sender_id="beerius-bot",
+            sender_type="bot",
+            name="beerius",
+            text=text,
+            created_at=0,
+        )
+        await accept_context(post, "beerius")
+        return post.id
+
+    send.echo = echo
     return send
 
 
@@ -150,6 +167,16 @@ async def test_beerdev_files_requests_and_only_the_owner_steers(chat, pg, monkey
     assert writes == []  # Not the owner: refused in code.
     await chat("beerdev veto the gym tracker", sender="boss")
     assert ("PATCH", "/repos/alexeldeib/beerbot/issues/31") in writes
+
+
+async def test_a_correction_replying_to_beerius_fixes_the_drinker(chat, pg):
+    # Replying to Beerius's confirmation used to correct the sender instead of the drinker.
+    post = await chat.echo(await chat("+1 cocktail", sender="jerry"))
+    thread = {"type": "reply", "reply_id": post, "base_reply_id": post}
+    await chat("that was a wine not a cocktail", sender="bob", attachments=[thread])
+    drinks = await pg.fetch("""SELECT u.groupme_user_id, b.drink_type, SUM(b.quantity)
+        FROM beers b JOIN users u ON u.id = b.user_id GROUP BY 1, 2 HAVING SUM(b.quantity) > 0""")
+    assert {tuple(row) for row in drinks} == {("jerry", "wine", 1)}
 
 
 async def test_beerius_points_capability_asks_to_beerdev(chat, pg):

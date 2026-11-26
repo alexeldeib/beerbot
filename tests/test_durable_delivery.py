@@ -11,7 +11,7 @@ from src.beerbot.agent import BeerAgent
 from src.beerbot.delivery import accept_message, execute_one, deliver_one, maintain_queue
 from src.beerbot.delivery import queue_status, retry_delivery
 from src.beerbot.groupme_client import DeliveryResult
-from src.beerbot.models import GroupMeMessage
+from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 from src.beerbot.repositories import debt_repo
 from src.beerbot.tools import ToolContext, create_tools
 
@@ -412,6 +412,85 @@ async def test_history_is_the_stored_chat_before_the_message(pg, monkeypatch):
     monkeypatch.setattr(replacement, "process_message", process)
     assert await execute_one(replacement)
     assert seen == {"current": [("Alice", "+1 beer"), ("beerius", "+1🍺 for Alice")]}
+
+
+def google_turn(*calls):
+    """One model turn calling these (name, arguments) tools."""
+    from google.genai import types
+
+    parts = [types.Part(function_call=types.FunctionCall(name=n, args=a)) for n, a in calls]
+    content = types.Content(role="model", parts=parts)
+    return types.GenerateContentResponse(
+        candidates=[types.Candidate(finish_reason="STOP", content=content)]
+    )
+
+
+def person(id: str, user: str, text: str, reply_to: str | None = None) -> GroupMeMessage:
+    thread = [GroupMeAttachment(type="reply", reply_id=reply_to)] if reply_to else []
+    return message(id, text=text).model_copy(
+        update={"user_id": user, "sender_id": user, "name": user.title(), "attachments": thread}
+    )
+
+
+async def test_reply_targets_resolve_by_id_and_through_beerius_posts(pg, monkeypatch):
+    await setup(pg)
+    first = BeerAgent()
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍸 for Jerry"))
+    await accept_message(person("jerry-1", "jerry", "+1 cocktail"))
+    assert await execute_one(first)
+    echo = message("post-1", text="+1🍸 for Jerry").model_copy(
+        update={"sender_type": "bot", "name": "beerius", "user_id": "bot"}
+    )
+    await delivery.accept_context(echo, "beerius")
+    await pg.execute("""INSERT INTO message_inbox(group_id,message_id,payload,state)
+        SELECT 'g1','filler-'||i,'{}','completed' FROM generate_series(1,12) i""")
+    replied, answered = await delivery.reply_target(person("b1", "bob", "wine", "post-1"))
+    assert (replied.text, answered.id) == ("+1🍸 for Jerry", "jerry-1")
+    replied, answered = await delivery.reply_target(person("b2", "bob", "lol", "jerry-1"))
+    assert (replied.name, answered) == ("Jerry", None)  # Older than the history window, too.
+    assert await delivery.reply_target(person("b3", "bob", "hm", "gone")) == (None, None)
+    assert await delivery.reply_target(person("b4", "bob", "hi")) == (None, None)
+
+
+async def test_correcting_by_replying_to_beerius_fixes_the_drinker(pg, monkeypatch):
+    # Bob replies to "+1🍸 for Jerry" with "that was a wine": the correction is Jerry's.
+    from google import genai
+
+    await setup(pg)
+    first = BeerAgent()
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍸 for Jerry"))
+    await accept_message(person("jerry-1", "jerry", "+1 cocktail"))
+    assert await execute_one(first)
+    jerry = await pg.fetchval(
+        "INSERT INTO users(groupme_user_id,name) VALUES('jerry','Jerry') RETURNING id"
+    )
+    await pg.execute(
+        """INSERT INTO beers(user_id,group_id,quantity,drink_type,message_id)
+           VALUES($1,'g1',1,'cocktail','jerry-1')""",
+        jerry,
+    )
+    echo = message("post-1", text="+1🍸 for Jerry").model_copy(
+        update={"sender_type": "bot", "name": "beerius", "user_id": "bot"}
+    )
+    await delivery.accept_context(echo, "beerius")
+    client = genai.Client(api_key="synthetic")
+    remove = {"count": 1, "drink_type": "cocktail", "target_user_id": "jerry"}
+    log = {"count": 1, "drink_type": "wine", "target_user_ids": ["jerry"]}
+    client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            google_turn(("remove_drinks", remove), ("log_drinks", log)),
+            google_turn(("reply", {"message": "Fixed: a wine for Jerry."})),
+        ]
+    )
+    agent = BeerAgent()
+    agent.client = client
+    await accept_message(person("bob-1", "bob", "that was a wine not a cocktail", "post-1"))
+    assert await execute_one(agent)
+    drinks = await pg.fetch("""SELECT u.groupme_user_id, b.drink_type, b.quantity
+        FROM beers b JOIN users u ON u.id=b.user_id""")
+    assert [tuple(row) for row in drinks] == [("jerry", "wine", 1)]
+    system = client.aio.models.generate_content.call_args_list[0].kwargs["config"]
+    assert "Replying to [beerius]'s answer to [Jerry] (id: jerry)" in system.system_instruction
 
 
 def test_audited_tools_preserve_google_function_schemas():
