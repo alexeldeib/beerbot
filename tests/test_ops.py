@@ -306,6 +306,25 @@ def test_an_open_incident_pages_once_and_resolves_with_a_follow_up(monkeypatch):
     assert follow_up["labels"] == ops.INCIDENT  # The SWE (beerdev) takes it from here.
 
 
+def test_a_resolved_incident_in_this_repos_code_gets_a_root_cause_ticket(monkeypatch):
+    opened = (datetime.now(UTC) - timedelta(minutes=9)).isoformat()
+    for diagnosis, tickets in [
+        ("- execution worker, last error: `KeyError at delivery.py:126 execute_one`", 1),
+        ("Workers report no errors.", 0),
+    ]:
+        incident = {
+            "number": 7,
+            "state": "open",
+            "title": "Incident: /ready is failing",
+            "html_url": "https://g/7",
+            "created_at": opened,
+            "body": f"{ops.INCIDENT_MARKER}\n{diagnosis}",
+        }
+        fake = FakeGitHub()
+        incident_run(monkeypatch, fake, [], issues=[incident])
+        assert len(fake.created) == tickets, diagnosis
+
+
 def test_ops_waits_while_production_is_changing(monkeypatch):
     fake = FakeGitHub(ci=[run(1, status="in_progress"), run(3)])
     line, pages = incident_run(monkeypatch, fake, ["/health is failing"])

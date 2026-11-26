@@ -404,7 +404,8 @@ def handle_incident(
             f"✅ Resolved after {minutes} min{' (rolled back)' if rolled_back else ''}. "
             f"{incident['html_url']}"
         )
-    if rolled_back or "src/beerbot" in (incident.get("body") or ""):  # Code: the SWE's turn.
+    # Code was involved (a rollback, or this repo's frames, `delivery.py:126`): the SWE's turn.
+    if rolled_back or re.search(r"\.py:\d+", incident.get("body") or ""):
         text = (
             f"Follow-up to {incident['html_url']} (resolved after {minutes} min"
             f"{', by rolling back' if rolled_back else ''}). beerdev: find the root cause from the "
