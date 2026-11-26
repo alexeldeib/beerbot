@@ -136,9 +136,9 @@ async def test_inferred_membership_does_not_authorize_writes_and_test_groups_den
 ):
     await enable(monkeypatch)
     account_id = await mirrored_group(pg, grant=False)
-    async with pg.acquire() as conn:
+    async with pg.acquire() as conn:  # GroupMe history in the group is not an app grant
         await conn.execute(
-            "INSERT INTO workspace_memberships(id,workspace_id,person_id,status,display_name) VALUES('old','w1','ace','active','Ace')"
+            "INSERT INTO beers(user_id,group_id) SELECT id,'g1' FROM users WHERE person_id='ace'"
         )
     await login(browser)
     payload = request(workspace_id="w1")

@@ -4,7 +4,6 @@ Membership always requires a verified matching email, a live invitation, and a
 currently authorized inviter. Nothing here changes legacy GroupMe membership.
 """
 
-import hashlib
 import json
 from uuid import UUID, uuid4
 
@@ -12,9 +11,13 @@ import asyncpg
 from fastapi import HTTPException
 from pydantic import Field
 
-from .activity import Command
+from .activity import DISPLAY_NAME, LIVE_ACCOUNT, PRODUCTION_WORKSPACE, Command, receipted
 from .config import settings
 from .database import get_pool
+
+# App groups are native production workspaces that no GroupMe group maps to.
+NATIVE_WORKSPACE = f"""w.settings->>'activity_mode'='native' AND {PRODUCTION_WORKSPACE}
+    AND NOT EXISTS(SELECT 1 FROM groups g WHERE g.workspace_id=w.id)"""
 
 
 class RenameGroup(Command):
@@ -36,10 +39,7 @@ def enabled():
 
 async def native_workspace(conn, workspace_id: str, account_id: str, owner=False):
     workspace = await conn.fetchrow(
-        """SELECT id,name FROM workspaces w WHERE w.id=$1
-           AND w.settings->>'activity_mode'='native'
-           AND coalesce(w.settings->>'environment','production')='production'
-           AND NOT EXISTS(SELECT 1 FROM groups g WHERE g.workspace_id=w.id) FOR UPDATE""",
+        f"SELECT w.id,w.name FROM workspaces w WHERE w.id=$1 AND {NATIVE_WORKSPACE} FOR UPDATE",
         workspace_id,
     )
     role = await conn.fetchval(
@@ -52,21 +52,6 @@ async def native_workspace(conn, workspace_id: str, account_id: str, owner=False
     return {**dict(workspace), "role": role}
 
 
-async def lock_account(conn, person):
-    row = await conn.fetchrow(
-        """SELECT a.id,a.settings,e.email FROM accounts a JOIN people p ON p.id=a.person_id
-           JOIN account_emails e ON e.account_id=a.id WHERE a.id=$1 AND a.person_id=$2
-           AND a.status='active' AND e.verified_at IS NOT NULL
-           AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-           FOR UPDATE OF a FOR SHARE OF p""",
-        person["account_id"],
-        person["id"],
-    )
-    if not row:
-        raise HTTPException(401, "Sign in again to continue")
-    return row
-
-
 async def live_invitation(conn, invitation_id: UUID):
     workspace_id = await conn.fetchval(
         "SELECT workspace_id FROM app_group_invitations WHERE id=$1", invitation_id
@@ -74,21 +59,17 @@ async def live_invitation(conn, invitation_id: UUID):
     # Workspace-first ordering matches owner mutations and serializes acceptance
     # with remove/leave/transfer/revoke. The ID is never sufficient to join.
     workspace = await conn.fetchrow(
-        """SELECT id,name FROM workspaces w WHERE id=$1
-           AND settings->>'activity_mode'='native'
-           AND coalesce(settings->>'environment','production')='production'
-           AND NOT EXISTS(SELECT 1 FROM groups g WHERE g.workspace_id=w.id) FOR UPDATE""",
+        f"SELECT w.id,w.name FROM workspaces w WHERE w.id=$1 AND {NATIVE_WORKSPACE} FOR UPDATE",
         workspace_id,
     )
     invitation = await conn.fetchrow(
-        """SELECT i.*,p.display_name AS inviter FROM app_group_invitations i
+        f"""SELECT i.workspace_id,i.email,i.expires_at,i.accepted_at,{DISPLAY_NAME} AS inviter
+           FROM app_group_invitations i
            JOIN app_workspace_access m ON m.account_id=i.created_by_account_id AND m.workspace_id=i.workspace_id
            JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
            JOIN account_emails e ON e.account_id=a.id
            WHERE i.id=$1 AND i.revoked_at IS NULL AND i.expires_at>now()
-           AND m.active AND m.role='owner' AND a.status='active' AND e.verified_at IS NOT NULL
-           AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-           FOR UPDATE OF i""",
+           AND m.active AND m.role='owner' AND {LIVE_ACCOUNT} FOR UPDATE OF i""",
         invitation_id,
     )
     if not workspace or not invitation:
@@ -153,10 +134,8 @@ async def list_app_groups(person: dict):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT w.id,w.name,m.role FROM app_workspace_access m JOIN workspaces w ON w.id=m.workspace_id
-               WHERE m.account_id=$1 AND m.active AND w.settings->>'activity_mode'='native'
-               AND coalesce(w.settings->>'environment','production')='production'
-               AND NOT EXISTS(SELECT 1 FROM groups g WHERE g.workspace_id=w.id) ORDER BY w.name,w.id""",
+            f"""SELECT w.id,w.name,m.role FROM app_workspace_access m JOIN workspaces w ON w.id=m.workspace_id
+               WHERE m.account_id=$1 AND m.active AND {NATIVE_WORKSPACE} ORDER BY w.name,w.id""",
             person["account_id"],
         )
         needs_name = await conn.fetchval(
@@ -172,9 +151,10 @@ async def group_details(person: dict, workspace_id: str):
     async with pool.acquire() as conn, conn.transaction():
         group = await native_workspace(conn, workspace_id, person["account_id"])
         members = await conn.fetch(
-            """SELECT m.account_id,m.role,p.display_name FROM app_workspace_access m
+            f"""SELECT m.account_id,m.role,{DISPLAY_NAME} AS display_name
+               FROM app_workspace_access m
                JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
-               WHERE m.workspace_id=$1 AND m.active ORDER BY m.role,p.display_name,m.account_id""",
+               WHERE m.workspace_id=$1 AND m.active ORDER BY m.role,display_name,m.account_id""",
             workspace_id,
         )
         invites = []
@@ -205,35 +185,10 @@ async def group_command(
     invitation_id: UUID | None = None,
 ):
     enabled()
-    payload = {
-        "action": "group_" + action,
-        "workspace_id": workspace_id,
-        "invitation_id": str(invitation_id),
-        **command.model_dump(mode="json"),
-    }
-    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    pool = await get_pool()
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SET LOCAL lock_timeout='3s'")
-        await conn.execute("SET LOCAL statement_timeout='10s'")
-        account = await lock_account(conn, person)
-        existing = await conn.fetchrow(
-            "SELECT fingerprint,result FROM app_commands WHERE account_id=$1 AND request_id=$2",
-            account["id"],
-            command.request_id,
-        )
-        if existing:
-            if existing["fingerprint"] != fingerprint:
-                raise HTTPException(409, "This request ID was used for another action")
-            return json.loads(existing["result"])
-        if await conn.fetchval(
-            "SELECT count(*)>=120 FROM app_commands WHERE account_id=$1 AND created_at>now()-interval '1 hour'",
-            account["id"],
-        ):
-            raise HTTPException(429, "Too many changes; please try again later")
+
+    async def apply(conn, account) -> dict:
         if action == "accept":
             invite = await live_invitation(conn, invitation_id)
-            workspace_id = invite["workspace_id"]
             if invite["email"] != account["email"]:
                 raise HTTPException(403, "Sign in using the email this invitation was made for")
             if invite["accepted_at"]:
@@ -258,14 +213,14 @@ async def group_command(
                    role=CASE WHEN app_workspace_access.active THEN app_workspace_access.role ELSE 'member' END,
                    active=true,granted_at=now()""",
                 account["id"],
-                workspace_id,
+                invite["workspace_id"],
             )
             await conn.execute(
                 "UPDATE app_group_invitations SET accepted_at=now(),accepted_by_account_id=$2 WHERE id=$1",
                 invitation_id,
                 account["id"],
             )
-            result = {"status": "joined", "workspace_id": workspace_id}
+            result = {"status": "joined", "workspace_id": invite["workspace_id"]}
         else:
             await native_workspace(conn, workspace_id, account["id"], owner=action != "leave")
             if action == "rename":
@@ -333,7 +288,8 @@ async def group_command(
                     if target == account["id"]:
                         raise HTTPException(409, "Choose another member")
                     if not await conn.fetchval(
-                        "SELECT 1 FROM accounts a JOIN account_emails e ON e.account_id=a.id JOIN people p ON p.id=a.person_id WHERE a.id=$1 AND a.status='active' AND e.verified_at IS NOT NULL AND p.canonical_person_id IS NULL AND p.status IN ('claimed','provisional')",
+                        f"""SELECT 1 FROM accounts a JOIN account_emails e ON e.account_id=a.id
+                           JOIN people p ON p.id=a.person_id WHERE a.id=$1 AND {LIVE_ACCOUNT}""",
                         target,
                     ):
                         raise HTTPException(409, "That member's account is unavailable")
@@ -369,18 +325,11 @@ async def group_command(
                 }
             else:
                 raise HTTPException(400, "Unknown group action")
-        await conn.execute(
-            "INSERT INTO app_group_events(workspace_id,account_id,action,details) VALUES($1,$2,$3,$4::jsonb)",
-            workspace_id,
-            account["id"],
-            action,
-            json.dumps(payload),
-        )
-        await conn.execute(
-            "INSERT INTO app_commands(account_id,request_id,fingerprint,result) VALUES($1,$2,$3,$4::jsonb)",
-            account["id"],
-            command.request_id,
-            fingerprint,
-            json.dumps(result),
-        )
         return result
+
+    scope = {
+        "action": "group_" + action,
+        "workspace_id": workspace_id,
+        "invitation_id": str(invitation_id),
+    }
+    return await receipted(person, command, scope, apply)

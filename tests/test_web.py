@@ -21,6 +21,7 @@ async def browser(pg, monkeypatch):
     monkeypatch.setattr(web.settings, "smtp_host", "smtp.example.test")
     monkeypatch.setattr(web.settings, "smtp_from", "beerbot@example.test")
     monkeypatch.setattr(web, "send_code", AsyncMock())
+    monkeypatch.setattr(web, "_sign_ins", {})
     async with pg.acquire() as conn:
         await conn.execute(
             "INSERT INTO people(id,display_name) VALUES('ace','Ace Test'),('other','Other')"
@@ -64,7 +65,6 @@ async def test_invite_proof_session_and_legacy_unchanged(browser, pg):
         assert await conn.fetchval("SELECT verified_at IS NOT NULL FROM account_emails")
         assert await conn.fetchval("SELECT count(*) FROM beers") == 0
         assert await conn.fetchval("SELECT status FROM people WHERE id='ace'") == "provisional"
-        assert await conn.fetchval("SELECT count(*) FROM workspace_memberships") == 0
     assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 400
     assert (await browser.post("/app/api/logout", json={})).status_code == 200
     browser.cookies.set(web.SESSION_COOKIE, session)
@@ -94,6 +94,22 @@ async def test_personal_scope_groups_week_boundaries_and_xss(browser, pg):
     assert len(scoped["activity"]) == 1
     assert (await browser.get("/app/api/me?group=unrelated")).status_code == 404
     assert (await browser.get("/app/api/me?person_id=other")).json()["totals"]["drinks"] == 9
+
+
+async def test_greeting_uses_the_newest_groupme_name(browser, pg):
+    await login(browser)
+    async with pg.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO users(groupme_user_id,name,person_id,updated_at)
+               VALUES('9','Ace Old','ace',now()-interval '1 day')"""
+        )
+        await conn.execute(
+            "UPDATE users SET name='Ace Renamed',updated_at=now() WHERE groupme_user_id='1'"
+        )
+    assert (await browser.get("/app/api/me")).json()["person"]["name"] == "Ace Renamed"
+    async with pg.acquire() as conn:
+        await conn.execute("UPDATE users SET person_id=NULL WHERE person_id='ace'")
+    assert (await browser.get("/app/api/me")).json()["person"]["name"] == "Ace Test"
 
 
 async def test_csrf_and_secure_cookie(browser):
@@ -137,15 +153,89 @@ async def test_unknown_email_rate_limit_and_delivery_failure(browser, pg):
     assert not web.send_code.called
     known = await browser.post("/app/api/login", json={"email": "ace@example.test"})
     assert unknown.json() == known.json()
-    await browser.post("/app/api/login", json={"email": "ace@example.test"})
-    assert web.send_code.call_count == 1
-    async with pg.acquire() as conn:
-        await conn.execute("UPDATE login_challenges SET created_at=now()-interval '2 minutes'")
+    again = await browser.post("/app/api/login", json={"email": "ace@example.test"})
+    assert again.status_code == 429 and web.send_code.call_count == 1
+    web._sign_ins.clear()  # a minute later
     web.send_code.side_effect = RuntimeError("secret SMTP details")
     result = await browser.post("/app/api/login", json={"email": "ace@example.test"})
     assert result.json() == unknown.json()
     code = web.send_code.call_args.args[1]
     assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 400
+
+
+def test_sign_in_limits_are_per_source_and_email():
+    web._sign_ins.clear()
+    member, stranger = "198.51.100.1", "203.0.113.9"
+    assert not web.sign_in_throttled(member, "ace@example.test", 0)
+    assert not web.sign_in_throttled(stranger, "ace@example.test", 1)  # never spends ours
+    assert web.sign_in_throttled(member, "ace@example.test", 59)  # one a minute
+    assert not web.sign_in_throttled(member, "ace@example.test", 61)
+    assert not web.sign_in_throttled(member, "ace@example.test", 122)
+    assert web.sign_in_throttled(member, "ace@example.test", 183)  # three per 15 minutes
+    assert not web.sign_in_throttled(member, "ace@example.test", 901)
+    for i in range(7):  # ten per source in the window (t=0 has left it), whichever emails
+        assert not web.sign_in_throttled(member, f"user{i}@example.test", 902)
+    assert web.sign_in_throttled(member, "another@example.test", 903)
+    assert not web.sign_in_throttled(stranger, "another@example.test", 903)
+    web._sign_ins.clear()
+
+
+async def test_throttled_sign_in_never_reaches_the_database(browser, monkeypatch):
+    for i in range(10):
+        response = await browser.post("/app/api/login", json={"email": f"u{i}@example.test"})
+        assert response.status_code == 200
+    real = web.get_pool
+    monkeypatch.setattr(web, "get_pool", AsyncMock(side_effect=AssertionError("database")))
+    flood = await browser.post("/app/api/login", json={"email": "u10@example.test"})
+    assert flood.status_code == 429
+    monkeypatch.setattr(web, "get_pool", real)
+    elsewhere = {"Fly-Client-IP": "198.51.100.7"}
+    response = await browser.post(
+        "/app/api/login", json={"email": "u10@example.test"}, headers=elsewhere
+    )
+    assert response.status_code == 200
+
+
+async def test_a_stranger_cannot_lock_a_member_out(browser):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=ORIGIN,
+        headers={"Origin": ORIGIN, "Fly-Client-IP": "203.0.113.9"},
+    ) as stranger:
+        for _ in range(5):
+            await stranger.post("/app/api/login", json={"email": "ace@example.test"})
+    assert web.send_code.call_count == 1
+    await login(browser)  # the member's own request still sends a code right away
+
+
+async def test_code_email_is_sent_after_the_response(browser):
+    events = []
+    web.send_code.side_effect = lambda email, code: events.append("email")
+    body = b'{"email":"ace@example.test"}'
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/app/api/login",
+        "raw_path": b"/app/api/login",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"origin", ORIGIN.encode()), (b"content-type", b"application/json")],
+        "client": ("198.51.100.1", 1234),
+        "server": ("beerbot-groupme.fly.dev", 443),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and not message.get("more_body"):
+            events.append("response")
+
+    await app(scope, receive, send)
+    assert events == ["response", "email"]
 
 
 @pytest.mark.parametrize("change", ["expired", "disabled", "merged"])
@@ -161,6 +251,32 @@ async def test_sessions_fail_closed(browser, pg, change):
     assert (await browser.get("/app/api/me")).status_code == 401
 
 
+async def test_admin_disable_ends_sessions_and_is_not_undone_by_invitation(
+    browser, pg, monkeypatch
+):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    headers = {"Authorization": "Bearer test-admin"}
+    await login(browser)
+    async with pg.acquire() as conn:
+        account_id = await conn.fetchval("SELECT id FROM accounts")
+    path = f"/admin/accounts/{account_id}/disable"
+    assert (await browser.post(path)).status_code == 401
+    result = await browser.post(path, headers=headers)
+    assert result.json() == {"status": "disabled", "account_id": account_id, "sessions_ended": 1}
+    assert (await browser.get("/app/api/me")).status_code == 401
+    missing = await browser.post("/admin/accounts/account:missing/disable", headers=headers)
+    assert missing.status_code == 404
+    reinvite = await browser.post(
+        "/admin/accounts/invite",
+        json={"person_id": "ace", "email": "ace@example.test"},
+        headers=headers,
+    )
+    assert reinvite.status_code == 409
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT status FROM accounts") == "disabled"
+        assert await conn.fetchval("SELECT count(*) FROM web_sessions") == 0
+
+
 async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
     monkeypatch.setattr(web.settings, "admin_token", "test-admin")
     assert (
@@ -168,6 +284,7 @@ async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
             "/admin/accounts/invite", json={"person_id": "other", "email": "other@example.test"}
         )
     ).status_code == 401
+    await login(browser)  # a verified email is a proven binding
     for payload in [
         {"person_id": "ace", "email": "different@example.test"},
         {"person_id": "other", "email": "ace@example.test"},
@@ -179,6 +296,70 @@ async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
     async with pg.acquire() as conn:
         assert await conn.fetchval("SELECT count(*) FROM accounts") == 1
         assert await conn.fetchval("SELECT email FROM account_emails") == "ace@example.test"
+
+
+async def test_admin_invites_a_groupme_user_with_their_history(browser, pg, monkeypatch):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    await login(browser)  # ace@example.test is now a proven binding
+
+    async def invite(**payload):
+        headers = {"Authorization": "Bearer test-admin"}
+        return await browser.post("/admin/accounts/invite", json=payload, headers=headers)
+
+    async with pg.acquire() as conn:
+        # First seen in GroupMe after migration 3 linked everyone, so no person yet.
+        uid = await conn.fetchval(
+            "INSERT INTO users(groupme_user_id,name) VALUES('3','Newcomer') RETURNING id"
+        )
+        await conn.execute("INSERT INTO beers(user_id,group_id,quantity) VALUES($1,'g1',4)", uid)
+    assert (await invite(email="new@example.test")).status_code == 422
+    both = await invite(groupme_user_id="3", person_id="ace", email="new@example.test")
+    assert both.status_code == 422
+    assert (await invite(groupme_user_id="404", email="new@example.test")).status_code == 404
+    assert (await invite(groupme_user_id="3", email="ace@example.test")).status_code == 409
+    # GroupMe user 1 is already linked to ace, who has an account: reuse, never relink.
+    assert (await invite(groupme_user_id="1", email="x@example.test")).status_code == 409
+    async with pg.acquire() as conn:  # failed invitations linked and created nothing
+        assert await conn.fetchval("SELECT person_id FROM users WHERE id=$1", uid) is None
+        assert await conn.fetchval("SELECT count(*) FROM people") == 2
+    result = await invite(groupme_user_id="3", email="new@example.test")
+    assert result.status_code == 200, result.text
+    assert result.json()["person_id"] == "person:groupme:3"
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT person_id FROM users WHERE id=$1", uid) == (
+            "person:groupme:3"
+        )
+    await browser.post("/app/api/login", json={"email": "new@example.test"})
+    code = web.send_code.call_args.args[1]
+    assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 200
+    me = (await browser.get("/app/api/me")).json()
+    assert me["person"]["name"] == "Newcomer" and me["totals"]["drinks"] == 4
+
+
+async def test_admin_renews_or_corrects_an_unproven_invitation(browser, pg, monkeypatch):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+
+    async def invite(**payload):
+        headers = {"Authorization": "Bearer test-admin"}
+        return await browser.post("/admin/accounts/invite", json=payload, headers=headers)
+
+    async with pg.acquire() as conn:
+        account_id = await conn.fetchval("SELECT id FROM accounts")
+        await conn.execute("UPDATE account_emails SET invite_expires_at=now()-interval '1 second'")
+    renewed = await invite(person_id="ace", email="ace@example.test")
+    assert renewed.status_code == 200 and renewed.json()["account_id"] == account_id
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT invite_expires_at>now() FROM account_emails")
+    corrected = await invite(person_id="ace", email="ace2@example.test")
+    assert corrected.json()["account_id"] == account_id
+    assert (await invite(person_id="other", email="other@example.test")).status_code == 200
+    # Two different pending invitations are never merged.
+    assert (await invite(person_id="other", email="ace2@example.test")).status_code == 409
+    await browser.post("/app/api/login", json={"email": "ace2@example.test"})
+    code = web.send_code.call_args.args[1]
+    assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 200
+    me = (await browser.get("/app/api/me")).json()["person"]
+    assert me == {"name": "Ace Test", "email": "ace2@example.test"}
 
 
 async def test_expired_invitation_cannot_claim(browser, pg):

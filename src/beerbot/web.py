@@ -12,34 +12,32 @@ import logging
 import secrets
 import smtplib
 import ssl
+import time
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .config import settings
+from .config import EASTERN, settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
-from .activity import Command
+from .activity import CAN_SIGN_IN, DISPLAY_NAME, LIVE_ACCOUNT, LIVE_PERSON, Command
+from .activity import PRODUCTION_WORKSPACE
 from . import app_groups
 
 router = APIRouter()
 STATIC = Path(__file__).with_name("static")
 SESSION_COOKIE = "beerbot_session"
 CHALLENGE_COOKIE = "beerbot_challenge"
-EASTERN = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
-# Workspaces are the tenant, not the gateway or the person's identity. Missing
-# classification preserves existing legacy visibility; explicitly non-production
-# workspaces never enter personal app history, even via a direct group filter.
-PRODUCTION_WORKSPACE = "coalesce(w.settings->>'environment','production')='production'"
+# Explicitly non-production workspaces never enter personal app history, even via
+# a direct group filter.
 PERSONAL_HISTORY_SCOPE = (
     "FROM personal_activity b WHERE b.person_id=$1 "
     "AND ($2::text IS NULL OR b.group_key=$2) AND b.environment='production'"
@@ -67,12 +65,17 @@ class EmailInput(BaseModel):
 
 class InviteInput(EmailInput):
     person_id: str | None = Field(None, min_length=1, max_length=200)
+    groupme_user_id: str | None = Field(None, min_length=1, max_length=200)
     name: str | None = Field(None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def one_identity(self):
-        if bool(self.person_id) == bool(self.name and self.name.strip()):
-            raise ValueError("Provide an existing person_id OR a name for a new native person")
+        chosen = (self.person_id, self.groupme_user_id, self.name and self.name.strip())
+        if sum(map(bool, chosen)) != 1:
+            raise ValueError(
+                "Provide one of: an existing person_id, the groupme_user_id whose history "
+                "they get, or a name for a new native person"
+            )
         return self
 
 
@@ -92,6 +95,36 @@ def check_origin(request: Request) -> None:
     # A configured origin, never a client-supplied Host/X-Forwarded-Host.
     if request.headers.get("origin") != settings.web_origin.rstrip("/"):
         raise HTTPException(403, "Untrusted request origin")
+
+
+def client_ip(request: Request) -> str:
+    # Fly's proxy sets Fly-Client-IP on everything it forwards; local runs fall back.
+    return request.headers.get("fly-client-ip") or (request.client.host if request.client else "")
+
+
+# Sign-in requests: ten per source, and one a minute and three per source and email,
+# per 15 minutes. The email limit is per source so a stranger who knows a member's
+# email cannot spend the member's own requests; the global cap in request_login
+# still bounds the codes all sources together can send to one inbox.
+# ponytail: in memory, for the one Fly machine. More machines multiply these limits
+# and a restart forgets them; move them to Postgres before running a second machine.
+SIGN_IN_WINDOW = 900
+_sign_ins: dict[str, list[float]] = {}
+
+
+def sign_in_throttled(ip: str, email: str, now: float) -> bool:
+    if len(_sign_ins) > 10_000:  # beyond this many live keys only the global cap applies
+        for key in [k for k, times in _sign_ins.items() if now - times[-1] >= SIGN_IN_WINDOW]:
+            del _sign_ins[key]
+        if len(_sign_ins) > 10_000:
+            _sign_ins.clear()
+    pair = ip + " " + digest(email)
+    source = [t for t in _sign_ins.get(ip, ()) if now - t < SIGN_IN_WINDOW]
+    sent = [t for t in _sign_ins.get(pair, ()) if now - t < SIGN_IN_WINDOW]
+    if len(source) >= 10 or len(sent) >= 3 or (sent and now - sent[-1] < 60):
+        return True
+    _sign_ins[ip], _sign_ins[pair] = source + [now], sent + [now]
+    return False
 
 
 def cookie(response: Response, name: str, value: str, max_age: int) -> None:
@@ -137,41 +170,118 @@ async def send_code(email: str, code: str) -> None:
 
 
 async def invite_account(data: InviteInput) -> dict:
-    """Admin approval is explicit. Never silently reassign an existing binding."""
+    """Admin approval is explicit. A proven binding (verified email) is never reassigned.
+
+    Until an email is verified the admin's latest choice wins, so neither an expired
+    or mistyped invitation nor an email squatted through a group invitation blocks it.
+    """
     pool = await get_pool()
     try:
         async with pool.acquire() as conn, conn.transaction():
-            person_id = data.person_id
-            if person_id is None:
+            person_id, user = data.person_id, None
+            if data.groupme_user_id:
+                # The admin chose this GroupMe user: users.person_id carries their history.
+                user = await conn.fetchrow(
+                    "SELECT person_id,name,avatar_url FROM users WHERE groupme_user_id=$1",
+                    data.groupme_user_id,
+                )
+                if not user:
+                    raise HTTPException(404, "GroupMe user not found")
+                # Keep an existing link; otherwise migration 3's person convention.
+                person_id = user["person_id"] or "person:groupme:" + data.groupme_user_id
+                await conn.execute(
+                    """INSERT INTO people(id,display_name,avatar_url) VALUES($1,$2,$3)
+                       ON CONFLICT(id) DO NOTHING""",
+                    person_id,
+                    user["name"],
+                    user["avatar_url"],
+                )
+            elif person_id is None:
                 person_id = "person:app:" + str(uuid4())
                 await conn.execute(
                     "INSERT INTO people(id,display_name) VALUES($1,$2)",
                     person_id,
                     data.name.strip(),
                 )
-            person = await conn.fetchrow("SELECT * FROM people WHERE id=$1 FOR UPDATE", person_id)
-            if (
-                not person
-                or person["canonical_person_id"]
-                or person["status"] not in ("claimed", "provisional")
-            ):
-                raise HTTPException(409, "Person is unavailable for invitation")
-            if await conn.fetchval("SELECT 1 FROM accounts WHERE person_id=$1", person_id):
+            # Lock accounts, then people, then users: the order app commands use.
+            binding = """SELECT a.id,a.status='pending' AND e.verified_at IS NULL AS unproven
+                FROM accounts a JOIN account_emails e ON e.account_id=a.id"""
+            held = await conn.fetchrow(binding + " WHERE e.email=$1 FOR UPDATE OF a", data.email)
+            own = await conn.fetchrow(binding + " WHERE a.person_id=$1 FOR UPDATE OF a", person_id)
+            if held and not held["unproven"]:
+                raise HTTPException(409, "Email already has an account; no binding was changed")
+            if own and not own["unproven"]:
                 raise HTTPException(409, "Person already has an account; no binding was changed")
-            account_id = "account:" + secrets.token_hex(16)
-            await conn.execute(
-                "INSERT INTO accounts(id,person_id,status) VALUES($1,$2,'pending')",
-                account_id,
+            if held and own and held["id"] != own["id"]:
+                raise HTTPException(409, "The email and the person each have a pending invitation")
+            person = await conn.fetchrow(
+                f"SELECT display_name,{LIVE_PERSON} AS live FROM people p WHERE id=$1 FOR UPDATE",
                 person_id,
             )
-            await conn.execute(
-                "INSERT INTO account_emails(account_id,email) VALUES($1,$2)",
-                account_id,
-                data.email,
-            )
-            return {"status": "invited", "account_id": account_id, "name": person["display_name"]}
+            if not person or not person["live"]:
+                raise HTTPException(409, "Person is unavailable for invitation")
+            if user and not user["person_id"]:
+                if not await conn.fetchval(
+                    """UPDATE users SET person_id=$2 WHERE groupme_user_id=$1
+                       AND person_id IS NULL RETURNING id""",
+                    data.groupme_user_id,
+                    person_id,
+                ):
+                    raise HTTPException(409, "That GroupMe user was just linked; try again")
+            if held or own:
+                account_id = (held or own)["id"]
+                await conn.execute(
+                    """UPDATE accounts SET person_id=$2,settings=settings-'needs_name',
+                       updated_at=now() WHERE id=$1""",
+                    account_id,
+                    person_id,
+                )
+                await conn.execute(
+                    """UPDATE account_emails SET email=$2,invited_at=now(),
+                       invite_expires_at=now()+interval '7 days' WHERE account_id=$1""",
+                    account_id,
+                    data.email,
+                )
+                # Codes sent under the old binding must not sign in under the new one.
+                await conn.execute(
+                    """UPDATE login_challenges SET consumed_at=now()
+                       WHERE account_id=$1 AND consumed_at IS NULL""",
+                    account_id,
+                )
+            else:
+                account_id = "account:" + secrets.token_hex(16)
+                await conn.execute(
+                    "INSERT INTO accounts(id,person_id,status) VALUES($1,$2,'pending')",
+                    account_id,
+                    person_id,
+                )
+                await conn.execute(
+                    "INSERT INTO account_emails(account_id,email) VALUES($1,$2)",
+                    account_id,
+                    data.email,
+                )
+            return {
+                "status": "invited",
+                "account_id": account_id,
+                "person_id": person_id,
+                "name": person["display_name"],
+            }
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "Email or person already has an account") from None
+
+
+async def disable_account(account_id: str) -> dict:
+    """Revoke now: the account fails every liveness check and its sessions end."""
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        # Accounts before sessions, as sign-in locks them; commands wait on this row.
+        if not await conn.fetchval(
+            "UPDATE accounts SET status='disabled',updated_at=now() WHERE id=$1 RETURNING id",
+            account_id,
+        ):
+            raise HTTPException(404, "Account not found")
+        ended = await conn.execute("DELETE FROM web_sessions WHERE account_id=$1", account_id)
+    return {"status": "disabled", "account_id": account_id, "sessions_ended": int(ended.split()[1])}
 
 
 @router.get("/app")
@@ -192,58 +302,59 @@ async def web_config():
 
 
 @router.post("/app/api/login", dependencies=[Depends(check_origin)])
-async def request_login(data: EmailInput, response: Response):
+async def request_login(
+    data: EmailInput, request: Request, response: Response, background: BackgroundTasks
+):
     if not email_configured():
         raise HTTPException(503, "Email sign-in is not available yet")
+    # Before any database access, so a flood neither wakes Neon nor takes the lock below.
+    if sign_in_throttled(client_ip(request), data.email, time.monotonic()):
+        raise HTTPException(429, "Too many sign-in requests. Wait a minute, then try again.")
     token, code = secrets.token_urlsafe(32), f"{secrets.randbelow(100_000_000):08d}"
     pool = await get_pool()
     send = False
     async with pool.acquire() as conn, conn.transaction():
-        # Serialize rate-limit checks across machines. This is separate from the bot queue.
+        # Serialize the global cap across machines. This is separate from the bot queue.
         await conn.execute("SELECT pg_advisory_xact_lock(825437119)")
         await conn.execute("DELETE FROM login_challenges WHERE created_at < now()-interval '1 day'")
         await conn.execute("DELETE FROM web_sessions WHERE expires_at < now()")
         account_id = await conn.fetchval(
-            """SELECT a.id FROM account_emails e JOIN accounts a ON a.id=e.account_id
-               JOIN people p ON p.id=a.person_id
-               WHERE e.email=$1 AND a.status IN ('active','pending')
-               AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-               AND (e.verified_at IS NOT NULL OR e.invite_expires_at>now())""",
+            f"""SELECT a.id FROM account_emails e JOIN accounts a ON a.id=e.account_id
+               JOIN people p ON p.id=a.person_id WHERE e.email=$1 AND {CAN_SIGN_IN}""",
             data.email,
         )
         recent = await conn.fetchval(
             "SELECT count(*) FROM login_challenges WHERE created_at>now()-interval '15 minutes'"
         )
         if account_id and recent < 100:
-            limited = await conn.fetchval(
-                """SELECT count(*)>=3 OR coalesce(max(created_at)>now()-interval '1 minute',false)
-                   FROM login_challenges WHERE account_id=$1
-                   AND created_at>now()-interval '15 minutes'""",
+            await conn.execute(
+                """INSERT INTO login_challenges(token_hash,account_id,code_hash)
+                   VALUES($1,$2,$3)""",
+                digest(token),
                 account_id,
+                digest(token + code),
             )
-            if not limited:
-                await conn.execute(
-                    """INSERT INTO login_challenges(token_hash,account_id,code_hash)
-                       VALUES($1,$2,$3)""",
-                    digest(token),
-                    account_id,
-                    digest(token + code),
-                )
-                send = True
+            send = True
     if send:
-        try:
-            await send_code(data.email, code)
-        except Exception:
-            logger.warning("Web sign-in email delivery failed; code invalidated")
-            # Never log SMTP errors, recipients, codes, or credentials. Failed codes
-            # cannot authenticate; keep the generic response to avoid enumeration.
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE login_challenges SET consumed_at=now() WHERE token_hash=$1",
-                    digest(token),
-                )
+        # After the response, so its timing cannot reveal whether the email is invited.
+        background.add_task(deliver_code, data.email, code, token)
     cookie(response, CHALLENGE_COOKIE, token, 600)
     return {"status": "check_email"}
+
+
+async def deliver_code(email: str, code: str, token: str) -> None:
+    try:
+        await send_code(email, code)
+    except Exception:
+        logger.warning("Web sign-in email delivery failed; code invalidated")
+        # Never log SMTP errors, recipients, codes, or credentials. A failed code
+        # cannot authenticate, and the response was already the generic one.
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE login_challenges SET consumed_at=now() WHERE token_hash=$1",
+                digest(token),
+            )
 
 
 @router.post("/app/api/verify", dependencies=[Depends(check_origin)])
@@ -253,8 +364,7 @@ async def verify_code(data: CodeInput, request: Request, response: Response):
     session = None
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
-            """SELECT c.*,a.status,e.verified_at,e.invite_expires_at>now() AS invited,
-                      p.status AS person_status,p.canonical_person_id
+            f"""SELECT c.account_id,c.code_hash,{CAN_SIGN_IN} AS eligible
                FROM login_challenges c JOIN accounts a ON a.id=c.account_id
                JOIN account_emails e ON e.account_id=a.id JOIN people p ON p.id=a.person_id
                WHERE c.token_hash=$1 AND c.expires_at>now() AND c.consumed_at IS NULL
@@ -265,13 +375,7 @@ async def verify_code(data: CodeInput, request: Request, response: Response):
             await conn.execute(
                 "UPDATE login_challenges SET attempts=attempts+1 WHERE token_hash=$1", digest(token)
             )
-            if (
-                hmac.compare_digest(row["code_hash"], digest(token + data.code))
-                and row["status"] in ("active", "pending")
-                and row["person_status"] in ("claimed", "provisional")
-                and row["canonical_person_id"] is None
-                and (row["verified_at"] or row["invited"])
-            ):
+            if hmac.compare_digest(row["code_hash"], digest(token + data.code)) and row["eligible"]:
                 await conn.execute(
                     "UPDATE login_challenges SET consumed_at=now() WHERE account_id=$1",
                     row["account_id"],
@@ -307,11 +411,11 @@ async def signed_in_person(request: Request) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT p.id,p.display_name,e.email,a.id AS account_id FROM web_sessions s
+            f"""SELECT p.id,{DISPLAY_NAME} AS display_name,e.email,a.id AS account_id
+               FROM web_sessions s
                JOIN accounts a ON a.id=s.account_id JOIN account_emails e ON e.account_id=a.id
                JOIN people p ON p.id=a.person_id WHERE s.token_hash=$1 AND s.expires_at>now()
-               AND a.status='active' AND e.verified_at IS NOT NULL
-               AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL""",
+               AND {LIVE_ACCOUNT}""",
             digest(session_token),
         )
     if not row:
@@ -340,13 +444,12 @@ async def personal_stats(group: str | None = None, person: dict = Depends(signed
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
         groups = await conn.fetch(
-            """SELECT DISTINCT group_key AS group_id,group_name AS name FROM personal_activity
+            f"""SELECT DISTINCT group_key AS group_id,group_name AS name FROM personal_activity
                WHERE person_id=$1 AND environment='production'
                UNION SELECT coalesce(g.group_id,w.id),coalesce(g.name,w.name)
                FROM app_workspace_access a JOIN workspaces w ON w.id=a.workspace_id
                LEFT JOIN groups g ON g.workspace_id=w.id
-               WHERE a.account_id=$2 AND a.active
-               AND coalesce(w.settings->>'environment','production')='production'
+               WHERE a.account_id=$2 AND a.active AND {PRODUCTION_WORKSPACE}
                ORDER BY group_id""",
             person["id"],
             person.get("account_id", ""),
