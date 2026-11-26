@@ -22,11 +22,12 @@ isolation.
    the working Fly URL during migration, and redirect only browser app traffic.
    Do not redirect or change the GroupMe callback. Host-only sessions require a
    new sign-in on the new hostname. Add a useful root route to `/app`.
-2. **Account lifecycle:** native group owners can now invite/reinvite/revoke with
-   an audit trail and matching-email proof. Keep linking existing GroupMe history
-   operator-approved, with a documented correction path for mistaken person/email
-   mappings. Never permit claiming by name, an unverified email, or inferred
-   workspace membership. Review with a few volunteer users first.
+2. **Account lifecycle:** native group owners can invite/reinvite/revoke with
+   matching-email proof. Linking existing GroupMe history is operator-approved by GroupMe
+   user id (`POST /admin/accounts/invite`); a mistaken binding can be corrected until its
+   email is verified, and `POST /admin/accounts/{id}/disable` revokes an account. Never
+   permit claiming by name, an unverified email, or inferred workspace membership. Review
+   with a few volunteer users first.
 3. **Webhook authenticity:** done. The callback requires `GROUPME_WEBHOOK_SECRET`
    (runbook: "Rotate the webhook secret"). A user ID in a callback is still not proof
    of GroupMe ownership.
@@ -41,12 +42,13 @@ isolation.
 
 ## Before open signup or a broader public launch
 
-- Add source-aware and global abuse controls before SMTP work, with correctly
-  trusted proxy boundaries; current per-account and global code limits are not
-  complete protection against request/connection exhaustion or email harassment.
-- Decouple delivery from HTTP request timing, provide admin-visible delivery
+- Sign-in has per-source limits, in memory on one machine, before any database work.
+  Move them to shared storage before adding machines, and extend them to `/verify`,
+  `/prepare`, and invitation previews; they are not complete protection against
+  request/connection exhaustion or email harassment.
+- Code emails are sent after the response. Still add durable, admin-visible delivery
   state, and make resends/recovery understandable without leaking account existence.
-- Review session host-prefix protection, expiry/revocation, origin/CSRF behavior,
+- Review session host-prefix protection, expiry, origin/CSRF behavior,
   cross-user authorization, and account recovery with adversarial tests.
 - Define retention/deletion/export and who can see personal activity. Publishing
   summaries to groups, photos, write tools, and auto-linking accounts remain out

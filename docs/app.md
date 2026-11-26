@@ -9,7 +9,7 @@ they do not own users or activity.
 
 Only registered production groups contribute to the personal dashboard. Classify
 a workspace with `PATCH /admin/workspaces/{workspace_id}/environment` (admin bearer
-token) and `{"environment":"test"}` to exclude every gateway group mapped to it
+token) and `{"environment":"test"}` to exclude every GroupMe group mapped to it
 from totals, charts, recent activity, and the group picker. Explicit requests for
 an excluded group return 404. The setting is stored in `workspaces.settings`,
 preserves other settings, and can be reversed with `{"environment":"production"}`.
@@ -23,7 +23,7 @@ all-time drinks, Split-G total, eight-week trend, drink breakdown, and the lates
 30 entries. It combines authoritative legacy `beers` with native app activity,
 without double counting mirrored entries. It does not read group chats/photos,
 send notifications, or change the GroupMe agent. Group filters expose personal
-history and explicitly granted app groups; shadow memberships grant no app access.
+history and explicitly granted app groups; GroupMe participation alone grants no app access.
 
 ## Native logging (feature-gated)
 
@@ -38,8 +38,9 @@ replace legacy drink rows, and does not modify the GroupMe agent/tools/repositor
   self-logging access. Set `active:false` to revoke it. Inferred historical
   memberships are never sufficient. Production group access must be explicitly
   confirmed by an operator; the app cannot claim existing groups by ID or name.
-- Admin invitations accept either an existing `person_id`, or a `name` to create
-  a new native person with no GroupMe identity. Normal email proof is still required.
+- Admin invitations take exactly one of: `groupme_user_id` (links that GroupMe user's
+  history in the same transaction), an existing `person_id`, or a `name` for a new native
+  person with no GroupMe history. Normal email proof is still required.
 - App-only groups create an internal workspace and an explicit owner grant. They
   do not register a GroupMe bot, create fake users, or send chat messages. Owners
   can manage these groups and create email-specific invitation links in the app.
@@ -69,7 +70,7 @@ native-only history until rolled forward, but GroupMe remains on its legacy rows
 
 ## App group invitations and management
 
-Migration 7 adds `app_group_invitations` and `app_group_events`. Owners can rename
+Migration 7 adds `app_group_invitations`. Owners can rename
 an app-only group, create/revoke invitations, remove members, or transfer ownership
 to a current verified member. Members can leave after transferring ownership if
 they are the owner. Existing GroupMe groups cannot use these management endpoints,
@@ -105,7 +106,7 @@ stats or records. Leaving/removal revokes group management and logging/edit acce
 but does not delete personal history or accounts. Cross-group notifications and
 group-shared activity feeds are not part of this increment.
 
-Mutations use durable account-scoped request IDs and retain group action events.
+Mutations use durable account-scoped request IDs.
 Creation is bounded to 50 invitations/group/day in addition to account command
 limits. These are pilot limits, not a substitute for public-launch abuse controls.
 Keep `APP_ACTIVITY_ENABLED=false` as the shared app-write kill switch. Rollbacks
@@ -126,27 +127,34 @@ Account rollout:
    want to use. Never match by display name alone or infer account ownership from
    a group membership, incoming message, or unverified email.
 2. `POST /admin/accounts/invite` with the existing admin bearer token and JSON
-   `{"person_id":"<confirmed-person-id>","email":"<confirmed-email>"}` creates a
-   pending account with a seven-day invitation. Existing person/email bindings
-   conflict; they are never overwritten. The endpoint itself sends no email.
+   `{"groupme_user_id":"<their GroupMe user id>","email":"<confirmed-email>"}` creates a
+   pending account with a seven-day invitation and links that user's GroupMe history (use
+   `person_id` or `name` instead for people without one). A verified binding is never
+   overwritten (409). Until the email is verified, the latest admin invitation wins: it
+   renews an expired invite, corrects a mistyped email, and takes over an account bound to
+   that email through a group invitation. The endpoint itself sends no email. Invite
+   GroupMe members this way before a friend's group invitation reaches them: once they
+   verify a native account there, their GroupMe history can't be linked to it.
 3. The invited person opens `/app`, requests a code, and types the emailed eight
    digits in the **same browser** within ten minutes. Email delivery must be tested
-   with the real mailbox before declaring this flow ready. Unknown, throttled,
-   expired, and delivery-failed requests have the same generic response.
+   with the real mailbox before declaring this flow ready. Unknown, expired, and
+   delivery-failed requests have the same generic response; a throttled one gets 429. The
+   email is sent after the response, so its timing doesn't reveal whether an email is invited.
 4. Successful proof activates the account, consumes its outstanding challenges,
    and creates a 30-day HttpOnly, Secure, SameSite=Strict session. The database
    stores only hashes of session/browser tokens and codes. Sign-out revokes the
    session server-side. Disabled accounts and merged/disabled people fail closed.
 
-Limits: five attempts per challenge; one code/minute, three/15 minutes/account,
-and 100/15 minutes globally across machines. Challenges are removed after a day
+Limits: five attempts per challenge. Per source IP (`Fly-Client-IP`), ten sign-in
+requests per 15 minutes, and per source and email one a minute and three per 15 minutes,
+checked in memory before the database (one machine; move them to Postgres before adding a
+second). 100 codes per 15 minutes globally, in Postgres. Challenges are removed after a day
 and expired sessions removed on login requests. SMTP failure logs omit recipients,
 codes, and provider error details. This initial flow deliberately does not include
 self-service identity claiming, email changes, account merging, or password recovery.
-For emergency revocation, set the affected account's `status` to `disabled` through
-an authenticated operator database session; all its sessions immediately fail their
-next authorization check. Re-invitation/reassignment requires explicit operator
-review, not a public reset endpoint.
+To revoke an account, `POST /admin/accounts/{account_id}/disable` (admin token): it
+disables the account and ends its sessions. There is no API to re-enable one.
+Re-invitation/reassignment requires explicit operator review, not a public reset endpoint.
 
 Migration 5 adds only new tables; old releases ignore them. Keep the existing
 blue-green deploy strategy and `/ready` checks. An application rollback can leave
