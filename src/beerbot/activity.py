@@ -246,7 +246,7 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
             }
         else:
             row = await conn.fetchrow(
-                "SELECT * FROM app_activity WHERE id=$1 AND person_id=$2 AND created_by_account_id=$3 AND deleted_at IS NULL",
+                "SELECT workspace_id,legacy_beer_id FROM app_activity WHERE id=$1 AND person_id=$2 AND created_by_account_id=$3 AND deleted_at IS NULL",
                 entry_id,
                 person["id"],
                 account_id,
@@ -265,7 +265,7 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
                     row["legacy_beer_id"],
                 )
                 legacy = await conn.fetchrow(
-                    """SELECT b.*,u.person_id AS current_person_id,g.workspace_id AS current_workspace_id
+                    """SELECT b.id,u.person_id AS current_person_id,g.workspace_id AS current_workspace_id
                        FROM beers b JOIN users u ON u.id=b.user_id JOIN groups g ON g.group_id=b.group_id
                        WHERE b.id=$1 FOR UPDATE OF b FOR SHARE OF u,g""",
                     row["legacy_beer_id"],
@@ -282,7 +282,7 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
                     )
             await conn.fetchrow("SELECT id FROM app_activity WHERE id=$1 FOR UPDATE", entry_id)
             current = await conn.fetchrow(
-                "SELECT * FROM personal_activity WHERE app_entry_id=$1", entry_id
+                "SELECT revision FROM personal_activity WHERE app_entry_id=$1", entry_id
             )
             if not current or current["revision"] != command.revision:
                 raise HTTPException(

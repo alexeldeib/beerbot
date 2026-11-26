@@ -1001,13 +1001,15 @@ class ZynRepository:
 class GroupRepository:
     """Repository for group-to-bot mapping operations."""
 
+    COLUMNS = "group_id, bot_id, name, workspace_id, created_at"
+
     async def get_by_group_id(self, group_id: str) -> Group | None:
         """Get a group by its GroupMe group ID."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM groups WHERE group_id = $1",
+                f"SELECT {self.COLUMNS} FROM groups WHERE group_id = $1",
                 group_id,
             )
             return Group(**dict(row)) if row else None
@@ -1047,14 +1049,14 @@ class GroupRepository:
                     name or f"GroupMe {group_id}",
                 )
                 row = await conn.fetchrow(
-                    """
+                    f"""
                     INSERT INTO groups (group_id, bot_id, name, workspace_id)
                     VALUES ($1, $2, $3, $4)
                     ON CONFLICT (group_id) DO UPDATE
                     SET bot_id = EXCLUDED.bot_id,
                         name = EXCLUDED.name,
                         workspace_id = EXCLUDED.workspace_id
-                    RETURNING *
+                    RETURNING {self.COLUMNS}
                     """,
                     group_id,
                     bot_id,
@@ -1068,7 +1070,7 @@ class GroupRepository:
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM groups ORDER BY created_at DESC")
+            rows = await conn.fetch(f"SELECT {self.COLUMNS} FROM groups ORDER BY created_at DESC")
             return [Group(**dict(row)) for row in rows]
 
     async def delete(self, group_id: str) -> bool:

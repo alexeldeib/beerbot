@@ -63,7 +63,8 @@ async def live_invitation(conn, invitation_id: UUID):
         workspace_id,
     )
     invitation = await conn.fetchrow(
-        f"""SELECT i.*,p.display_name AS inviter FROM app_group_invitations i
+        f"""SELECT i.workspace_id,i.email,i.expires_at,i.accepted_at,p.display_name AS inviter
+           FROM app_group_invitations i
            JOIN app_workspace_access m ON m.account_id=i.created_by_account_id AND m.workspace_id=i.workspace_id
            JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
            JOIN account_emails e ON e.account_id=a.id
