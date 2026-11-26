@@ -27,6 +27,8 @@ env:
   # What ships without the independent reviewer (`grep -P`): app code, docs, and tests, except the
   # app files that hold credentials or decide who may do what. tests/test_policy.py pins it.
   ROUTINE: '^(?!src/beerbot/(beerdev|main|dispatch|config|database|web)\.py$)(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
+  # What a credential looks like (`grep -E`): never in an artifact or a pushed change.
+  CREDENTIAL: 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_'
 
 # One build at a time. A newer queued build replaces an older one, and each picks its issue when
 # it starts, so nothing is built twice.
@@ -150,7 +152,7 @@ jobs:
           git add -A
           git diff --cached --binary > /tmp/beerdev/change.patch
           # Artifacts of a public repository are downloadable: never upload a credential.
-          if grep -rqE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev; then
+          if grep -rqE "$CREDENTIAL" /tmp/beerdev; then
             echo "::error::The change or its notes contain what looks like a credential"
             exit 1
           fi
@@ -296,8 +298,13 @@ jobs:
           path: /tmp/beerdev
 
       # The artifact is agent-writable, so the issue itself (title, ask id) comes from GitHub.
+      # A chat request (its body holds the chat's message id) hears back in the chat.
       - name: Fetch the request
-        run: gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels,state > /tmp/request.json
+        run: |
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json title,body,labels,state > /tmp/request.json
+          if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+            echo "FROM_CHAT=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Apply the change
         id: apply
@@ -314,7 +321,6 @@ jobs:
             echo "ship=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          from_chat() { jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; }
           if [ -s /tmp/beerdev/skip.md ]; then
             if jq -e 'any(.labels[]; .name == "ops")' /tmp/request.json > /dev/null; then
               # An incident with no code fix still needs someone: hand it to the owner.
@@ -323,7 +329,7 @@ jobs:
               exit 0
             fi
             gh issue close "$ISSUE" --reason "not planned" --comment "$(cat /tmp/beerdev/skip.md)"
-            if from_chat; then  # Close the loop with whoever asked; quiet otherwise.
+            if [ "$FROM_CHAT" = true ]; then  # Close the loop with whoever asked; quiet otherwise.
               reason="$(tr '\n' ' ' < /tmp/beerdev/skip.md | cut -c1-240)"
               printf '🤷 Skipping: %s. %s' "$(jq -r .title /tmp/request.json)" "$reason" > /tmp/chat.txt
             fi
@@ -342,7 +348,7 @@ jobs:
             echo "::error::beerdev may not change its own kernel"
             exit 1
           fi
-          if grep -qE 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_' /tmp/beerdev/change.patch; then
+          if grep -qE "$CREDENTIAL" /tmp/beerdev/change.patch; then
             echo "::error::The change contains what looks like a credential"
             exit 1
           fi
@@ -425,7 +431,7 @@ jobs:
                 --body-file /tmp/beerdev/pr.md)"
               gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
               gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
-              if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+              if [ "$FROM_CHAT" = true ]; then
                 printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
               fi
               exit 0
@@ -441,7 +447,7 @@ jobs:
           if [ -s /tmp/beerdev/announcement.md ]; then
             cp /tmp/beerdev/announcement.md /tmp/chat.txt
             gh issue comment "$ISSUE" --body-file /tmp/beerdev/announcement.md
-          elif jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+          elif [ "$FROM_CHAT" = true ]; then
             printf '✅ Shipped: %s.' "$title" > /tmp/chat.txt
           fi
 
