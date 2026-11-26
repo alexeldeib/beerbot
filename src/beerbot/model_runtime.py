@@ -96,9 +96,12 @@ async def run_tools(
         # Validate the entire batch before any tool in it mutates the database.
         validated, errors = [], []
         for call in turn.calls:
-            if call.name not in registry or call.id in seen_ids:
-                raise ModelProtocolError("Unknown tool or repeated call ID")
+            if call.id in seen_ids:
+                raise ModelProtocolError("Repeated call ID")
             seen_ids.add(call.id)
+            if call.name not in registry:
+                errors.append(f"{call.name}: no such tool")
+                continue
             try:
                 validated.append(validate_arguments(validators[call.name], call.arguments))
             except ValidationError as exc:
