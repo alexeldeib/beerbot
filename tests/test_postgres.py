@@ -213,6 +213,24 @@ async def test_members_sharing_a_display_name_keep_their_own_stats(pg):
     assert (empty["total"], empty["breakdown"], empty["last_drink_at"]) == (0, {}, None)
 
 
+async def test_pace_runs_from_the_first_recent_drink_to_now(pg):
+    await database.init_db()
+    alice = (await user_repo.get_or_create("alice", "Alice")).id
+    # Six beers six days ago, then nothing: one a day, not six a day.
+    await pg.execute(
+        """INSERT INTO beers(user_id,group_id,quantity,logged_at)
+           VALUES($1,'g1',6,now()-interval '6 days'),($1,'g2',3,now()-interval '1 hour')""",
+        alice,
+    )
+    beers, days = await beer_repo.get_rate_stats("g1", days=7)
+    assert beers == 6 and days == pytest.approx(6, abs=0.01)
+    assert await beer_repo.get_rate_stats("g2", days=7) == (3, 1.0)  # A burst: at least a day.
+    assert await beer_repo.get_rate_stats("g2", days=7, drink_type=DrinkType.WINE) == (0, 0.0)
+    ctx = ToolContext("g1", "m1", "alice", "Alice", None, [])
+    countdown = next(t for t in create_tools(ctx) if t.__name__ == "get_million_countdown")
+    assert (await countdown())["pace_7d"] == 1.0
+
+
 async def test_chat_queries_survive_a_migration_adding_a_column(pg):
     # Prepared statements outlive DDL (Neon's pooler caches them by text). A star result type
     # changes with the table and fails the cached plan inside a transaction (2026-11-25 outage).

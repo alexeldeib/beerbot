@@ -426,69 +426,27 @@ class BeerRepository:
         group_id: str,
         days: int = 30,
         drink_type: DrinkType | None = None,
-    ) -> tuple[int, int, float]:
-        """Get rate statistics for a group over a period.
-
-        Args:
-            group_id: The group to get stats for
-            days: Number of days to look back
-            drink_type: Optional filter by drink type
-
-        Returns:
-            tuple: (total_beers_all_time, beers_in_period, days_with_activity)
-        """
+    ) -> tuple[int, float]:
+        """Drinks in the last `days` days, and the days from the first of them to now: a group
+        that went quiet slows its pace. At least one day, so an hour's burst isn't a daily rate;
+        0.0 without drinks."""
         pool = await get_pool()
+        now = datetime.now(EASTERN)
 
         async with pool.acquire() as conn:
-            # Build WHERE clause for drink type filter
-            type_filter = ""
-            type_param: list = []
-            if drink_type is not None:
-                type_filter = " AND drink_type = $2"
-                type_param = [drink_type.value]
-
-            # Get total all time (with optional type filter)
-            total_all_time = await conn.fetchval(
-                f"SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1{type_filter}",
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(quantity), 0) AS total, MIN(logged_at) AS first
+                FROM beers WHERE group_id = $1 AND logged_at >= $2
+                    AND ($3::text IS NULL OR drink_type = $3)
+                """,
                 group_id,
-                *type_param,
+                now - timedelta(days=days),
+                drink_type.value if drink_type else None,
             )
-
-            # Get drinks and date range for period (Eastern time)
-            since = datetime.now(EASTERN) - timedelta(days=days)
-            # Adjust parameter numbers for the period query
-            if drink_type is not None:
-                period_query = """
-                    SELECT
-                        COALESCE(SUM(quantity), 0) as period_total,
-                        MIN(logged_at) as first_beer,
-                        MAX(logged_at) as last_beer
-                    FROM beers
-                    WHERE group_id = $1 AND logged_at >= $2 AND drink_type = $3
-                """
-                row = await conn.fetchrow(period_query, group_id, since, drink_type.value)
-            else:
-                period_query = """
-                    SELECT
-                        COALESCE(SUM(quantity), 0) as period_total,
-                        MIN(logged_at) as first_beer,
-                        MAX(logged_at) as last_beer
-                    FROM beers
-                    WHERE group_id = $1 AND logged_at >= $2
-                """
-                row = await conn.fetchrow(period_query, group_id, since)
-
-            period_total = int(row["period_total"])
-            first_beer = row["first_beer"]
-            last_beer = row["last_beer"]
-
-            # Calculate actual days with data
-            if first_beer and last_beer:
-                actual_days = max(1.0, (last_beer - first_beer).total_seconds() / 86400)
-            else:
-                actual_days = 0.0
-
-            return int(total_all_time), period_total, actual_days
+        if row["first"] is None:
+            return 0, 0.0
+        return int(row["total"]), max(1.0, (now - row["first"]).total_seconds() / 86400)
 
     async def get_split_g_stats(self, group_id: str) -> SplitGGroupStats:
         """Get split-the-G statistics for a group."""

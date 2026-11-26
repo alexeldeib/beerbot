@@ -414,8 +414,8 @@ class TestGetMillionCountdown:
         mock_beer.get_group_total_by_type = AsyncMock(return_value=5000)
         mock_beer.get_rate_stats = AsyncMock(
             side_effect=[
-                (5000, 100, 7.0),  # 7-day stats
-                (5000, 400, 28.0),  # 30-day stats
+                (100, 7.0),  # 7-day stats
+                (400, 28.0),  # 30-day stats
             ]
         )
 

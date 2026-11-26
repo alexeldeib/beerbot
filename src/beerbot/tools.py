@@ -534,10 +534,8 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         goal = 1_000_000
 
         total = await beer_repo.get_group_total_by_type(ctx.group_id, dt)
-        _, beers_7d, days_7d = await beer_repo.get_rate_stats(ctx.group_id, days=7, drink_type=dt)
-        _, beers_30d, days_30d = await beer_repo.get_rate_stats(
-            ctx.group_id, days=30, drink_type=dt
-        )
+        beers_7d, days_7d = await beer_repo.get_rate_stats(ctx.group_id, days=7, drink_type=dt)
+        beers_30d, days_30d = await beer_repo.get_rate_stats(ctx.group_id, days=30, drink_type=dt)
 
         remaining = goal - total
         result: dict = {
