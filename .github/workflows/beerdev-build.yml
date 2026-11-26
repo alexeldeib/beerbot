@@ -411,6 +411,7 @@ jobs:
     needs: [pick, implement, review, ship]
     if: failure() && needs.pick.outputs.issue
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       issues: write
     env:

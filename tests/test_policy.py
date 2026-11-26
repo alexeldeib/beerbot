@@ -166,6 +166,13 @@ def test_deploys_verify_production_and_roll_back():
     assert rollback and "--image" in rollback[0]["run"] and "/ready/db" in rollback[0]["run"]
 
 
+def test_every_job_has_a_timeout():
+    # A hung job holds its concurrency group (deploys, builds) for GitHub's six hours, and ops
+    # waits on an unfinished deploy.
+    for name, job, spec, _ in jobs():
+        assert "timeout-minutes" in spec, f"{name}/{job}"
+
+
 def test_beerdev_cannot_change_its_kernel():
     ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
     text = "\n".join(step.get("run", "") for step in ship["steps"])

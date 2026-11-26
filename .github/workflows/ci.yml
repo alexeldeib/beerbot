@@ -14,6 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -71,6 +72,8 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    # Two blue-green deploys (10 minutes each at most) and their checks, when CI rolls back.
+    timeout-minutes: 40
     environment: production
     concurrency:
       group: beerbot-production
