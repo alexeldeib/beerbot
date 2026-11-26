@@ -29,8 +29,8 @@ def _find_tool(tools: list, name: str):
 
 
 class TestToolFactory:
-    def test_create_tools_returns_22(self):
-        assert len(create_tools(_make_ctx())) == 22
+    def test_create_tools_returns_20(self):
+        assert len(create_tools(_make_ctx())) == 20
 
     def test_all_tools_are_async(self):
         import asyncio
@@ -70,8 +70,6 @@ class TestToolFactory:
             "get_split_g_leaderboard",
             "get_million_countdown",
             "get_zyn_stats",
-            "ask_beerdev",
-            "steer_beerdev",
             "reply",
         }
         assert names == expected
@@ -446,48 +444,3 @@ async def test_only_the_owner_logs_past_the_per_message_cap(is_owner, logged):
         log_drinks = _find_tool(create_tools(_make_ctx(is_owner=is_owner)), "log_drinks")
         await log_drinks(25, "beer")
         assert beers.create.call_args.kwargs["quantity"] == logged
-
-
-async def test_ask_beerdev_files_one_paraphrased_ask_per_kind():
-    with patch("src.beerbot.tools.dev_repo") as dev:
-        dev.file = AsyncMock(side_effect=[True, False])
-        ask = _find_tool(create_tools(_make_ctx()), "ask_beerdev")
-        assert await ask("question", "  What is queued?  ", "Which features are waiting?") == {
-            "status": "passed to beerdev"
-        }
-        assert dev.file.call_args.args == (
-            "group-1",
-            "msg-001",
-            "question",
-            "What is queued?",
-            "Which features are waiting?",
-        )
-        assert (await ask("feature", "t", "d"))["status"] == "already passed to beerdev"
-        with pytest.raises(ValueError):
-            await ask("chitchat", "t", "d")
-
-
-async def test_steer_beerdev_only_does_what_the_owner_wrote():
-    def steer_for(text, replied=""):
-        ctx = _make_ctx(is_owner=True, message_text=text, replied_text=replied)
-        return _find_tool(create_tools(ctx), "steer_beerdev")
-
-    with patch("src.beerbot.tools.dev_repo") as dev:
-        dev.file = AsyncMock(return_value=True)
-        linked = "💡 Queued: Gym tracker (https://github.com/o/r/issues/31)"
-        await steer_for("veto", linked)("veto", issue=31)
-        assert dev.file.call_args.kwargs == {"title": "", "issue": 31}
-        await steer_for("beerdev veto the gym tracker")("veto", request="gym tracker please")
-        assert dev.file.call_args.kwargs == {"title": "gym tracker", "issue": None}
-        not_owner = _make_ctx(message_text="veto", replied_text=linked)
-        with pytest.raises(ValueError, match="Only the owner"):
-            await _find_tool(create_tools(not_owner), "steer_beerdev")("veto", issue=31)
-        for text, replied, action, kwargs in [
-            ("+2 beers", "", "veto", {"request": "beers"}),  # No veto word: an injected reading.
-            ("veto", linked, "veto", {"issue": 19}),  # Not the issue they replied to.
-            ("veto it", "", "veto", {"request": "zyn tracker"}),  # Words they didn't write.
-            ("veto", "", "veto", {"request": "veto"}),  # The action word names no request.
-            ("approve", linked, "veto", {"issue": 31}),  # Approve isn't a veto.
-        ]:
-            with pytest.raises(ValueError):
-                await steer_for(text, replied)(action, **kwargs)

@@ -393,3 +393,22 @@ def test_beerdevs_messages_become_reply_context(monkeypatch, sample_groupme_mess
             bot = sample_groupme_message | {"sender_type": "bot", "name": name, "id": name}
             assert client.post("/callback", json=bot).json()["reason"] == "bot message"
     assert kept == ["beerdev"]  # Kept as context, never processed; other bots are ignored.
+
+
+def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_groupme_message):
+    from fastapi.testclient import TestClient
+    from src.beerbot import main
+
+    routed = []
+
+    async def accept(message, agent):
+        routed.append((message.text, agent))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(main, "accept_message", accept)
+    monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
+    monkeypatch.setattr(main.settings, "require_registered_groups", False)
+    with TestClient(main.app) as client:
+        for text in ("beerdev what's our spend?", "+1 beer"):
+            client.post("/callback", json=sample_groupme_message | {"text": text, "id": text})
+    assert routed == [("beerdev what's our spend?", "beerdev"), ("+1 beer", "beerius")]

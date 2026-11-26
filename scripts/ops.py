@@ -230,7 +230,7 @@ def main() -> None:
         timeout=30,
     )
     app = httpx.Client(base_url=APP, timeout=20)
-    admin = {"Authorization": f"Bearer {env['ADMIN_TOKEN']}"}
+    admin = {"Authorization": f"Bearer {env['OPS_TOKEN']}"}
     issues = (
         github.get(
             f"/repos/{repo}/issues", params={"labels": "ops", "state": "all", "per_page": 100}

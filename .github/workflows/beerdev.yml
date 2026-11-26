@@ -1,87 +1,27 @@
-name: beerdev
+name: beerdev digest
 
-# Handles the asks Beerius files in the app (its ask_beerdev and owner-only steer_beerdev tools)
-# and answers in the chat as the beerdev bot: features and bugs become issues labeled `beerdev`,
-# built by beerdev-build.yml; asks needing human setup are labeled `beerdev-infra` + `inbox`;
-# questions get an answer from the code and the queue; owner vetoes and approvals steer issues.
-# The app starts this workflow when an ask commits and again hourly while one is unclaimed, so it
-# never reads the chat or polls the database. Dispatch with action=veto|approve to steer an issue.
-# Posts a digest on Mondays. Close an issue to cancel it; disable this workflow to pause intake.
+# Mondays, beerdev posts one line of history in the chat: what shipped, what was declined or
+# vetoed, and how much waits on a human. Quiet weeks post nothing. Asks and answers happen in the
+# app (src/beerbot/beerdev.py); builds in beerdev-build.yml.
 
 on:
   schedule:
-    - cron: "20 12 * * *" # Daily fallback, should the app's dispatch token stop working
-    - cron: "0 14 * * 1" # Monday digest, 9am Eastern
+    - cron: "0 14 * * 1" # Mondays, 9am Eastern
   workflow_dispatch:
-    inputs:
-      action:
-        description: Scan, or steer an issue
-        type: choice
-        options: [scan, veto, approve]
-        default: scan
-      issue:
-        description: Issue number to steer
-        type: number
-        required: false
 
 permissions: {}
 
-# Scans run one at a time so an ask is never handled twice; builds never hold them up.
-concurrency:
-  group: beerdev-scan
-  cancel-in-progress: false
-
 jobs:
-  scan:
-    if: ${{ !inputs.action || inputs.action == 'scan' }} # schedules have no inputs
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: write # start builds
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: false # It holds credentials: never restore a cache agent code saved.
-
-      - id: scan
-        run: uv run --frozen python scripts/beerdev.py
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }} # Pull and claim asks; the app checked the owner.
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # Answers only: no tools, no secrets in view.
-          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
-
-      - name: Start a build
-        if: steps.scan.outputs.build == 'true'
-        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Monday digest
-        if: github.event.schedule == '0 14 * * 1'
-        run: uv run --frozen python scripts/beerdev.py digest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
-
-  steer:
-    if: inputs.action == 'veto' || inputs.action == 'approve'
+  digest:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write # start a removal build
       contents: read
-      issues: write
+      issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         with:
@@ -91,16 +31,7 @@ jobs:
         with:
           enable-cache: false # It holds credentials: never restore a cache agent code saved.
 
-      - id: steer
-        run: uv run --frozen python scripts/beerdev.py steer
+      - run: uv run --frozen python scripts/beerdev.py digest
         env:
           GH_TOKEN: ${{ github.token }}
           BEERDEV_BOT_ID: ${{ secrets.BEERDEV_BOT_ID }}
-          ACTION: ${{ inputs.action }}
-          ISSUE: ${{ inputs.issue }}
-
-      - name: Start a build
-        if: steps.steer.outputs.build == 'true'
-        run: gh workflow run beerdev-build.yml -R "$GITHUB_REPOSITORY" --ref main
-        env:
-          GH_TOKEN: ${{ github.token }}

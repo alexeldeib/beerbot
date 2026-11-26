@@ -5,6 +5,8 @@
 
 app = 'beerbot-groupme'
 primary_region = 'iad'
+# The app uses about 120MB; swap absorbs a burst (images) instead of an out-of-memory kill.
+swap_size_mb = 256
 
 [build]
   dockerfile = 'Dockerfile'
@@ -50,7 +52,7 @@ primary_region = 'iad'
     X-Forwarded-Proto = 'https'
 
 [[vm]]
-  memory = '512mb'
+  memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 512
+  memory_mb = 256

@@ -3,7 +3,7 @@ name: ops
 # Watches production without ever posting to the chat: probes health and readiness, redeploys
 # through CI when the app is stuck, and files one issue per failure class (code-level ones are
 # go to beerdev first, which fixes them or hands them to the owner's inbox). The app starts this the moment a message fails
-# when GITHUB_DISPATCH_TOKEN is set; otherwise the hourly run catches it. See docs/runbook.md.
+# when BEERDEV_GITHUB_TOKEN is set; otherwise the hourly run catches it. See docs/runbook.md.
 
 on:
   schedule:
@@ -54,6 +54,6 @@ jobs:
       - run: uv run --frozen python scripts/ops.py
         env:
           GH_TOKEN: ${{ github.token }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }} # Read-only: status and usage, nothing else
           REASON: ${{ inputs.reason }}
           CI_RUN_ID: ${{ github.event.workflow_run.id }}

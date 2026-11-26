@@ -46,8 +46,10 @@ RUN groupadd --gid 1000 appuser && \
 # Copy only the virtual environment from builder (not uv itself)
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application source
+# Copy application source, plus the docs beerdev reads to answer how the bot works
 COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser README.md CLAUDE.md CHANGELOG.md ./
+COPY --chown=appuser:appuser docs/ ./docs/
 
 # Add venv to PATH
 ENV PATH="/app/.venv/bin:$PATH"

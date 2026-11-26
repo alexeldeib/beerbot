@@ -11,16 +11,16 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .agent import beer_agent
-from . import usage
+from . import beerdev, usage
 from .config import settings
 from .database import close_pool, init_db, get_pool
 from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
-from .repositories import dev_repo, group_repo, recap_repo
+from .repositories import group_repo, recap_repo
 from .reconciliation import ReconciliationBusy, reconcile_identities
 from .delivery import (
     accept_context,
@@ -233,7 +233,9 @@ async def groupme_callback(request: Request):
             logger.warning("Rejected callback for unregistered group %s", message.group_id)
             return JSONResponse({"error": "Unknown group"}, status_code=403)
 
-    result = await accept_message(message)
+    # The router: beerdev answers messages that name it or reply in its thread; Beerius the rest.
+    agent = "beerdev" if await beerdev.addressed(message) else "beerius"
+    result = await accept_message(message, agent)
     if runtime := getattr(request.app.state, "queue_runtime", None):
         runtime.wake()
     return result
@@ -262,6 +264,14 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     if not hmac.compare_digest(parts[1], settings.admin_token):
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+async def verify_read_token(authorization: str | None = Header(None)) -> None:
+    """The status and usage endpoints also take the read-only OPS_TOKEN (ops.yml holds it)."""
+    supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
+    if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
+        return
+    await verify_admin_token(authorization)
 
 
 @app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
@@ -297,25 +307,12 @@ async def set_app_access(workspace_id: str, grant: AccessGrant):
     return await grant_access(workspace_id, grant)
 
 
-@app.get("/admin/dev-requests", dependencies=[Depends(verify_admin_token)])
-async def pending_dev_requests():
-    """Asks Beerius handed to beerdev that GitHub has not claimed yet (beerdev.yml pulls them)."""
-    return {"requests": await dev_repo.pending()}
-
-
-@app.post("/admin/dev-requests/{request_id}/claim", dependencies=[Depends(verify_admin_token)])
-async def claim_dev_request(request_id: int):
-    if not await dev_repo.claim(request_id):
-        raise HTTPException(status_code=404, detail="Request not found")
-    return {"status": "claimed"}
-
-
-@app.get("/admin/messages/status", dependencies=[Depends(verify_admin_token)])
+@app.get("/admin/messages/status", dependencies=[Depends(verify_read_token)])
 async def message_status():
     return await queue_status()
 
 
-@app.get("/admin/workers/status", dependencies=[Depends(verify_admin_token)])
+@app.get("/admin/workers/status", dependencies=[Depends(verify_read_token)])
 async def worker_status(request: Request):
     """In-memory diagnostics do not wake Postgres."""
     runtime = getattr(request.app.state, "queue_runtime", None)
@@ -323,33 +320,13 @@ async def worker_status(request: Request):
     return status | {"model_usage_since_boot": usage.since_boot()}
 
 
-@app.get("/admin/usage", dependencies=[Depends(verify_admin_token)])
+@app.get("/admin/usage", dependencies=[Depends(verify_read_token)])
 async def model_usage():
     """Model tokens and list-price spend this month, by source, against the budget."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await usage.flush(conn)
         return await usage.report(conn)
-
-
-class UsageReport(BaseModel):
-    source: str = Field(pattern=r"^[a-z][a-z-]{0,30}$")
-    model: str = Field(min_length=1, max_length=100)
-    calls: int = Field(ge=0, le=10_000)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
-
-
-@app.post("/admin/usage", dependencies=[Depends(verify_admin_token)])
-async def add_model_usage(report: UsageReport):
-    """GitHub jobs (beerdev's answers) report their own model calls."""
-    counts = [report.calls, report.input_tokens, report.output_tokens, report.cached_tokens]
-    usage.add(report.source, report.model, counts)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await usage.flush(conn)
-    return {"status": "recorded"}
 
 
 @app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])
