@@ -117,8 +117,9 @@ class TestCallback:
         mock_agent.process_message.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("src.beerbot.main.accept_context", new_callable=AsyncMock)
     @patch("src.beerbot.main.beer_agent")
-    async def test_ignores_bot_messages(self, mock_agent, bot_message):
+    async def test_ignores_bot_messages(self, mock_agent, mock_context, bot_message):
         from fastapi.testclient import TestClient
         from src.beerbot.main import app
 
@@ -287,20 +288,21 @@ def test_access_log_redacts_webhook_token():
     assert record.getMessage() == '1.2.3.4:5 - "POST /callback?token=***&x=1 HTTP/1.1" 200'
 
 
-def test_beerdevs_messages_become_reply_context(monkeypatch, sample_groupme_message):
+def test_our_bots_posts_become_history_and_reply_targets(monkeypatch, sample_groupme_message):
     from fastapi.testclient import TestClient
     from src.beerbot import main
 
     kept = []
     monkeypatch.setattr(
-        main, "accept_context", AsyncMock(side_effect=lambda m: kept.append(m.name))
+        main, "accept_context", AsyncMock(side_effect=lambda m, agent: kept.append((m.id, agent)))
     )
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
     with TestClient(main.app) as client:
-        for name in ("beerdev", "beerius"):
+        for name in ("beerdev", "Beerius", "weatherbot"):
             bot = sample_groupme_message | {"sender_type": "bot", "name": name, "id": name}
             assert client.post("/callback", json=bot).json()["reason"] == "bot message"
-    assert kept == ["beerdev"]  # Kept as context, never processed; other bots are ignored.
+    # Kept as context, never processed; other bots' posts never touch the database.
+    assert kept == [("beerdev", "beerdev"), ("Beerius", "beerius")]
 
 
 def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_groupme_message):

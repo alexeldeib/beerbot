@@ -1,9 +1,7 @@
 """Core agent that processes every GroupMe message via Gemini function calling."""
 
-import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass, field
 
 import httpx
@@ -162,16 +160,11 @@ class TokenBucket:
         return self.tokens >= 1
 
 
-@dataclass
-class ChatMessage:
-    """A message in the conversation history."""
-
-    text: str
-    user_name: str
-    is_bot: bool
-    timestamp: float = field(default_factory=time.time)
-    message_id: str | None = None
-    user_id: str | None = None
+def _shown(message: GroupMeMessage) -> str:
+    """A message's text, or what it carried when it has none."""
+    if message.text:
+        return message.text
+    return "(video)" if any(a.type == "video" for a in message.attachments) else "(image)"
 
 
 # ponytail: a video up to this size is held in memory (plus the SDK's base64 copy) on a 256MB VM
@@ -263,9 +256,6 @@ class BeerAgent:
                 self.model_profile.provider,
             )
         self._rate_limiters: dict[str, TokenBucket] = {}
-        self._message_history: dict[str, deque[ChatMessage]] = {}
-        self._history_max_len = 10
-        self._group_locks: dict[str, asyncio.Lock] = {}
 
     def _session(self, system: str, contents: list, tools: list, source: str = "beerius"):
         model = self.model_profile.model
@@ -286,33 +276,12 @@ class BeerAgent:
             self._rate_limiters[group_id] = TokenBucket()
         return self._rate_limiters[group_id]
 
-    def _get_history(self, group_id: str) -> deque[ChatMessage]:
-        if group_id not in self._message_history:
-            self._message_history[group_id] = deque(maxlen=self._history_max_len)
-        return self._message_history[group_id]
-
-    def record_message(
+    def _build_context_lines(
         self,
-        group_id: str,
-        text: str,
-        user_name: str,
-        is_bot: bool = False,
-        message_id: str | None = None,
-        user_id: str | None = None,
-    ) -> None:
-        if not group_id or not text:
-            return
-        self._get_history(group_id).append(
-            ChatMessage(
-                text=text,
-                user_name=user_name,
-                is_bot=is_bot,
-                message_id=message_id,
-                user_id=user_id,
-            )
-        )
-
-    def _build_context_lines(self, message: GroupMeMessage) -> str:
+        message: GroupMeMessage,
+        history: list[GroupMeMessage],
+        replied: GroupMeMessage | None,
+    ) -> str:
         """Build context section for system prompt."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -334,27 +303,14 @@ class BeerAgent:
             mentions_str = ", ".join(f"{name} (id: {uid})" for uid, name in mentioned)
             lines.append(f"Mentioned: [{mentions_str}]")
 
-        # Resolve reply-to context from attachments
-        history = self._get_history(message.group_id)
-        reply_id = None
-        for att in message.attachments:
-            if att.type == "reply" and att.reply_id:
-                reply_id = att.reply_id
-                break
-        if reply_id and history:
-            for msg in history:
-                if msg.message_id == reply_id:
-                    who = msg.user_name
-                    id_hint = f" (id: {msg.user_id})" if msg.user_id else ""
-                    lines.append(f"Replying to [{who}]{id_hint}: {msg.text[:200]}")
-                    break
+        if replied:
+            id_hint = "" if replied.sender_type == "bot" else f" (id: {replied.user_id})"
+            lines.append(f"Replying to [{replied.name}]{id_hint}: {_shown(replied)[:200]}")
 
-        visible = [msg for msg in history if msg.text not in ("(image)", "(video)")]
+        visible = [msg for msg in history if msg.text]
         if visible:
             lines.append("Recent messages:")
-            for msg in visible:
-                prefix = f"[{msg.user_name}]"
-                lines.append(f"  {prefix}: {msg.text[:100]}")
+            lines.extend(f"  [{msg.name}]: {msg.text[:100]}" for msg in visible)
 
         return "\n".join(lines)
 
@@ -371,18 +327,12 @@ class BeerAgent:
                     parts.append(media or "[video could not be loaded]")
         return parts or ["(empty message)"]
 
-    def _get_lock(self, group_id: str) -> asyncio.Lock:
-        if group_id not in self._group_locks:
-            self._group_locks[group_id] = asyncio.Lock()
-        return self._group_locks[group_id]
-
-    async def process_message(self, message: GroupMeMessage) -> str | None:
-        """Process a GroupMe message and return an optional reply.
-
-        Uses a per-group lock to serialize processing, preventing the model
-        from seeing unacknowledged messages in history and double-logging.
-
-        Returns None if the agent decides to stay silent.
+    async def process_message(
+        self, message: GroupMeMessage, history: list[GroupMeMessage]
+    ) -> str | None:
+        """Answer one message as Beerius. `history` is the group's chat before it, oldest first,
+        read from the durable inbox (whose advisory lock already runs one message per group at a
+        time). Returns None if the agent decides to stay silent.
         """
         if not self.client:
             if execution_scope.get():
@@ -390,41 +340,8 @@ class BeerAgent:
             logger.warning("Agent skipped: model client is not configured")
             return None
 
-        async with self._get_lock(message.group_id):
-            return await self._process_message_unlocked(message)
-
-    async def _process_message_unlocked(self, message: GroupMeMessage) -> str | None:
-        """Inner message processing, called under per-group lock."""
-        # Record incoming message (always, so reply-to lookup works for media-only messages)
-        placeholder = (
-            "(video)" if any(a.type == "video" for a in message.attachments) else "(image)"
-        )
-        self.record_message(
-            message.group_id,
-            message.text or placeholder,
-            message.name,
-            is_bot=False,
-            message_id=message.id,
-            user_id=message.user_id,
-        )
-
-        # Build tool context
         mentioned = extract_mentioned_users(message.text, message.attachments)
-
-        # Resolve replied-to user from history
-        replied_to_user = None
-        reply_id = None
-        for att in message.attachments:
-            if att.type == "reply" and att.reply_id:
-                reply_id = att.reply_id
-                break
-        if reply_id:
-            history = self._get_history(message.group_id)
-            for msg in history:
-                if msg.message_id == reply_id and msg.user_id and not msg.is_bot:
-                    replied_to_user = (msg.user_id, msg.user_name)
-                    break
-
+        replied = next((msg for msg in history if msg.id == message.reply_id), None)
         ctx = ToolContext(
             group_id=message.group_id,
             message_id=message.id,
@@ -432,13 +349,15 @@ class BeerAgent:
             sender_name=message.name,
             sender_avatar_url=message.avatar_url,
             mentioned_users=mentioned,
-            replied_to_user=replied_to_user,
+            replied_to_user=(replied.user_id, replied.name)
+            if replied and replied.sender_type != "bot"
+            else None,
             is_owner=message.user_id == settings.owner_user_id,
         )
         tools = create_tools(ctx)
 
         # Build system prompt with context
-        system_prompt = SYSTEM_PROMPT + self._build_context_lines(message)
+        system_prompt = SYSTEM_PROMPT + self._build_context_lines(message, history, replied)
 
         # Build multimodal contents
         contents = await self._build_contents(message)
@@ -476,11 +395,9 @@ class BeerAgent:
                 logger.debug("Suppressed personality reply for group %s", message.group_id)
                 return None
 
-        if reply:
-            # Consume rate limit token for tool-call replies too
-            if ctx.tools_called:
-                self._get_bucket(message.group_id).consume()
-            self.record_message(message.group_id, reply, "Beerius", is_bot=True)
+        # Tool-call replies are always sent, but still spend a token.
+        if reply and ctx.tools_called:
+            self._get_bucket(message.group_id).consume()
 
         return reply
 

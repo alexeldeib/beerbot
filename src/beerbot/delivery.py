@@ -1,7 +1,6 @@
 """Durable GroupMe inbox execution and independently claimed outbound delivery."""
 
 import asyncio
-import copy
 import json
 import logging
 import time
@@ -160,18 +159,20 @@ async def accept_message(message: GroupMeMessage, agent: str = "beerius") -> dic
     return {"status": "ok", "action": "queued" if row else "duplicate"}
 
 
-async def accept_context(message: GroupMeMessage) -> None:
-    """Keep beerdev's own posts as completed, never-processed rows in its thread: replies to them
-    route to beerdev, and "veto" in reply to "💡 Queued: … /issues/31" carries its issue."""
+async def accept_context(message: GroupMeMessage, agent: str) -> None:
+    """Keep a bot's own post, as GroupMe echoes it back, as a completed, never-processed row:
+    it is chat history and a reply target. Replies to beerdev's posts route to beerdev, and "veto"
+    in reply to "💡 Queued: … /issues/31" carries its issue."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO message_inbox(group_id,message_id,payload,state,completed_at,agent)
-               VALUES($1,$2,$3::jsonb,'completed',NOW(),'beerdev')
+               VALUES($1,$2,$3::jsonb,'completed',NOW(),$4)
                ON CONFLICT(group_id,message_id) DO NOTHING""",
             message.group_id,
             message.id,
             message.model_dump_json(),
+            agent,
         )
 
 
@@ -230,10 +231,6 @@ async def execute_one(agent) -> bool:
             if not pending or not await _lock_group(conn, row["group_id"]):
                 return False
             group_id = row["group_id"]
-            # Preserve legacy in-memory behavior on rollback; durable history
-            # takes over after the first completed run and survives restarts.
-            history_before = copy.deepcopy(agent._get_history(group_id))
-            bucket_before = copy.deepcopy(agent._get_bucket(group_id))
             finished, outbox_id = False, None
             try:
                 async with conn.transaction():
@@ -244,43 +241,28 @@ async def execute_one(agent) -> bool:
                             "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id=$1)", group_id
                         ):
                             raise PermissionError("Group is no longer registered")
-                        payload = row["payload"]
-                        message = GroupMeMessage.model_validate_json(payload)
-                        history = await conn.fetch(
-                            """SELECT payload,reply,agent FROM message_inbox
-                               WHERE group_id=$1 AND state='completed' AND payload IS NOT NULL
-                               ORDER BY id DESC LIMIT 10""",
-                            group_id,
-                        )
-                        if history:
-                            agent._get_history(group_id).clear()
-                            for previous in reversed(history):
-                                msg = GroupMeMessage.model_validate_json(previous["payload"])
-                                placeholder = (
-                                    "(video)"
-                                    if any(a.type == "video" for a in msg.attachments)
-                                    else "(image)"
-                                )
-                                agent.record_message(
+                        message = GroupMeMessage.model_validate_json(row["payload"])
+                        # The chat before this message, as stored: everyone's messages and both
+                        # bots' posts, within retention.
+                        history = [
+                            GroupMeMessage.model_validate_json(previous["payload"])
+                            for previous in reversed(
+                                await conn.fetch(
+                                    """SELECT payload FROM message_inbox WHERE group_id=$1
+                                       AND id<$2 AND payload IS NOT NULL
+                                       ORDER BY id DESC LIMIT 10""",
                                     group_id,
-                                    msg.text or placeholder,
-                                    msg.name,
-                                    is_bot=msg.sender_type == "bot",
-                                    message_id=msg.id,
-                                    user_id=msg.user_id,
+                                    row["id"],
                                 )
-                                # beerdev's answers arrive as its own posts (context rows).
-                                if previous["reply"] and previous["agent"] == "beerius":
-                                    agent.record_message(
-                                        group_id, previous["reply"], "Beerius", is_bot=True
-                                    )
+                            )
+                        ]
                         with bind_execution(conn) as scope:
                             if row["agent"] == "beerdev":
                                 from . import beerdev  # beerdev reads status from this module
 
                                 reply = await beerdev.process(message, agent)
                             else:
-                                reply = await agent.process_message(message)
+                                reply = await agent.process_message(message, history)
                             if scope.failed:
                                 raise RuntimeError("Tool execution failed")
                             trace = json.dumps(scope.tools)
@@ -300,11 +282,7 @@ async def execute_one(agent) -> bool:
                                 group_id,
                                 reply,
                             )
-            except BaseException as exc:
-                agent._message_history[group_id] = history_before
-                agent._rate_limiters[group_id] = bucket_before
-                if not isinstance(exc, Exception):
-                    raise
+            except Exception as exc:
                 code = type(exc).__name__
                 state = (
                     "failed"

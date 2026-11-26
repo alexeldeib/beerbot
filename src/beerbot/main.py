@@ -226,12 +226,16 @@ async def groupme_callback(request: Request):
         return JSONResponse({"error": "Invalid message format"}, status_code=400)
 
     if message.sender_type == "bot":
-        # beerdev's own messages become context for replies to them; no bot message is processed.
-        if message.name == "beerdev" and (
+        # Our bots' own posts, echoed right after we deliver them (the database is awake), become
+        # history and reply targets. No bot message is processed, and other bots' are ignored.
+        # ponytail: matched by GroupMe bot name; a group whose Beerius bot has another name keeps
+        # no history of its replies.
+        agent = message.name.lower()
+        if agent in ("beerius", "beerdev") and (
             not settings.require_registered_groups
             or await group_repo.get_by_group_id(message.group_id)
         ):
-            await accept_context(message)
+            await accept_context(message, agent)
         return {"status": "ignored", "reason": "bot message"}
 
     if settings.require_registered_groups:

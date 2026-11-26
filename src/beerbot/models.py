@@ -62,6 +62,13 @@ class GroupMeMessage(BaseModel):
     text: Optional[str] = None
     user_id: str
 
+    @property
+    def reply_id(self) -> str | None:
+        """The GroupMe id of the message this one replies to, if any."""
+        return next(
+            (a.reply_id for a in self.attachments if a.type == "reply" and a.reply_id), None
+        )
+
 
 class User(BaseModel):
     """User who has logged beers."""

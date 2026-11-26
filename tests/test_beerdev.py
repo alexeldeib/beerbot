@@ -95,7 +95,7 @@ async def test_router_takes_mentions_and_replies_in_beerdevs_thread(pg):
         text=LINKED,
         created_at=0,
     )
-    await delivery.accept_context(line)
+    await delivery.accept_context(line, "beerdev")
     await delivery.accept_message(msg("+1 beer", id="b-1"))
     assert await beerdev.addressed(msg("veto", id="m2", reply_to="dev-1"))
     assert not await beerdev.addressed(msg("lol", id="m3", reply_to="b-1"))  # Beerius's thread
@@ -194,11 +194,13 @@ async def test_beerdev_answers_post_as_its_bot_in_the_thread(pg, monkeypatch):
         "bot_id": "beerdev-bot",
         "reply_to": "q1",
     }
-    # Beerius's history never claims beerdev's answer as its own.
+    # Beerius's history never claims beerdev's answer as its own: it shows the question only
+    # until beerdev's own post comes back as beerdev's.
     monkeypatch.setattr(agent, "process_message", AsyncMock(return_value=None))
     await delivery.accept_message(msg("+1 beer", id="b1"))
     assert await delivery.execute_one(agent)
-    assert all(entry.user_name != "Beerius" for entry in agent._get_history("g1"))
+    history = agent.process_message.await_args.args[1]
+    assert [(m.name, m.text) for m in history] == [("Pal", "beerdev what's our spend?")]
 
 
 def test_the_image_ships_every_doc_beerdev_can_read():

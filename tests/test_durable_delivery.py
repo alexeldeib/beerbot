@@ -49,7 +49,7 @@ async def test_duplicate_receipt_and_delivery_retry_never_repeat_mutations(pg, m
     await setup(pg)
     calls = 0
 
-    async def process(msg):
+    async def process(msg, history):
         nonlocal calls
         calls += 1
         tools = {t.__name__: t for t in create_tools(context(msg))}
@@ -85,7 +85,7 @@ async def test_duplicate_receipt_and_delivery_retry_never_repeat_mutations(pg, m
 async def test_partial_round_failure_rolls_back_user_drinks_and_debt(pg, monkeypatch):
     await setup(pg)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](2, "beer", ["alice", "bob"])
         return "Must not send"
@@ -109,7 +109,7 @@ async def test_cancellation_after_undo_rolls_back_and_restart_retries_once(pg, m
     )
     await pg.execute("INSERT INTO beers(user_id,group_id,quantity) VALUES($1,'g1',3)", user)
 
-    async def interrupted(msg):
+    async def interrupted(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["undo_last_drink"]()
         raise asyncio.CancelledError()
@@ -122,7 +122,7 @@ async def test_cancellation_after_undo_rolls_back_and_restart_retries_once(pg, m
     assert await pg.fetchval("SELECT SUM(quantity) FROM beers") == 3
     assert await pg.fetchval("SELECT attempts FROM message_inbox") == 1  # Counted at the claim.
 
-    async def recovered(msg, *history):
+    async def recovered(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["undo_last_drink"]()
         return "Undone"
@@ -145,7 +145,7 @@ async def test_a_message_that_kills_the_process_stops_blocking_its_group(pg, mon
     monkeypatch.setattr(delivery, "UNPROCESSED", {})
     agent = BeerAgent()
 
-    async def process(msg, *history):
+    async def process(msg, history):
         if msg.id == "poison":
             raise asyncio.CancelledError  # To Postgres, the same as the process dying.
         return None
@@ -180,7 +180,7 @@ async def test_parallel_workers_serialize_group_and_allow_other_group(pg, monkey
     started, release = asyncio.Event(), asyncio.Event()
     seen = []
 
-    async def process(msg):
+    async def process(msg, history):
         seen.append(msg.id)
         if msg.id == "first":
             started.set()
@@ -283,7 +283,7 @@ async def test_uncertain_admin_retry_only_resends_saved_reply(pg, monkeypatch):
 async def test_swallowed_tool_failure_rolls_back(pg, monkeypatch):
     await setup(pg)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](1, "beer")
         try:
@@ -304,7 +304,7 @@ async def test_bad_tool_input_undoes_only_that_tool_and_still_replies(pg, monkey
     await setup(pg)
     from src.beerbot import tools as tools_module
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["add_debt"]("bob", 3)
         failing = AsyncMock(side_effect=ValueError("bad drink"))
@@ -326,7 +326,7 @@ async def test_execution_deadline_rolls_back_mutations(pg, monkeypatch):
     await setup(pg)
     monkeypatch.setattr("src.beerbot.delivery.EXECUTION_TIMEOUT", 0.2)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](1, "beer")
         await asyncio.sleep(5)
@@ -386,22 +386,32 @@ async def test_delivery_retry_limit_and_expiration(pg, monkeypatch):
     assert not await retry_delivery(await pg.fetchval("SELECT id FROM message_outbox"), True)
 
 
-async def test_completed_history_survives_new_agent(pg, monkeypatch):
+async def test_history_is_the_stored_chat_before_the_message(pg, monkeypatch):
+    # Read from the inbox for every message: it survives restarts, never outlives retention,
+    # and never includes the message itself or what came after it.
     await setup(pg)
+    await accept_message(message("expired", text="old news"))
+    await pg.execute("UPDATE message_inbox SET payload=NULL, state='completed'")  # Retention.
     first = BeerAgent()
-    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="Previous reply"))
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍺 for Alice"))
     await accept_message(message())
     await execute_one(first)
-    replacement = BeerAgent()
+    echo = message("echo", text="+1🍺 for Alice").model_copy(
+        update={"sender_type": "bot", "name": "beerius"}
+    )
+    await delivery.accept_context(echo, "beerius")  # GroupMe echoes the delivered reply.
+    for id, text in (("current", "how many?"), ("later", "+1 wine")):
+        await accept_message(message(id, text=text))
+    seen = {}
 
-    async def inspect_history(msg):
-        assert [m.text for m in replacement._get_history("g1")] == ["+1 beer", "Previous reply"]
+    async def process(msg, history):
+        seen[msg.id] = [(m.name, m.text) for m in history]
         return None
 
-    monkeypatch.setattr(replacement, "process_message", inspect_history)
-    await accept_message(message("follow-up", text="how many?"))
-    await execute_one(replacement)
-    assert await pg.fetchval("SELECT COUNT(*) FROM message_inbox WHERE state='completed'") == 2
+    replacement = BeerAgent()
+    monkeypatch.setattr(replacement, "process_message", process)
+    assert await execute_one(replacement)
+    assert seen == {"current": [("Alice", "+1 beer"), ("beerius", "+1🍺 for Alice")]}
 
 
 def test_audited_tools_preserve_google_function_schemas():
