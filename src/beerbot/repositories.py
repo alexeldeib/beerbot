@@ -100,8 +100,9 @@ class BeerRepository:
         message_id: str | None = None,
         split_the_g: int = 0,
         drink_type: DrinkType = DrinkType.BEER,
+        logged_at: datetime | None = None,
     ) -> Beer | None:
-        """Log a drink entry.
+        """Log a drink entry, at `logged_at` (when it was sent; never later than now).
 
         Returns the created Beer/Drink, or None if this was a duplicate
         (same message_id + user_id + drink_type). Allows different drink types
@@ -112,8 +113,10 @@ class BeerRepository:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO beers (
+                    user_id, group_id, quantity, message_id, split_the_g, drink_type, logged_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, LEAST($7::timestamptz, NOW()))
                 ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                 DO NOTHING
                 RETURNING id, user_id, group_id, quantity, logged_at, message_id, split_the_g,
@@ -125,6 +128,7 @@ class BeerRepository:
                 message_id,
                 split_the_g,
                 drink_type.value,
+                logged_at,
             )
             return Beer(**dict(row)) if row else None
 
@@ -315,7 +319,7 @@ class BeerRepository:
                 WHERE id = (
                     SELECT id FROM beers
                     WHERE user_id = $1 AND group_id = $2
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                 )
                 RETURNING quantity
@@ -342,7 +346,7 @@ class BeerRepository:
                     """
                     SELECT id, quantity FROM beers
                     WHERE user_id = $1 AND group_id = $2
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
@@ -388,7 +392,7 @@ class BeerRepository:
                     """
                     SELECT id, quantity FROM beers
                     WHERE user_id = $1 AND group_id = $2 AND drink_type = $3
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
@@ -560,7 +564,7 @@ class BeerRepository:
                     """
                     SELECT id, split_the_g FROM beers
                     WHERE user_id = $1 AND group_id = $2 AND split_the_g > 0
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
@@ -903,14 +907,22 @@ class DebtRepository:
 class ZynRepository:
     """Zyn pouch tracking, kept separate from alcoholic drink counts."""
 
-    async def log(self, user_id: int, group_id: str, message_id: str, quantity: int) -> bool:
-        """Log pouches once per (message, user). Returns False for a duplicate."""
+    async def log(
+        self,
+        user_id: int,
+        group_id: str,
+        message_id: str,
+        quantity: int,
+        logged_at: datetime | None = None,
+    ) -> bool:
+        """Log pouches once per (message, user), at `logged_at` (when sent; never later than
+        now). Returns False for a duplicate."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO zyn_logs (user_id, group_id, quantity, message_id)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO zyn_logs (user_id, group_id, quantity, message_id, logged_at)
+                VALUES ($1, $2, $3, $4, LEAST($5::timestamptz, NOW()))
                 ON CONFLICT (message_id, user_id) DO NOTHING
                 RETURNING id
                 """,
@@ -918,6 +930,7 @@ class ZynRepository:
                 group_id,
                 quantity,
                 message_id,
+                logged_at,
             )
             return row is not None
 

@@ -5,6 +5,7 @@ CI always supplies a disposable PostgreSQL service.
 """
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -13,6 +14,7 @@ from src.beerbot import database
 from src.beerbot.models import DrinkType
 from src.beerbot.reconciliation import LOCK_KEY, ReconciliationBusy, reconcile_identities
 from src.beerbot.repositories import beer_repo, user_repo
+from src.beerbot.tools import ToolContext, create_tools
 
 
 async def seed(pool):
@@ -152,6 +154,31 @@ async def test_failed_page_rolls_back_all_repairs(pg):
         await reconcile_identities(apply=True)
     assert await pg.fetchval("SELECT COUNT(*) FROM people") == 0
     assert await pg.fetchval("SELECT COUNT(*) FROM users WHERE person_id IS NOT NULL") == 0
+
+
+async def test_drinks_and_zyn_count_from_when_they_were_sent(pg):
+    # A backlog processed a day late still lands on the day it was sent; a clock ahead of ours
+    # never logs into the future; a retry is still a duplicate.
+    await database.init_db()
+
+    def tools(message_id: str, sent_at: datetime):
+        ctx = ToolContext("g1", message_id, "alice", "Alice", None, [], sent_at=sent_at)
+        return {tool.__name__: tool for tool in create_tools(ctx)}
+
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    await tools("m1", yesterday)["log_drinks"](2, "beer")
+    await tools("m2", yesterday)["log_split_the_g"]()
+    await tools("m3", yesterday)["log_zyn"](3)
+    assert (await tools("m1", yesterday)["log_drinks"](2, "beer"))["results"][0]["status"] == (
+        "duplicate"
+    )
+    assert await pg.fetchval("SELECT array_agg(DISTINCT logged_at) FROM beers") == [yesterday]
+    assert await pg.fetchval("SELECT logged_at FROM zyn_logs") == yesterday
+    today = tools("m4", datetime.now(UTC))
+    assert (await today["get_today_stats"]())["total"] == 0
+    assert (await today["get_zyn_stats"]())["entries"][0]["today"] == 0
+    await tools("m5", datetime.now(UTC) + timedelta(hours=3))["log_drinks"](1, "wine")
+    assert await pg.fetchval("SELECT logged_at <= now() FROM beers WHERE drink_type='wine'")
 
 
 async def test_chat_queries_survive_a_migration_adding_a_column(pg):

@@ -3,6 +3,7 @@
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from google import genai
@@ -285,7 +286,6 @@ class BeerAgent:
         answered: GroupMeMessage | None = None,
     ) -> str:
         """Build context section for system prompt."""
-        from datetime import datetime
         from zoneinfo import ZoneInfo
 
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -360,6 +360,7 @@ class BeerAgent:
             if target and target.sender_type != "bot"
             else None,
             is_owner=message.user_id == settings.owner_user_id,
+            sent_at=datetime.fromtimestamp(message.created_at, UTC),
         )
         tools = create_tools(ctx)
 
@@ -416,7 +417,6 @@ class BeerAgent:
         if not self.client:
             return None
 
-        from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
 
         eastern = ZoneInfo("America/New_York")

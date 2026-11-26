@@ -33,6 +33,8 @@ class ToolContext:
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
     replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
     is_owner: bool = False  # From the sender's GroupMe id, never from the model.
+    # When GroupMe received the message: a backlog still counts on the day it was sent.
+    sent_at: datetime | None = None
     tools_called: bool = field(default=False, init=False)
     reply_text: str | None = field(default=None, init=False)
 
@@ -124,6 +126,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                 message_id=ctx.message_id,
                 split_the_g=0,
                 drink_type=dt,
+                logged_at=ctx.sent_at,
             )
             if beer is None:
                 results.append({"user": user.name, "status": "duplicate"})
@@ -217,6 +220,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             message_id=ctx.message_id,
             split_the_g=1,
             drink_type=DrinkType.BEER,
+            logged_at=ctx.sent_at,
         )
         if beer is None:
             return {"user": user.name, "status": "duplicate"}
@@ -311,7 +315,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         count = max(1, min(20, count))
         uid = _validate_user_id(ctx, target_user_id)
         user = await _get_or_create_user(ctx, uid)
-        logged = await zyn_repo.log(user.id, ctx.group_id, ctx.message_id, count)
+        logged = await zyn_repo.log(user.id, ctx.group_id, ctx.message_id, count, ctx.sent_at)
         if not logged:
             return {"user": user.name, "error": "Zyn already logged for this message"}
         return {"user": user.name, "logged": count}

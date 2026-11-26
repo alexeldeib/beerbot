@@ -5,6 +5,7 @@ beerdev runs these before shipping; add one scenario per chat feature.
 """
 
 import json
+import time
 import os
 
 import httpx
@@ -37,7 +38,7 @@ async def chat(pg):
             sender_type="user",
             name=sender.title(),
             text=text,
-            created_at=0,
+            created_at=int(time.time()),
             attachments=list(attachments),
         )
         # Routed exactly as the callback routes: beerdev's messages never reach Beerius.
@@ -58,7 +59,7 @@ async def chat(pg):
             sender_type="bot",
             name="beerius",
             text=text,
-            created_at=0,
+            created_at=int(time.time()),
         )
         await accept_context(post, "beerius")
         return post.id
