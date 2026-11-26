@@ -37,6 +37,17 @@ def failure_detail(exc: BaseException) -> str:
     return f"{type(exc).__name__} at {where or 'unknown'}"[:500]
 
 
+def _backoff(attempts: int) -> int:
+    return min(300, 5 * 2**attempts)
+
+
+async def _lock_group(conn, group_id: str) -> bool:
+    """One execution per group at a time, across machines."""
+    return await conn.fetchval(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))", "beerbot-message:" + group_id
+    )
+
+
 def record_terminal(code: str) -> None:
     TERMINAL_FAILURES[code] += 1
     dispatch("ops.yml", every=600, reason=code)  # No-op without a dispatch token.
@@ -165,12 +176,14 @@ async def accept_context(message: GroupMeMessage) -> None:
 
 
 async def execute_one(agent) -> bool:
-    """Claim a group's oldest pending message and commit all DB effects together.
+    """Claim a group's oldest pending message, then commit all its DB effects together.
 
-    The outer transaction holds the inbox row and group lock. A savepoint owns
-    all model/tool effects, so execution failure can roll them back while the
-    outer transaction records a bounded retry. Process death rolls everything
-    back automatically, leaving the durable inbox message pending.
+    The claim commits the attempt before anything runs, leasing the row for the retry backoff so
+    no peer takes it before execution locks it again: a message that kills the process still uses
+    up its attempts instead of blocking its group forever. Execution holds the inbox row and the
+    group lock. A savepoint owns all model/tool effects, so execution failure can roll them back
+    while the outer transaction records a bounded retry. Process death rolls execution back,
+    leaving the durable inbox message pending.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -185,12 +198,36 @@ async def execute_one(agent) -> bool:
                         AND earlier.id<i.id)
                 ORDER BY i.id LIMIT 1 FOR UPDATE OF i SKIP LOCKED
             """)
-            if row is None:
+            if row is None or not await _lock_group(conn, row["group_id"]):
                 return False
-            if not await conn.fetchval(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
-                "beerbot-message:" + row["group_id"],
-            ):
+            attempts = row["attempts"] + 1
+            if attempts > MAX_EXECUTION_ATTEMPTS:  # Every earlier attempt died with its process.
+                await conn.execute(
+                    """UPDATE message_inbox SET state='failed',error_code='interrupted',
+                       error_detail=$2 WHERE id=$1""",
+                    row["id"],
+                    f"stopped mid-run {row['attempts']} times (out of memory, crash, or restart)",
+                )
+            else:
+                await conn.execute(
+                    """UPDATE message_inbox SET attempts=$2,
+                       available_at=NOW()+$3*INTERVAL '1 second' WHERE id=$1""",
+                    row["id"],
+                    attempts,
+                    _backoff(attempts),
+                )
+        if attempts > MAX_EXECUTION_ATTEMPTS:
+            logger.error("Message execution failed: inbox=%s error=interrupted", row["id"])
+            UNPROCESSED.pop(row["id"], None)
+            record_terminal("interrupted")
+            return True
+        async with conn.transaction():
+            # Leased above, so no peer claims it: this lock only waits out a passing scan, and
+            # retention may have expired it meanwhile.
+            pending = await conn.fetchval(
+                "SELECT state='pending' FROM message_inbox WHERE id=$1 FOR UPDATE", row["id"]
+            )
+            if not pending or not await _lock_group(conn, row["group_id"]):
                 return False
             group_id = row["group_id"]
             # Preserve legacy in-memory behavior on rollback; durable history
@@ -249,8 +286,7 @@ async def execute_one(agent) -> bool:
                             trace = json.dumps(scope.tools)
                         await conn.execute(
                             """UPDATE message_inbox SET state='completed', completed_at=NOW(),
-                               attempts=attempts+1, reply=$2,tool_results=$3::jsonb,error_code=NULL
-                               WHERE id=$1""",
+                               reply=$2,tool_results=$3::jsonb,error_code=NULL WHERE id=$1""",
                             row["id"],
                             reply,
                             trace,
@@ -270,20 +306,18 @@ async def execute_one(agent) -> bool:
                 if not isinstance(exc, Exception):
                     raise
                 code = type(exc).__name__
-                attempts = row["attempts"] + 1
                 state = (
                     "failed"
                     if attempts >= MAX_EXECUTION_ATTEMPTS or isinstance(exc, PermissionError)
                     else "pending"
                 )
                 await conn.execute(
-                    """UPDATE message_inbox SET attempts=$2,state=$3,error_code=$4,
-                       available_at=NOW()+$5*INTERVAL '1 second',error_detail=$6 WHERE id=$1""",
+                    """UPDATE message_inbox SET state=$2,error_code=$3,
+                       available_at=NOW()+$4*INTERVAL '1 second',error_detail=$5 WHERE id=$1""",
                     row["id"],
-                    attempts,
                     state,
                     code,
-                    min(300, 5 * 2**attempts),
+                    _backoff(attempts),
                     failure_detail(exc),
                 )
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)

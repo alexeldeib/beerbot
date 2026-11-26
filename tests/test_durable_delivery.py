@@ -120,18 +120,57 @@ async def test_cancellation_after_undo_rolls_back_and_restart_retries_once(pg, m
     with pytest.raises(asyncio.CancelledError):
         await execute_one(agent)
     assert await pg.fetchval("SELECT SUM(quantity) FROM beers") == 3
-    assert await pg.fetchval("SELECT attempts FROM message_inbox") == 0
+    assert await pg.fetchval("SELECT attempts FROM message_inbox") == 1  # Counted at the claim.
 
-    async def recovered(msg):
+    async def recovered(msg, *history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["undo_last_drink"]()
         return "Undone"
 
     replacement = BeerAgent()
     monkeypatch.setattr(replacement, "process_message", recovered)
+    assert not await execute_one(replacement)  # Leased for the retry backoff.
+    await pg.execute("UPDATE message_inbox SET available_at=NOW()")
     assert await execute_one(replacement)
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
     assert not await execute_one(replacement)
+
+
+async def test_a_message_that_kills_the_process_stops_blocking_its_group(pg, monkeypatch):
+    # Process death rolls the execution back, so only an attempt committed at the claim bounds a
+    # message that runs out of memory every time.
+    await setup(pg)
+    reports = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, **kw: reports.append(kw["reason"]))
+    monkeypatch.setattr(delivery, "UNPROCESSED", {})
+    agent = BeerAgent()
+
+    async def process(msg, *history):
+        if msg.id == "poison":
+            raise asyncio.CancelledError  # To Postgres, the same as the process dying.
+        return None
+
+    monkeypatch.setattr(agent, "process_message", process)
+    await accept_message(message("poison"))
+    await accept_message(message("next"))
+    for attempt in range(1, delivery.MAX_EXECUTION_ATTEMPTS + 1):
+        with pytest.raises(asyncio.CancelledError):
+            await execute_one(agent)
+        counted = await pg.fetchval("SELECT attempts FROM message_inbox WHERE message_id='poison'")
+        assert counted == attempt
+        assert not await execute_one(agent)  # Leased, and "next" waits its turn behind it.
+        await pg.execute("UPDATE message_inbox SET available_at=NOW()")
+    assert await execute_one(agent)  # Out of attempts: failed instead of run a fourth time.
+    poison = await pg.fetchrow(
+        "SELECT state,error_code,error_detail FROM message_inbox WHERE message_id='poison'"
+    )
+    assert (poison["state"], poison["error_code"]) == ("failed", "interrupted")
+    assert "3 times" in poison["error_detail"] and reports == ["interrupted"]
+    assert await execute_one(agent)
+    assert await pg.fetchval("SELECT state FROM message_inbox WHERE message_id='next'") == (
+        "completed"
+    )
+    assert delivery.UNPROCESSED == {}
 
 
 async def test_parallel_workers_serialize_group_and_allow_other_group(pg, monkeypatch):
