@@ -37,8 +37,10 @@ jobs:
     permissions:
       contents: read
       issues: read
+      pull-requests: read
     outputs:
       issue: ${{ steps.pick.outputs.issue }}
+      held: ${{ steps.held.outputs.held }}
     steps:
       - uses: actions/checkout@v7
 
@@ -55,9 +57,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Held for the owner, then approved: its open PR ships as it is, without a new build.
+      - id: held
+        if: steps.pick.outputs.issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.pick.outputs.issue }}
+        run: |
+          held="$(gh pr list -R "$GITHUB_REPOSITORY" --head "beerdev/issue-$ISSUE" --state open \
+            --json isCrossRepository --jq 'any(.[]; .isCrossRepository | not)')"
+          echo "held=$held" >> "$GITHUB_OUTPUT"
+
   implement:
     needs: pick
-    if: needs.pick.outputs.issue
+    if: needs.pick.outputs.issue && needs.pick.outputs.held != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Everything agent-written runs here: a read-only token and no deploy or GroupMe credentials.
@@ -256,6 +269,8 @@ jobs:
 
   ship:
     needs: [pick, implement, review]
+    # Also when implement and review were skipped for an approved held PR; never after a failure.
+    if: ${{ !cancelled() && !failure() && needs.pick.outputs.issue }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: beerdev
@@ -266,16 +281,20 @@ jobs:
       issues: write
     env:
       ISSUE: ${{ needs.pick.outputs.issue }}
+      HELD: ${{ needs.pick.outputs.held }}
       GH_TOKEN: ${{ github.token }}
       VERDICT: ${{ needs.review.outputs.verdict }}
       REASON: ${{ needs.review.outputs.reason }}
     steps:
       # A fresh checkout: nothing the agent wrote (code, hooks, git config) ever runs in this job.
+      # Full history, to bring a held PR up to date with main.
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
+        if: needs.pick.outputs.held != 'true'
         with:
           name: beerdev
           path: /tmp/beerdev
@@ -293,6 +312,10 @@ jobs:
           fi
           if ! jq -e 'any(.labels[]; .name == "beerdev")' /tmp/request.json > /dev/null; then
             echo "The issue is not queued for beerdev (no beerdev label), so nothing ships."
+            exit 0
+          fi
+          if [ "$HELD" = true ]; then  # The owner approved its held PR: nothing new to apply.
+            echo "ship=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           from_chat() { jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; }
@@ -352,47 +375,71 @@ jobs:
           fi
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
-          git switch -c "$branch"
-          # The history of what shipped lives in the repository, one line per issue.
-          [ -f CHANGELOG.md ] || printf '# Changelog\n\nWhat beerdev shipped, oldest first.\n\n' > CHANGELOG.md
-          printf -- '- %s: %s (#%s)\n' "$(date -u +%Y-%m-%d)" "$title" "$ISSUE" >> CHANGELOG.md
-          git add CHANGELOG.md
-          git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "feat: $title" -m "Closes #$ISSUE"
-          git push -q "https://x-access-token:$SHIP_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
-            "HEAD:refs/heads/$branch"
-          note=/tmp/beerdev/announcement.md
-          if [ ! -s "$note" ]; then
-            note=/tmp/request.md
-            jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
-          fi
-          { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
-          if [ "$HOLD" = true ]; then
-            # Not approved: the owner reviews and merges it by hand, or closes it.
-            printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
-            url="$(GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" \
-              --body-file /tmp/beerdev/pr.md)"
-            gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
-            gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
-            if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
-              printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
+          remote="https://x-access-token:$SHIP_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          as_bot=(-c core.hooksPath=/dev/null -c user.name="github-actions[bot]"
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com")
+          # The CI run for a commit: wait for it to start, then for it to pass.
+          watch_ci() {
+            run=""
+            for _ in $(seq 36); do
+              run="$(gh run list --workflow ci.yml --commit "$1" \
+                --json databaseId --jq '.[0].databaseId // empty')"
+              [ -n "$run" ] && break
+              sleep 5
+            done
+            gh run watch "$run" --exit-status --interval 30 > /dev/null
+          }
+          if [ "$HELD" = true ]; then
+            # The owner approved work held for them, and that approval is the review: merge its PR
+            # as it stands once it's up to date with main and its checks pass. Only this
+            # repository's own branch: a fork's PR can carry the same branch name.
+            pr="$(GH_TOKEN="$SHIP_TOKEN" gh pr list --head "$branch" --state open \
+              --json number,isCrossRepository \
+              --jq 'map(select(.isCrossRepository | not))[0].number // empty')"
+            if [ -z "$pr" ]; then
+              echo "::error::$branch has no open PR in this repository"
+              exit 1
             fi
-            exit 0
+            git switch -q -c "$branch" "origin/$branch"
+            # Changelog lines appended on both sides since the hold both stay.
+            echo 'CHANGELOG.md merge=union' >> .git/info/attributes
+            git "${as_bot[@]}" merge -q --no-edit origin/main
+            git push -q "$remote" "HEAD:refs/heads/$branch"
+            watch_ci "$(git rev-parse HEAD)"
+            GH_TOKEN="$SHIP_TOKEN" gh pr merge "$pr" --squash
+          else
+            git switch -c "$branch"
+            # The history of what shipped lives in the repository, one line per issue.
+            [ -f CHANGELOG.md ] || printf '# Changelog\n\nWhat beerdev shipped, oldest first.\n\n' > CHANGELOG.md
+            printf -- '- %s: %s (#%s)\n' "$(date -u +%Y-%m-%d)" "$title" "$ISSUE" >> CHANGELOG.md
+            git add CHANGELOG.md
+            git "${as_bot[@]}" commit -q -m "feat: $title" -m "Closes #$ISSUE"
+            git push -q "$remote" "HEAD:refs/heads/$branch"
+            note=/tmp/beerdev/announcement.md
+            if [ ! -s "$note" ]; then
+              note=/tmp/request.md
+              jq -r '.body // "" | gsub("<!--[^>]*-->"; "")' /tmp/request.json > "$note"
+            fi
+            { cat "$note"; printf '\n\nBuilt by beerdev from a chat request. Closes #%s\n' "$ISSUE"; } > /tmp/beerdev/pr.md
+            if [ "$HOLD" = true ]; then
+              # Not approved: the owner merges it by hand, closes it, or approves the issue in the
+              # chat, which merges it here.
+              printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
+              url="$(GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" \
+                --body-file /tmp/beerdev/pr.md)"
+              gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
+              gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
+              if jq -e '.body // "" | test("beerdev:msg=")' /tmp/request.json > /dev/null; then
+                printf '👀 Needs the owner'"'"'s review: %s (%s)' "$title" "$url" > /tmp/chat.txt
+              fi
+              exit 0
+            fi
+            GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
+            GH_TOKEN="$SHIP_TOKEN" gh pr merge "$branch" --squash
           fi
-          GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
-          GH_TOKEN="$SHIP_TOKEN" gh pr merge "$branch" --squash
 
           # The ship token's merge starts CI, which re-runs the full suite before it deploys.
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          run=""
-          for attempt in $(seq 36); do
-            run="$(gh run list --workflow ci.yml --commit "$sha" \
-              --json databaseId --jq '.[0].databaseId // empty')"
-            [ -n "$run" ] && break
-            sleep 5
-          done
-          gh run watch "$run" --exit-status --interval 30 > /dev/null
+          watch_ci "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
 
           # The agent's how-to note when the group would notice; else a short line for the asker.
           if [ -s /tmp/beerdev/announcement.md ]; then

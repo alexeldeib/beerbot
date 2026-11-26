@@ -192,6 +192,16 @@ def test_beerdev_cannot_change_its_kernel():
     assert "review" in ship["needs"] and "claude-code" in yaml.safe_dump(review)
 
 
+def test_ship_merges_only_what_passed_or_what_the_owner_approved():
+    ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
+    text = "\n".join(step.get("run", "") for step in ship["steps"])
+    # Never after a failed implement, review, or policy check. Skipped ones mean an approved
+    # held PR, which merges only from this repository's own branch, once its checks pass.
+    assert "!failure()" in ship["if"] and "!cancelled()" in ship["if"]
+    assert "isCrossRepository | not" in text and "gh run watch" in text
+    assert not re.search(r"git push[^\n]*(--force|\s-f\b|\s\+)", text)  # Never rewrites history.
+
+
 def test_only_routine_app_code_ships_without_the_reviewer():
     workflow = WORKFLOWS["beerdev-build.yml"]
     routine = workflow["env"]["ROUTINE"]  # For grep -P, in syntax Python's re shares.
