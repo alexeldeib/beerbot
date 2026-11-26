@@ -1020,68 +1020,6 @@ class ZynRepository:
             return [dict(r) for r in rows]
 
 
-class DevRequestRepository:
-    """Asks for beerdev: written by Beerius's tools, pulled and claimed by GitHub."""
-
-    async def file(
-        self,
-        group_id: str,
-        message_id: str,
-        kind: str,
-        title: str = "",
-        spec: str = "",
-        issue: int | None = None,
-    ) -> bool:
-        """Record an ask once per message and kind. Returns False for a duplicate."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """INSERT INTO dev_requests (group_id, message_id, kind, title, spec, issue)
-                   VALUES ($1, $2, $3, $4, $5, $6)
-                   ON CONFLICT (message_id, kind) DO NOTHING RETURNING id""",
-                group_id,
-                message_id,
-                kind,
-                title,
-                spec,
-                issue,
-            )
-            return row is not None
-
-    async def pending(self, limit: int = 50) -> list[dict]:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT id, group_id, message_id, kind, title, spec, issue, created_at
-                   FROM dev_requests WHERE claimed_at IS NULL ORDER BY id LIMIT $1""",
-                limit,
-            )
-            return [dict(row) for row in rows]
-
-    async def message_text(self, group_id: str, message_id: str) -> str:
-        """Text of a message the inbox still holds (three days), such as beerdev's own lines."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            text = await conn.fetchval(
-                """SELECT payload->>'text' FROM message_inbox
-                   WHERE group_id = $1 AND message_id = $2""",
-                group_id,
-                message_id,
-            )
-            return text or ""
-
-    async def claim(self, request_id: int) -> bool:
-        """Mark an ask handled. Idempotent: True whenever the ask exists."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """UPDATE dev_requests SET claimed_at = COALESCE(claimed_at, now())
-                   WHERE id = $1 RETURNING id""",
-                request_id,
-            )
-            return row is not None
-
-
 class GroupRepository:
     """Repository for group-to-bot mapping operations."""
 
@@ -1469,7 +1407,6 @@ user_repo = UserRepository()
 beer_repo = BeerRepository()
 debt_repo = DebtRepository()
 zyn_repo = ZynRepository()
-dev_repo = DevRequestRepository()
 group_repo = GroupRepository()
 gateway_route_repo = GatewayRouteRepository()
 identity_repo = IdentityRepository()

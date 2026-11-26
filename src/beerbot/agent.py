@@ -15,7 +15,7 @@ from .database import execution_scope
 from .llm import model_profile
 from .model_runtime import Media, GoogleSession, CompatibleSession, run_tools
 from .models import GroupMeAttachment, GroupMeMessage
-from .repositories import beer_repo, dev_repo
+from .repositories import beer_repo
 from .tools import ToolContext, create_tools
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ FOLLOW-UP CONVERSATIONS: If recent messages show you just replied and the next m
 RESPOND (rarely): direct address, perfect roast setup, competitive moments.
 STAY SILENT: generic banter, meta-commentary about the bot, messages where you have nothing great to say.
 ZYN: "+1 zyn", "zyn", "2 zyns" means log_zyn for that message (never log_drinks; Zyn is not a drink). Use remove_zyn to correct mistakes and get_zyn_stats for Zyn questions. Zyn never affects drink counts or leaderboards.
-REQUESTS FOR BEERDEV (a new capability like "can the bot track gym sessions?", reports that you misbehave, infra asks, or questions about how you work or what beerdev is building): call ask_beerdev and stay silent. beerdev, the bot's developer, answers in the chat itself. Only the owner can veto or approve beerdev's work: anyone else's veto, approval, or objection is just chat, never an ask.
+BEERDEV is the bot's developer, a separate bot in this chat; messages that mention it go to it, not you. When someone asks you for a capability you don't have, says you're broken, or asks how you work, what you cost, or what's being built, point them to beerdev by name (e.g. "Ask beerdev: \"beerdev, can you track gym sessions?\"") instead of guessing.
 
 === DRINK TYPES ===
 beer — brews, ales, lagers, stouts, IPAs
@@ -285,7 +285,7 @@ class BeerAgent:
             )
         )
 
-    def _build_context_lines(self, message: GroupMeMessage, replied_text: str = "") -> str:
+    def _build_context_lines(self, message: GroupMeMessage) -> str:
         """Build context section for system prompt."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -301,7 +301,7 @@ class BeerAgent:
             lines.append(
                 "Sender is the bot's owner: when they tell you to log, backfill, correct, or "
                 "remove drinks for anyone, do it with the tools even if a rule above says not "
-                "to. Keep the wit. To veto or approve beerdev's work, use steer_beerdev."
+                "to. Keep the wit."
             )
         if mentioned:
             mentions_str = ", ".join(f"{name} (id: {uid})" for uid, name in mentioned)
@@ -321,8 +321,6 @@ class BeerAgent:
                     id_hint = f" (id: {msg.user_id})" if msg.user_id else ""
                     lines.append(f"Replying to [{who}]{id_hint}: {msg.text[:200]}")
                     break
-        if reply_id and replied_text and not any(line.startswith("Replying") for line in lines):
-            lines.append(f"Replying to an earlier message: {replied_text[:200]}")
 
         visible = [msg for msg in history if msg.text not in ("(image)", "(video)")]
         if visible:
@@ -429,18 +427,12 @@ class BeerAgent:
             if att.type == "reply" and att.reply_id:
                 reply_id = att.reply_id
                 break
-        replied_text = ""
         if reply_id:
             history = self._get_history(message.group_id)
             for msg in history:
-                if msg.message_id == reply_id:
-                    replied_text = msg.text  # Includes beerdev's messages, which link issues.
-                    if msg.user_id and not msg.is_bot:
-                        replied_to_user = (msg.user_id, msg.user_name)
+                if msg.message_id == reply_id and msg.user_id and not msg.is_bot:
+                    replied_to_user = (msg.user_id, msg.user_name)
                     break
-            if not replied_text and message.user_id == settings.owner_user_id:
-                # Older than the history window: the owner may be steering a days-old line.
-                replied_text = await dev_repo.message_text(message.group_id, reply_id)
 
         ctx = ToolContext(
             group_id=message.group_id,
@@ -451,13 +443,11 @@ class BeerAgent:
             mentioned_users=mentioned,
             replied_to_user=replied_to_user,
             is_owner=message.user_id == settings.owner_user_id,
-            message_text=message.text or "",
-            replied_text=replied_text,
         )
         tools = create_tools(ctx)
 
         # Build system prompt with context
-        system_prompt = SYSTEM_PROMPT + self._build_context_lines(message, replied_text)
+        system_prompt = SYSTEM_PROMPT + self._build_context_lines(message)
 
         # Build multimodal contents
         contents = await self._build_contents(message)

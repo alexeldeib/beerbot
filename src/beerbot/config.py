@@ -1,7 +1,7 @@
 """Configuration management using pydantic-settings."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from typing import Literal
 
 
@@ -60,7 +60,14 @@ class Settings(BaseSettings):
 
     # Optional: start beerdev scans on mentions and ops checks on failures right away. Without a
     # token, the scheduled workflows pick everything up a little later.
-    github_dispatch_token: str | None = None
+    # Fine-grained, this repository only: Issues and Actions. beerdev files and steers requests
+    # with it, and the app starts workflows. Not GITHUB_TOKEN, which local shells often set.
+    github_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BEERDEV_GITHUB_TOKEN", "GITHUB_DISPATCH_TOKEN"),
+    )
+    beerdev_bot_id: str | None = None  # beerdev's replies post as this bot.
+    ops_token: str | None = None  # Read-only: the status and usage endpoints, nothing else.
     # Monthly model spend (USD, list prices) above which ops files an inbox issue.
     model_budget_usd: float = 5.0
     github_repository: str = "alexeldeib/beerbot"

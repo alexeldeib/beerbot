@@ -80,19 +80,30 @@ class GroupMeClient:
         """
         return (await self.deliver_message(text, group_id)).state == "sent"
 
-    async def deliver_message(self, text: str, group_id: str | None = None) -> DeliveryResult:
-        """Classify delivery without automatically repeating ambiguous sends."""
-        bot_id = await self._get_bot_id(group_id)
+    async def deliver_message(
+        self,
+        text: str,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        reply_to: str | None = None,
+    ) -> DeliveryResult:
+        """Classify delivery without automatically repeating ambiguous sends. `bot_id` posts as
+        another bot (beerdev); `reply_to` threads the post under that message."""
+        bot_id = bot_id or await self._get_bot_id(group_id)
         if not bot_id:
             return DeliveryResult("failed", "unregistered_group")
+        post = {"bot_id": bot_id, "text": text}
+        thread = [{"type": "reply", "reply_id": reply_to, "base_reply_id": reply_to}]
 
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
                     self.API_URL,
-                    json={"bot_id": bot_id, "text": text},
+                    json=post | ({"attachments": thread} if reply_to else {}),
                     timeout=10.0,
                 )
+                if reply_to and response.status_code == 400:  # Rejected, so nothing posted:
+                    response = await client.post(self.API_URL, json=post, timeout=10.0)
                 if 200 <= response.status_code < 300:
                     return DeliveryResult("sent")
                 code = f"http_{response.status_code}"

@@ -1,5 +1,5 @@
 """Best-effort GitHub workflow dispatches: beerdev when Beerius hands it an ask, ops when a message
-fails. Optional: without GITHUB_DISPATCH_TOKEN, scheduled runs catch up."""
+fails. Optional: without BEERDEV_GITHUB_TOKEN, scheduled runs catch up."""
 
 import asyncio
 import logging
@@ -16,7 +16,7 @@ _tasks: set[asyncio.Task] = set()
 
 def dispatch(workflow: str, *, every: float, **inputs: str) -> bool:
     """Start `workflow` in the background, at most once per `every` seconds per workflow+inputs."""
-    if not settings.github_dispatch_token:
+    if not settings.github_token:
         return False
     key = workflow + repr(sorted(inputs.items()))
     now = time.monotonic()
@@ -36,7 +36,7 @@ async def _post(workflow: str, inputs: dict[str, str]) -> None:
         async with httpx.AsyncClient(timeout=10) as http:
             response = await http.post(
                 url,
-                headers={"Authorization": f"Bearer {settings.github_dispatch_token}"},
+                headers={"Authorization": f"Bearer {settings.github_token}"},
                 json={"ref": "main", "inputs": inputs},
             )
         if response.status_code != 204:

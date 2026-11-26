@@ -57,6 +57,7 @@ src/beerbot/
 ├── model_runtime.py  # Bounded tool loop, Google and OpenAI-compatible sessions
 ├── delivery.py       # Durable message execution, outbox, retries, retention and status
 ├── usage.py          # Model token counts, list prices, spend report against MODEL_BUDGET_USD
+├── beerdev.py        # beerdev, the peer agent: router rule, prompt, narrow tools
 ├── tools.py          # Tool factory: async closures with validation
 ├── llm.py            # Provider-neutral model profile and capability metadata
 ├── gateways/         # Canonical inbound transport contracts and adapters
@@ -91,9 +92,9 @@ src/beerbot/
 - **Migrations**: never `SELECT *` (or `RETURNING *`) from a table a migration alters. Neon's pooler caches server-side plans by query text, so the old plan fails with `InvalidCachedStatementError` until the query text changes (2026-11-25 outage)
 - **Private data**: Never add production messages, media, or local evaluation corpora to Git
 - **beerdev kernel**: beerdev may change workflows, scripts, Docker, Fly, and dependencies, but never `.github/workflows/beerdev-build.yml`, `beerdev-lead.yml`, `.github/beerdev-*.md`, `.claude/`, or `tests/test_policy.py`. The policy test pins secrets, write permissions, triggers, hosts, deploy verification and rollback, and owner-only steering: update it by hand when changing those on purpose. Changes beyond `src/`, `docs/`, `README.md`, and `tests/test_*.py` need the independent reviewer, or they wait as a PR in the inbox
-- **beerdev**: Beerius hands asks over with `ask_beerdev` (feature/bug/infra/question) and the owner's `steer_beerdev` (refused in code for anyone else, bound to the owner's words) into `dev_requests`; the app dispatches `beerdev.yml` after commit (and hourly while unclaimed). `scripts/beerdev.py` pulls them via `/admin/dev-requests`, files `beerdev`/`beerdev-infra` issues, answers questions with Gemini (no tools) from the docs, behavior code, queue, and live status (`live_status`: worker and message status, deploys, ops runs and issues, spend; never raw logs), and talks only as the beerdev bot; GitHub never reads the chat; `beerdev-build.yml` ships `beerdev` issues (incidents first) with Claude Code (`.github/beerdev-prompt.md`), appending `CHANGELOG.md`; `beerdev-lead.yml` proposes up to three improvements weekly. Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`). Operations: `docs/runbook.md`
+- **beerdev**: a peer agent in the same app (`beerdev.py`). The router in the callback (`beerdev.addressed`) sends every message that says "beerdev" or replies in its thread to beerdev, recorded as `message_inbox.agent`. Beerius never sees those messages, and its prompt points capability asks to beerdev. beerdev's only tools are `app_status`, `request_queue`, `deploys`, `read_doc` (an allowlist), `file_request`, `steer` (owner by sender id, bound to the owner's words), and `reply`. Its replies post as `BEERDEV_BOT_ID`, threaded. `beerdev.yml` is only the Monday digest; `beerdev-build.yml` ships `beerdev` issues (incidents first) with Claude Code (`.github/beerdev-prompt.md`), appending `CHANGELOG.md`; `beerdev-lead.yml` proposes up to three improvements weekly. Each chat feature adds a real-model scenario to `tests/test_live_chat.py` (`BEERBOT_LIVE_LLM=1`). Operations: `docs/runbook.md`
 - **Spend**: every model call goes through a session that calls `usage.record`, and counts are written only while the database is already awake (after each message, hourly sweep). `/admin/usage` reports month to date against `MODEL_BUDGET_USD`; ops files one `inbox` issue a month when over. New model call sites must record usage; new models need `usage.PRICES`. Runbook: "Spend"
-- **ops**: `ops.yml` + `scripts/ops.py` probe production hourly, redeploy a stuck app through CI, and file one issue per failure class (code-level classes also get `beerdev`). Terminal failures store a publishable `error_detail` (exception type + this repo's frames, never message text) and bump the memory-only `TERMINAL_FAILURES` counter; `dispatch.py` starts ops/beerdev runs immediately when `GITHUB_DISPATCH_TOKEN` is set
+- **ops**: `ops.yml` + `scripts/ops.py` probe production hourly, redeploy a stuck app through CI, and file one issue per failure class (code-level classes also get `beerdev`). Terminal failures store a publishable `error_detail` (exception type + this repo's frames, never message text) and bump the memory-only `TERMINAL_FAILURES` counter; `dispatch.py` starts ops runs and beerdev builds immediately when `BEERDEV_GITHUB_TOKEN` is set
 
 No repository-local issue tracker is configured.
 
@@ -116,7 +117,10 @@ Optional:
 - `AGENT_MAX_EXECUTED_TOOLS` - Max individual tools per message (default: 20)
 - `LLM_VIDEO_FORMAT` - `disabled` or explicit compatible-server `video_url` format
 - `WEEKLY_RECAP_ENABLED` - Enable weekly recap generation (default: true)
-- `ADMIN_TOKEN` - Bearer token for admin endpoints
+- `ADMIN_TOKEN` - Bearer token for admin endpoints (Fly only, never GitHub)
+- `OPS_TOKEN` - Read-only token for the status and usage endpoints (ops)
+- `BEERDEV_GITHUB_TOKEN` - Fine-grained (this repo: Issues, Actions) for beerdev and workflow starts
+- `BEERDEV_BOT_ID` - beerdev's replies post as this bot
 
 ## Coding Conventions
 

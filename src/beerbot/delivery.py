@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
-BEERDEV_TOOLS = ("ask_beerdev", "steer_beerdev")
 # Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
 # Postgres; the durable record is the failed rows themselves.
 TERMINAL_FAILURES: Counter[str] = Counter()
@@ -105,29 +104,31 @@ async def next_work_delay(name: str, recovery_delay: float) -> float:
     return recovery_delay if due is None else min(recovery_delay, max(1, float(due)))
 
 
-async def accept_message(message: GroupMeMessage) -> dict:
-    """Acknowledge only after the payload is durably stored; first receipt wins."""
+async def accept_message(message: GroupMeMessage, agent: str = "beerius") -> dict:
+    """Acknowledge only after the payload is durably stored; first receipt wins. `agent` is the
+    router's decision: which bot answers it."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO message_inbox(group_id,message_id,payload)
-               VALUES($1,$2,$3::jsonb) ON CONFLICT(group_id,message_id) DO NOTHING
+            """INSERT INTO message_inbox(group_id,message_id,payload,agent)
+               VALUES($1,$2,$3::jsonb,$4) ON CONFLICT(group_id,message_id) DO NOTHING
                RETURNING id""",
             message.group_id,
             message.id,
             message.model_dump_json(),
+            agent,
         )
     return {"status": "ok", "action": "queued" if row else "duplicate"}
 
 
 async def accept_context(message: GroupMeMessage) -> None:
-    """Keep beerdev's own messages as completed rows: never processed, but in Beerius's history,
-    so a reply like "veto" to "💡 Queued: … /issues/31" carries its issue."""
+    """Keep beerdev's own posts as completed, never-processed rows in its thread: replies to them
+    route to beerdev, and "veto" in reply to "💡 Queued: … /issues/31" carries its issue."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO message_inbox(group_id,message_id,payload,state,completed_at)
-               VALUES($1,$2,$3::jsonb,'completed',NOW())
+            """INSERT INTO message_inbox(group_id,message_id,payload,state,completed_at,agent)
+               VALUES($1,$2,$3::jsonb,'completed',NOW(),'beerdev')
                ON CONFLICT(group_id,message_id) DO NOTHING""",
             message.group_id,
             message.id,
@@ -149,7 +150,7 @@ async def execute_one(agent) -> bool:
             row = await conn.fetchrow("""
                 -- Explicit columns: a pooled server-side plan for SELECT * breaks when the
                 -- table gains a column (cached plan must not change result type).
-                SELECT i.id, i.group_id, i.payload, i.attempts FROM message_inbox i
+                SELECT i.id, i.group_id, i.payload, i.attempts, i.agent FROM message_inbox i
                 WHERE i.state='pending' AND i.available_at <= NOW()
                   AND NOT EXISTS (SELECT 1 FROM message_inbox earlier
                       WHERE earlier.group_id=i.group_id AND earlier.state='pending'
@@ -168,7 +169,6 @@ async def execute_one(agent) -> bool:
             # takes over after the first completed run and survives restarts.
             history_before = copy.deepcopy(agent._get_history(group_id))
             bucket_before = copy.deepcopy(agent._get_bucket(group_id))
-            asked = False
             try:
                 async with conn.transaction():
                     await conn.execute("SET LOCAL statement_timeout = '10s'")
@@ -181,7 +181,7 @@ async def execute_one(agent) -> bool:
                         payload = row["payload"]
                         message = GroupMeMessage.model_validate_json(payload)
                         history = await conn.fetch(
-                            """SELECT payload,reply FROM message_inbox
+                            """SELECT payload,reply,agent FROM message_inbox
                                WHERE group_id=$1 AND state='completed' AND payload IS NOT NULL
                                ORDER BY id DESC LIMIT 10""",
                             group_id,
@@ -203,19 +203,21 @@ async def execute_one(agent) -> bool:
                                     message_id=msg.id,
                                     user_id=msg.user_id,
                                 )
-                                if previous["reply"]:
+                                # beerdev's answers arrive as its own posts (context rows).
+                                if previous["reply"] and previous["agent"] == "beerius":
                                     agent.record_message(
                                         group_id, previous["reply"], "Beerius", is_bot=True
                                     )
                         with bind_execution(conn) as scope:
-                            reply = await agent.process_message(message)
+                            if row["agent"] == "beerdev":
+                                from . import beerdev  # beerdev reads status from this module
+
+                                reply = await beerdev.process(message, agent)
+                            else:
+                                reply = await agent.process_message(message)
                             if scope.failed:
                                 raise RuntimeError("Tool execution failed")
                             trace = json.dumps(scope.tools)
-                            asked = any(  # Refused steers (non-owners) start nothing.
-                                t["name"] in BEERDEV_TOOLS and "error" not in t["result"]
-                                for t in scope.tools
-                            )
                         await conn.execute(
                             """UPDATE message_inbox SET state='completed', completed_at=NOW(),
                                attempts=attempts+1, reply=$2,tool_results=$3::jsonb,error_code=NULL
@@ -233,7 +235,6 @@ async def execute_one(agent) -> bool:
                                 reply,
                             )
             except BaseException as exc:
-                asked = False  # Rolled back: nothing reached dev_requests.
                 agent._message_history[group_id] = history_before
                 agent._rate_limiters[group_id] = bucket_before
                 if not isinstance(exc, Exception):
@@ -259,8 +260,6 @@ async def execute_one(agent) -> bool:
                 if state == "failed":
                     record_terminal(code)
         await usage.flush(conn)  # Awake anyway: this message's tokens, even if it failed.
-    if asked:  # Committed: start beerdev now rather than at its next scheduled run.
-        dispatch("beerdev.yml", every=10)
     return True
 
 
@@ -269,7 +268,8 @@ async def deliver_one(client) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow("""
-                SELECT o.* FROM message_outbox o
+                SELECT o.id, o.group_id, o.body, o.attempts, i.agent, i.message_id
+                FROM message_outbox o JOIN message_inbox i ON i.id = o.inbox_id
                 WHERE o.state='pending' AND o.available_at <= NOW()
                   AND NOT EXISTS(SELECT 1 FROM message_outbox earlier
                       WHERE earlier.group_id=o.group_id AND earlier.id<o.id
@@ -295,7 +295,15 @@ async def deliver_one(client) -> bool:
         # never-attempted send. Never automatically resend an uncertain outcome.
         try:
             async with asyncio.timeout(30):
-                result = await client.deliver_message(row["body"], group_id=row["group_id"])
+                if row["agent"] == "beerdev":  # As beerdev's bot, threaded under the question.
+                    result = await client.deliver_message(
+                        row["body"],
+                        group_id=row["group_id"],
+                        bot_id=settings.beerdev_bot_id,
+                        reply_to=row["message_id"],
+                    )
+                else:
+                    result = await client.deliver_message(row["body"], group_id=row["group_id"])
             state, code = result.state, result.code
             delay = max(result.retry_after, min(300, 5 * 2 ** (row["attempts"] + 1)))
         except Exception as exc:
@@ -346,13 +354,7 @@ async def maintain_queue() -> bool:
                   state=CASE WHEN state='pending' THEN 'failed' ELSE state END,
                   error_code=CASE WHEN state='pending' THEN 'expired' ELSE error_code END
                 WHERE id IN (SELECT id FROM expired)""")
-            # Offer asks whose dispatch was lost (GitHub down, token expired) again on this
-            # hourly wake, rather than having GitHub poll the database.
-            unclaimed = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM dev_requests
-                WHERE claimed_at IS NULL AND created_at < NOW()-INTERVAL '5 minutes')""")
         await usage.flush(conn)  # Recaps and anything a failed flush left behind.
-    if unclaimed:
-        dispatch("beerdev.yml", every=900)
     # Continue bounded cleanup batches promptly instead of retaining a backlog
     # for multiple hourly sweeps. Locked live claims are still skipped.
     return any(int(result.split()[-1]) >= 100 for result in (stale, inbox, outbox))

@@ -106,31 +106,14 @@ async def test_admin_usage_reports_the_month_against_budget(pg, monkeypatch):
         base_url="https://test",
         headers={"Authorization": "Bearer admin"},
     ) as client:
-        posted = await client.post(
-            "/admin/usage",
-            json={
-                "source": "beerdev",
-                "model": "gemini-3.6-flash",
-                "calls": 1,
-                "input_tokens": 34000,
-                "output_tokens": 300,
-                "cached_tokens": 0,
-            },
-        )
-        assert posted.status_code == 200
-        bad = {
-            "source": "Bad Source!",
-            "model": "m",
-            "calls": 1,
-            "input_tokens": 1,
-            "output_tokens": 1,
-            "cached_tokens": 0,
-        }
-        assert (await client.post("/admin/usage", json=bad)).status_code == 422
         report = (await client.get("/admin/usage")).json()
         assert (await client.get("/admin/usage", headers={"Authorization": ""})).status_code == 401
+        # ops reads it with its read-only token, and that token opens nothing else.
+        monkeypatch.setattr(main.settings, "ops_token", "ops")
+        ops = {"Authorization": "Bearer ops"}
+        assert (await client.get("/admin/usage", headers=ops)).status_code == 200
+        assert (await client.get("/admin/groups", headers=ops)).status_code == 403
     beerius = 2.6 * 0.75 + 0.18 * 3.75  # $2.625 at 2026 list prices
     assert report["by_source"]["beerius"]["usd"] == pytest.approx(beerius, abs=0.01)
-    assert report["by_source"]["beerdev"]["calls"] == 1
-    assert report["usd"] == pytest.approx(beerius + 0.034 * 0.75 + 0.0003 * 3.75, abs=0.01)
+    assert report["usd"] == pytest.approx(beerius, abs=0.01)
     assert report["over_budget"] and report["unpriced_models"] == ["mystery-model"]

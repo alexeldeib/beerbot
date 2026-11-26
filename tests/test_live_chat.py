@@ -4,11 +4,13 @@ Skipped unless BEERBOT_LIVE_LLM=1 (plus a model key and BEERBOT_TEST_DATABASE_UR
 beerdev runs these before shipping; add one scenario per chat feature.
 """
 
+import json
 import os
 
+import httpx
 import pytest
 
-from src.beerbot import database
+from src.beerbot import beerdev, database
 from src.beerbot.agent import BeerAgent
 from src.beerbot.delivery import accept_message, execute_one
 from src.beerbot.models import GroupMeMessage
@@ -27,19 +29,19 @@ async def chat(pg):
 
     async def send(text: str, sender: str = "alice", attachments: tuple = ()) -> str | None:
         number = await pg.fetchval("SELECT COUNT(*) FROM message_inbox")
-        await accept_message(
-            GroupMeMessage(
-                id=f"live-{number}",
-                group_id="g1",
-                user_id=sender,
-                sender_id=sender,
-                sender_type="user",
-                name=sender.title(),
-                text=text,
-                created_at=0,
-                attachments=list(attachments),
-            )
+        message = GroupMeMessage(
+            id=f"live-{number}",
+            group_id="g1",
+            user_id=sender,
+            sender_id=sender,
+            sender_type="user",
+            name=sender.title(),
+            text=text,
+            created_at=0,
+            attachments=list(attachments),
         )
+        # Routed exactly as the callback routes: beerdev's messages never reach Beerius.
+        await accept_message(message, "beerdev" if await beerdev.addressed(message) else "beerius")
         assert await execute_one(agent)
         row = await pg.fetchrow("SELECT state,reply FROM message_inbox ORDER BY id DESC LIMIT 1")
         assert row["state"] == "completed"
@@ -65,63 +67,6 @@ async def test_logs_zyn_pouches_without_touching_drinks(chat, pg):
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
 
 
-async def test_hands_feature_requests_and_questions_to_beerdev(chat, pg):
-    assert await chat("someone should make this bot track our gym sessions") is None
-    assert await chat("beerdev what features are you building right now?") is None
-    asks = await pg.fetch("SELECT kind, title FROM dev_requests ORDER BY id")
-    assert [ask["kind"] for ask in asks] == ["feature", "question"], asks
-    assert "gym" in asks[0]["title"].lower()
-    assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
-
-
-async def test_only_the_owner_can_veto_beerdev_work(chat, pg, monkeypatch):
-    from src.beerbot.agent import settings
-    from src.beerbot.delivery import accept_context
-
-    monkeypatch.setattr(settings, "owner_user_id", "boss")
-    line = (
-        "💡 Queued: Track gym sessions (https://github.com/o/r/issues/31). I'll post when it ships."
-    )
-    await accept_context(
-        GroupMeMessage(
-            id="dev-1",
-            group_id="g1",
-            user_id="b1",
-            sender_id="b1",
-            sender_type="bot",
-            name="beerdev",
-            text=line,
-            created_at=0,
-        )
-    )
-    reply = {"type": "reply", "reply_id": "dev-1", "base_reply_id": "dev-1"}
-    await chat("veto", sender="pal", attachments=[reply])
-    assert not (asks := await pg.fetch("SELECT kind, title FROM dev_requests")), asks
-    # Push beerdev's line out of Beerius's history window: the owner's reply still finds it.
-    for i in range(10):
-        filler = GroupMeMessage(
-            id=f"filler-{i}",
-            group_id="g1",
-            user_id="pal",
-            sender_id="pal",
-            sender_type="user",
-            name="Pal",
-            text="lol",
-            created_at=0,
-        )
-        await pg.execute(
-            """INSERT INTO message_inbox(group_id,message_id,payload,state)
-               VALUES('g1',$1,$2::jsonb,'completed')""",
-            filler.id,
-            filler.model_dump_json(),
-        )
-    assert await chat("veto", sender="boss", attachments=[reply]) is None
-    assert await chat("beerdev veto the gym tracker", sender="boss") is None
-    asks = [tuple(r) for r in await pg.fetch("SELECT kind, issue, title FROM dev_requests")]
-    assert asks[0] == ("veto", 31, "") and asks[1][:2] == ("veto", None), asks
-    assert "gym" in asks[1][2], asks  # Only the owner's own words name the request.
-
-
 async def test_answers_questions_it_has_no_dedicated_tool_for(chat, pg):
     # On long histories these ran out of tool rounds in production and were silently dropped.
     await chat("+2 beers")
@@ -145,3 +90,69 @@ async def test_owner_commands_override_house_rules(chat, pg, monkeypatch):
             JOIN users u ON u.id = b.user_id WHERE u.groupme_user_id = 'jay' GROUP BY 1""")
     )
     assert sum(totals.values()) == 25 and set(totals) == {"beer", "cocktail"}
+
+
+def tools_called(rows) -> list[str]:
+    return [tool["name"] for row in rows for tool in json.loads(row["tool_results"] or "[]")]
+
+
+async def test_beerdev_answers_spend_and_health_from_live_status(chat, pg):
+    reply = await chat("Beerdev what's our most recent monthly spend")
+    rows = await pg.fetch("SELECT agent, tool_results FROM message_inbox ORDER BY id DESC LIMIT 1")
+    assert rows[0]["agent"] == "beerdev" and "app_status" in tools_called(rows)
+    assert reply and "$" in reply, reply  # Answered, not filed for a human.
+
+
+async def test_beerdev_files_requests_and_only_the_owner_steers(chat, pg, monkeypatch):
+    from src.beerbot.agent import settings
+
+    monkeypatch.setattr(settings, "owner_user_id", "boss")
+    writes = []
+
+    def respond(request):
+        if request.method == "GET" and request.url.path.endswith("/issues"):
+            gym = {
+                "number": 31,
+                "title": "Track gym sessions",
+                "state": "open",
+                "body": "",
+                "labels": [{"name": "beerdev"}],
+            }
+            label = request.url.params["labels"]
+            return httpx.Response(200, json=[gym] if label == "beerdev" else [])
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 31,
+                    "title": "Track gym sessions",
+                    "state": "open",
+                    "labels": [{"name": "beerdev"}],
+                },
+            )
+        writes.append((request.method, request.url.path))
+        return httpx.Response(201, json={"number": 77})
+
+    monkeypatch.setattr(settings, "github_token", "t")
+    monkeypatch.setattr(beerdev, "dispatch", lambda workflow, every: True)
+    monkeypatch.setattr(
+        beerdev,
+        "_github",
+        lambda: httpx.AsyncClient(
+            base_url="https://api.github.com", transport=httpx.MockTransport(respond)
+        ),
+    )
+
+    assert await chat("beerdev can you make the bot track how long we nap?")
+    assert ("POST", "/repos/alexeldeib/beerbot/issues") in writes  # Filed, not just answered.
+    writes.clear()
+    await chat("beerdev veto the gym tracker", sender="pal")
+    assert writes == []  # Not the owner: refused in code.
+    await chat("beerdev veto the gym tracker", sender="boss")
+    assert ("PATCH", "/repos/alexeldeib/beerbot/issues/31") in writes
+
+
+async def test_beerius_points_capability_asks_to_beerdev(chat, pg):
+    reply = await chat("Beerius can you track our gym sessions too?")
+    assert reply and "beerdev" in reply.lower(), reply
+    assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0

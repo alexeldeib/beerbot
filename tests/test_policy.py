@@ -23,18 +23,15 @@ SECRETS = {
     ("beerdev-build.yml", "review"): {"CLAUDE_CODE_OAUTH_TOKEN"},
     ("beerdev-build.yml", "ship"): {"BEERDEV_BOT_ID", "BEERDEV_SHIP_TOKEN"},
     ("beerdev-lead.yml", "plan"): {"CLAUDE_CODE_OAUTH_TOKEN"},
-    ("beerdev.yml", "scan"): {"ADMIN_TOKEN", "BEERDEV_BOT_ID", "GEMINI_API_KEY"},
-    ("beerdev.yml", "steer"): {"BEERDEV_BOT_ID"},
+    ("beerdev.yml", "digest"): {"BEERDEV_BOT_ID"},
     ("ci.yml", "deploy"): {"FLY_API_TOKEN"},
-    ("ops.yml", "check"): {"ADMIN_TOKEN"},
+    ("ops.yml", "check"): {"OPS_TOKEN"},  # Read-only; the admin token never leaves Fly.
 }
 # Jobs whose GITHUB_TOKEN may write, and to what.
 WRITES = {
     ("beerdev-build.yml", "ship"): {"actions", "contents", "issues", "pull-requests"},
     ("beerdev-build.yml", "flag"): {"issues"},
     ("beerdev-lead.yml", "file"): {"actions", "issues"},
-    ("beerdev.yml", "scan"): {"actions", "issues"},
-    ("beerdev.yml", "steer"): {"actions", "issues"},
     ("ops.yml", "check"): {"actions", "issues"},
 }
 # None of these runs code from forks or from issue and comment text.
@@ -183,10 +180,10 @@ def test_beerdev_cannot_change_its_kernel():
 
 # The review job skips the two app checks below (`-k "not app"`): they import agent-written code.
 def test_app_lets_only_the_owner_steer_beerdev():
-    from src.beerbot.tools import ToolContext, create_tools
+    from src.beerbot import beerdev
 
-    ctx = ToolContext("g1", "m1", "pal", "Pal", None, [], message_text="veto #31")
-    steer = next(tool for tool in create_tools(ctx) if tool.__name__ == "steer_beerdev")
+    ctx = beerdev.Context("g1", "m1", False, "beerdev veto #31", "")
+    steer = next(tool for tool in beerdev.create_tools(ctx) if tool.__name__ == "steer")
     try:
         result = asyncio.run(steer("veto", issue=31))
     except ValueError:
@@ -199,12 +196,24 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
 
     from src.beerbot import main
 
+    # Every admin route needs the admin token; only these reads also take the ops token.
+    reads = {"/admin/workers/status", "/admin/messages/status", "/admin/usage"}
     admin = [route for route in main.app.routes if getattr(route, "path", "").startswith("/admin")]
     for route in admin:
         calls = [dependency.call for dependency in route.dependant.dependencies]
-        assert main.verify_admin_token in calls, route.path
+        if route.path in reads and route.methods == {"GET"}:
+            assert main.verify_read_token in calls, route.path
+        else:
+            assert main.verify_admin_token in calls, route.path
+    for workflow in (ROOT / ".github/workflows").glob("*.y*ml"):
+        assert "ADMIN_TOKEN" not in workflow.read_text(), workflow.name
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", "expected")
     monkeypatch.setattr(main.settings, "admin_token", "expected")
+    monkeypatch.setattr(main.settings, "ops_token", "reader")
     with TestClient(main.app) as client:
         assert client.post("/callback?token=forged", json={}).status_code == 401
-        assert client.get("/admin/dev-requests").status_code == 401
+        assert client.get("/admin/groups").status_code == 401
+        assert (
+            client.get("/admin/groups", headers={"Authorization": "Bearer reader"}).status_code
+            == 403
+        )

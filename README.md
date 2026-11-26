@@ -217,11 +217,12 @@ asks over and stays silent.
 | 🚫 Vetoed: … | The owner stopped it, or it is being removed |
 | 📜 beerdev this week | Monday digest: shipped, declined, and waiting on a human |
 
-1. **intake**: Beerius hands feature asks, bug reports, infra asks, and questions to beerdev with
-   its `ask_beerdev` tool, as paraphrases with no names. The app then starts `beerdev.yml`, which
-   pulls them through the admin API (GitHub never reads the chat), files issues, and answers
-   questions from the code, docs, and queue. `beerdev` (plus `bug`) marks code changes, and
-   `beerdev-infra` + `inbox` marks asks that need a person.
+1. **talk to beerdev**: any message that says "beerdev" or replies in its thread goes to beerdev,
+   a peer bot in the same app. Beerius never sees those messages. beerdev answers questions from
+   live status, the request queue, deploys, and the docs. It files requests as issues, with no
+   names or chat text, since this repository is public: `beerdev` (plus `bug`) marks code changes,
+   and `beerdev-infra` + `inbox` marks asks that need a person. Each agent can call only its own
+   narrow tools.
 2. **build** (`beerdev-build.yml`): Claude Code takes the oldest `beerdev` issue, and incidents
    first. Lint, the full suite (including the pipeline policy in `tests/test_policy.py`), and the
    live chat e2e then run with only read-only credentials. Changes beyond app code (workflows,
@@ -237,10 +238,11 @@ asks over and stays silent.
 
 **Steering:**
 - **From the chat (owner only):** reply to one of beerdev's messages with "veto" or "approve",
-  or say "beerdev veto the gym tracker". Beerius's `steer_beerdev` tool refuses anyone else by
-  their GroupMe id, and binds the command to the owner's own words, never the model's reading. A veto closes queued work, stops a build at merge, or removes shipped work through a
+  or say "beerdev veto the gym tracker". beerdev refuses anyone else by their GroupMe id, and
+  binds the command to the owner's own words, never the model's reading. A veto closes queued work, stops a build at merge, or removes shipped work through a
   new build. Approve makes a proposal or waiting ask buildable.
-- From a terminal: `gh workflow run beerdev.yml -f action=veto -f issue=<n>` (or `approve`).
+- From a terminal: `gh issue close <n> --reason "not planned"` vetoes, and
+  `gh issue edit <n> --add-label beerdev --remove-label inbox` approves.
 - Close an issue to cancel it quietly. Remove `beerdev-failed` to retry.
 - The inbox lists everything waiting on you:
   https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox
