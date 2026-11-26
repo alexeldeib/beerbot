@@ -243,7 +243,9 @@ def test_only_routine_app_code_ships_without_the_reviewer():
         assert not re.search(routine, path), path
     for job in ("review", "ship"):  # One definition, read by both gates.
         text = "\n".join(step.get("run", "") for step in workflow["jobs"][job]["steps"])
-        assert 'grep -vP "$ROUTINE"' in text and "routine=" not in text, job
+        assert "routine=" not in text, job
+        # Fails closed: only grep's "every line matched" (1) counts as routine, never an error.
+        assert 'grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]' in text, job
 
 
 # The review job skips the two app checks below (`-k "not app"`): they import agent-written code.

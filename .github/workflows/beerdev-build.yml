@@ -200,7 +200,9 @@ jobs:
           git apply --index /tmp/beerdev/change.patch
           changed="$(git diff --cached --name-only --no-renames)"
           git reset -q --hard
-          if grep -vP "$ROUTINE" <<< "$changed" | grep -q .; then
+          # grep -v exits 1 only when every file is routine; anything else, an error included
+          # (a grep without -P), needs the reviewer.
+          if grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -356,8 +358,8 @@ jobs:
             # A reviewer can't vet a package's provenance offline, and it runs with every secret.
             echo "hold=true" >> "$GITHUB_OUTPUT"
             echo "why=It changes dependencies, which always wait for the owner." >> "$GITHUB_OUTPUT"
-          elif grep -vP "$ROUTINE" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
-            echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code, and not approved.
+          elif { grep -vqP "$ROUTINE" <<< "$changed" || [ $? -ne 1 ]; } && [ "$VERDICT" != approve ]; then
+            echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code (or grep failed), not approved.
             echo "why=The independent reviewer did not approve it: ${REASON:-it did not run}" >> "$GITHUB_OUTPUT"
           fi
           echo "ship=true" >> "$GITHUB_OUTPUT"
