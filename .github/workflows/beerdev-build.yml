@@ -259,11 +259,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: beerdev
+    # Pushes, PRs, and merges use the ship token; this job's own token only edits issues.
     permissions:
-      actions: write # dispatch and watch the CI deploy
-      contents: write
+      actions: read # watch the CI deploy
+      contents: read
       issues: write
-      pull-requests: write
     env:
       ISSUE: ${{ needs.pick.outputs.issue }}
       GH_TOKEN: ${{ github.token }}
@@ -340,12 +340,16 @@ jobs:
       - name: Merge, deploy, announce
         if: steps.apply.outputs.ship == 'true'
         env:
-          # Can push workflow changes, and its merges start CI. Without it, only changes that
-          # leave .github/workflows alone can ship.
+          # Pushes (workflow changes included), opens PRs, and merges, and its merges start CI.
+          # Nothing ships without it.
           SHIP_TOKEN: ${{ secrets.BEERDEV_SHIP_TOKEN }}
           HOLD: ${{ steps.apply.outputs.hold }}
           WHY: ${{ steps.apply.outputs.why }}
         run: |
+          if [ -z "$SHIP_TOKEN" ]; then
+            echo "::error::BEERDEV_SHIP_TOKEN is not set, so nothing can ship"
+            exit 1
+          fi
           title="$(jq -r .title /tmp/request.json)"
           branch="beerdev/issue-$ISSUE"
           git switch -c "$branch"
@@ -356,8 +360,7 @@ jobs:
           git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "feat: $title" -m "Closes #$ISSUE"
-          token="${SHIP_TOKEN:-$GH_TOKEN}"
-          git push -q "https://x-access-token:$token@github.com/$GITHUB_REPOSITORY.git" \
+          git push -q "https://x-access-token:$SHIP_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
             "HEAD:refs/heads/$branch"
           note=/tmp/beerdev/announcement.md
           if [ ! -s "$note" ]; then
@@ -368,7 +371,7 @@ jobs:
           if [ "$HOLD" = true ]; then
             # Not approved: the owner reviews and merges it by hand, or closes it.
             printf '\n\n**Held for the owner.** %s\n' "$WHY" >> /tmp/beerdev/pr.md
-            url="$(GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" \
+            url="$(GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" \
               --body-file /tmp/beerdev/pr.md)"
             gh issue edit "$ISSUE" --add-label inbox --remove-label beerdev
             gh issue comment "$ISSUE" --body "Held for the owner's review: $url"
@@ -377,18 +380,16 @@ jobs:
             fi
             exit 0
           fi
-          GH_TOKEN="$token" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
-          GH_TOKEN="$token" gh pr merge "$branch" --squash
+          GH_TOKEN="$SHIP_TOKEN" gh pr create --head "$branch" --title "feat: $title" --body-file /tmp/beerdev/pr.md
+          GH_TOKEN="$SHIP_TOKEN" gh pr merge "$branch" --squash
 
-          # A merge with the ship token starts CI by itself; one with GITHUB_TOKEN never does, so
-          # start it explicitly if no run shows up. CI re-runs the full suite before it deploys.
+          # The ship token's merge starts CI, which re-runs the full suite before it deploys.
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
           run=""
           for attempt in $(seq 36); do
             run="$(gh run list --workflow ci.yml --commit "$sha" \
               --json databaseId --jq '.[0].databaseId // empty')"
             [ -n "$run" ] && break
-            [ "$attempt" = 6 ] && gh workflow run ci.yml --ref main
             sleep 5
           done
           gh run watch "$run" --exit-status --interval 30 > /dev/null

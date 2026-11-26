@@ -30,7 +30,7 @@ SECRETS = {
 }
 # Jobs whose GITHUB_TOKEN may write, and to what.
 WRITES = {
-    ("beerdev-build.yml", "ship"): {"actions", "contents", "issues", "pull-requests"},
+    ("beerdev-build.yml", "ship"): {"issues"},  # It pushes and merges with BEERDEV_SHIP_TOKEN.
     ("beerdev-build.yml", "flag"): {"issues"},
     ("beerdev-lead.yml", "file"): {"actions", "issues"},
     ("ops.yml", "check"): {"actions", "issues"},
