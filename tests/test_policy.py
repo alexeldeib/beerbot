@@ -225,16 +225,31 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
         )
 
 
-def test_the_rollback_goes_one_step_back_and_verifies():
+def test_the_rollback_restores_a_known_release_and_verifies():
     workflow = WORKFLOWS["rollback.yml"]
-    assert set(triggers(workflow)) == {"workflow_dispatch"}  # Started by ops or by hand only.
+    on = triggers(workflow)
+    assert set(on) == {"workflow_dispatch"}  # Started by ops or by hand only.
+    assert set(on["workflow_dispatch"]["inputs"]) == {"dry_run", "version"}
     job = workflow["jobs"]["rollback"]
     assert job["environment"] == "production"  # main-only: a branch can't roll production back.
     assert (
         workflow["concurrency"]["group"]
         == WORKFLOWS["ci.yml"]["jobs"]["deploy"]["concurrency"]["group"]
     )
+    steps = {step.get("id") or step.get("name"): step for step in job["steps"]}
     scripts = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "inputs." not in scripts  # Inputs reach scripts as env, never as code.
+    target = steps["target"]["run"]
+    # After any rollback, "the release before" is the broken one: refuse unless the owner names one.
+    assert "$VERSION" in target and "rolled back" in target
+    # The target's own fly.toml, found through the commit CI labels each image with.
+    assert ':fly.toml" > fly.toml' in target
+    ci_deploy = "\n".join(
+        str(step.get("run")) for step in WORKFLOWS["ci.yml"]["jobs"]["deploy"]["steps"]
+    )
+    assert '--image-label "${GITHUB_SHA}"' in ci_deploy
     assert "--strategy bluegreen" in scripts
-    verify = next(step["run"] for step in job["steps"] if step.get("name") == "Verify production")
+    for name in ("Deploy it blue-green", "Verify production"):
+        assert steps[name]["if"] == "${{ !inputs.dry_run }}", name
+    verify = steps["Verify production"]["run"]
     assert all(check in verify for check in ("health", "ready", "ready/db"))

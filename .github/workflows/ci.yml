@@ -110,6 +110,7 @@ jobs:
             echo "sha=$sha" >> "$GITHUB_OUTPUT"
           fi
 
+      # The image is labeled with its commit, so rollback.yml can deploy it with its fly.toml.
       - name: Deploy with blue-green replacement
         if: steps.release.outputs.current == 'true'
         run: >-
@@ -118,6 +119,7 @@ jobs:
           --local-only
           --strategy bluegreen
           --build-arg GIT_SHA="${GITHUB_SHA}"
+          --image-label "${GITHUB_SHA}"
           --wait-timeout 10m
 
       - name: Verify production health and revision
