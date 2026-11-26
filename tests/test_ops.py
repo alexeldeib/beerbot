@@ -133,7 +133,7 @@ class FakeGitHub:
         self.deployed = deployed_minutes_ago
         self.changing = changing
 
-    def client(self):
+    def transport(self):
         def respond(request):
             path, method = request.url.path, request.method
             body = json.loads(request.content or "null")
@@ -157,6 +157,8 @@ class FakeGitHub:
             if path.endswith("/dispatches"):
                 self.dispatched.append(path.split("/")[-2])
                 return httpx.Response(204)
+            if method == "GET" and path.endswith("/issues"):
+                return httpx.Response(200, json=[])
             if method == "POST" and path.endswith("/issues"):
                 self.created.append(body)
                 number = 100 + len(self.created)
@@ -171,7 +173,44 @@ class FakeGitHub:
                 )
             return httpx.Response(200, json={})
 
-        return httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(respond))
+        return httpx.MockTransport(respond)
+
+    def client(self):
+        return httpx.Client(base_url="https://x.test", transport=self.transport())
+
+
+def run_main(monkeypatch, fake, app, **env):
+    """ops.main() against a fake GitHub and an app that answers with `app(request)`."""
+    real = httpx.Client
+    transports = {"https://api.github.com": fake.transport(), ops.APP: httpx.MockTransport(app)}
+
+    def connect(base_url, **_):
+        return real(base_url=base_url, transport=transports[base_url])
+
+    monkeypatch.setattr(ops.httpx, "Client", connect)
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+    pages = []
+    monkeypatch.setattr(ops, "page", pages.append)
+    env = {"GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "t", "OPS_TOKEN": "o", **env}
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    ops.main()
+    return pages
+
+
+def test_ops_only_reads_the_app(monkeypatch):
+    # No wakes and no restarts: a failed worker retries within a minute by itself.
+    seen = []
+
+    def app(request):
+        seen.append(request.method)
+        if request.url.path == "/ready":
+            return httpx.Response(503)
+        workers = {"failed": {"execution": True}, "last_error": {}}
+        return httpx.Response(200, json=workers)
+
+    pages = run_main(monkeypatch, FakeGitHub(), app)
+    assert set(seen) == {"GET"} and len(pages) == 1  # Paged once, and changed nothing.
 
 
 def incident_run(monkeypatch, fake, found, workers=None, issues=None):

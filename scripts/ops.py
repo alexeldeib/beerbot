@@ -7,7 +7,6 @@ Run every 5 minutes, after CI on main, and right away when the app reports a fai
   5 minutes. They come from public endpoints and memory-only status, so a check never wakes the
   database.
 - The decision table runs with no model:
-  - A worker stalled after an error gets nudged (woken), never restarted.
   - Breakage within an hour of a deploy rolls back (rollback.yml).
   - A failing dependency is left alone.
   - Anything else gets the owner.
@@ -254,17 +253,6 @@ def symptoms(app: httpx.Client, workers: dict) -> list[str]:
     return found
 
 
-def nudge(app: httpx.Client, admin: dict) -> bool:
-    """A worker that hit an error waits for its next wake (up to an hour). Wake it, which is
-    harmless, and see whether it recovers before calling anyone."""
-    try:
-        app.post("/admin/messages/wake", headers=admin).raise_for_status()
-    except httpx.HTTPError:
-        return False
-    time.sleep(20)
-    return probe(app, attempts=1) is None
-
-
 def blame(workers: dict) -> str | None:
     """The outside dependency the workers' errors name, if any."""
     details = " ".join(e["detail"] for e in (workers.get("last_error") or {}).values() if e)
@@ -438,10 +426,6 @@ def main() -> None:
 
     workers = worker_status(app, admin)
     found = symptoms(app, workers)
-    if found and any((workers.get("failed") or {}).values()) and nudge(app, admin):
-        print("A worker had stalled after an error; ops woke it and it recovered")
-        workers = worker_status(app, admin)
-        found = symptoms(app, workers)
     print(handle_incident(github, repo, issues, found, workers))
     if found:
         return

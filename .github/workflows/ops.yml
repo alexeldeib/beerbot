@@ -5,7 +5,6 @@ name: ops
 # from memory-only status, so checks never wake the database.
 #
 # It fixes only what's safe, using a fixed decision table with no model:
-# - nudge a stalled worker (wake the queue)
 # - roll back a deploy that broke production within the hour (rollback.yml)
 # - wait out a failing dependency
 #
@@ -64,7 +63,7 @@ jobs:
       - run: uv run --frozen python scripts/ops.py
         env:
           GH_TOKEN: ${{ github.token }}
-          OPS_TOKEN: ${{ secrets.OPS_TOKEN }} # Status and usage reads, and waking the queue
+          OPS_TOKEN: ${{ secrets.OPS_TOKEN }} # Status and usage reads only
           OPS_ALERT_BOT_ID: ${{ secrets.OPS_ALERT_BOT_ID }} # Posts only to the owner's alerts group
           REASON: ${{ inputs.reason }}
           CI_RUN_ID: ${{ github.event.workflow_run.id }}
