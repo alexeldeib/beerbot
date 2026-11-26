@@ -179,6 +179,12 @@ def test_every_job_has_a_timeout():
         assert "timeout-minutes" in spec, f"{name}/{job}"
 
 
+def test_the_image_installs_exactly_what_is_locked():
+    # Production holds every secret: no fallback may resolve fresh, unreviewed versions.
+    syncs = re.findall(r"uv sync[^\n]*", (ROOT / "Dockerfile").read_text())
+    assert syncs and all("--frozen" in sync and "||" not in sync for sync in syncs), syncs
+
+
 def test_beerdev_cannot_change_its_kernel():
     ship = WORKFLOWS["beerdev-build.yml"]["jobs"]["ship"]
     text = "\n".join(step.get("run", "") for step in ship["steps"])
