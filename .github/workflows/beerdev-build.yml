@@ -6,7 +6,8 @@ name: beerdev build
 # - review: for changes beyond routine app code (workflows, scripts, Docker, Fly, dependencies),
 #   an independent Claude Code reads the patch as data and approves or rejects it.
 # - ship: applies the patch to a fresh checkout without running it, refuses changes to the kernel
-#   (this file, the lead, agent prompts and settings, the policy test) and credential-like text,
+#   (this file, the lead, agent prompts and settings, CLAUDE.md files, the policy test) and
+#   credential-like text,
 #   then merges, deploys through CI, appends CHANGELOG.md, and tells the chat. A change the
 #   reviewer did not approve waits as an unmerged PR in the owner's inbox.
 # Remove `beerdev-failed` from an issue to retry it. Add required reviewers to the `beerdev`
@@ -311,7 +312,8 @@ jobs:
           git apply --index /tmp/beerdev/change.patch
           # --no-renames lists both sides of a rename, so moving a kernel file is caught too.
           changed="$(git diff --cached --name-only --no-renames)"
-          kernel='^(\.github/workflows/beerdev-(build|lead)\.yml|\.github/beerdev-[a-z-]+\.md|\.claude/.*|tests/test_policy\.py)$'
+          # Every Claude agent loads CLAUDE.md files, in any directory, as instructions.
+          kernel='^(\.github/workflows/beerdev-(build|lead)\.yml|\.github/beerdev-[a-z-]+\.md|\.claude/.*|(.*/)?CLAUDE(\.local)?\.md|tests/test_policy\.py)$'
           if grep -E "$kernel" <<< "$changed"; then
             echo "::error::beerdev may not change its own kernel"
             exit 1

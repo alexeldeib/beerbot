@@ -48,6 +48,11 @@ KERNEL = [
     ".github/beerdev-review-prompt.md",
     ".github/beerdev-lead-prompt.md",
     ".claude/settings.json",
+    # Every Claude agent loads these as instructions, from any directory.
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "src/beerbot/CLAUDE.md",
+    "docs/notes/CLAUDE.local.md",
     "tests/test_policy.py",
 ]
 
@@ -179,7 +184,8 @@ def test_beerdev_cannot_change_its_kernel():
     kernel = re.search(r"kernel='([^']+)'", text).group(1)
     for path in KERNEL:
         assert re.search(kernel, path), path
-    assert not re.search(kernel, "src/beerbot/tools.py")
+    for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "docs/NOTCLAUDE.md"):
+        assert not re.search(kernel, path), path
     assert "--no-renames" in text  # A rename must not hide a kernel file.
     assert "(pyproject\\.toml|uv\\.lock)" in text  # Dependency changes always wait for the owner.
     review = WORKFLOWS["beerdev-build.yml"]["jobs"]["review"]

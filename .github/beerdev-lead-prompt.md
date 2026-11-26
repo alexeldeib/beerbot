@@ -16,9 +16,9 @@ verify it, written so a developer with no other context can do it.
 Prefer small, safe, testable changes that make Beerius more reliable or easier to change. beerdev
 may change infrastructure (workflows, scripts, Docker, Fly, dependencies) after an independent
 review, but never its kernel (`.github/workflows/beerdev-build.yml`, `.github/workflows/beerdev-lead.yml`,
-`.github/beerdev-*.md`, `.claude/`, `tests/test_policy.py`). Set `needs_owner` to true for kernel
-changes, new secrets or paid services, costs, data deletion, or product decisions about how Beerius
-behaves; beerdev builds everything else.
+`.github/beerdev-*.md`, `.claude/`, any `CLAUDE.md` or `CLAUDE.local.md`, `tests/test_policy.py`).
+Set `needs_owner` to true for kernel changes, new secrets or paid services, costs, data deletion,
+or product decisions about how Beerius behaves; beerdev builds everything else.
 Never propose work an open issue already covers. Fewer strong proposals beat more weak ones; write
 `[]` if nothing is worth doing this week.
 
