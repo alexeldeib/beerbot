@@ -96,22 +96,35 @@ def _oldest(waiting: dict[int, float]) -> int | None:
 
 
 async def next_work_delay(name: str, recovery_delay: float) -> float:
-    """Arm a timer for known work, not a poll for hypothetical future work."""
+    """Arm a timer for known work, not a poll for hypothetical future work.
+
+    The same scan lists what is still waiting, so the queue ages forget rows another machine
+    finished (blue-green overlap), maintenance expired, or a crash left behind."""
+    scanned = time.time()
     pool = await get_pool()
     async with pool.acquire() as conn:
         if name == "execution":
-            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(i.available_at)-NOW())
-                FROM message_inbox i WHERE i.state='pending'
-                AND NOT EXISTS(SELECT 1 FROM message_inbox earlier
-                    WHERE earlier.group_id=i.group_id AND earlier.state='pending' AND earlier.id<i.id)""")
+            tracked = UNPROCESSED
+            row = await conn.fetchrow("""SELECT EXTRACT(EPOCH FROM MIN(i.available_at) FILTER (
+                    WHERE NOT EXISTS(SELECT 1 FROM message_inbox earlier WHERE
+                        earlier.group_id=i.group_id AND earlier.state='pending' AND earlier.id<i.id)
+                    )-NOW()) AS due, array_agg(i.id) AS waiting
+                FROM message_inbox i WHERE i.state='pending'""")
         else:
-            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(
+            tracked = UNDELIVERED
+            row = await conn.fetchrow("""SELECT EXTRACT(EPOCH FROM MIN(
                     CASE WHEN o.state='sending' THEN o.updated_at+INTERVAL '121 seconds'
-                         ELSE o.available_at END)-NOW())
-                FROM message_outbox o WHERE o.state IN ('pending','sending')
-                AND NOT EXISTS(SELECT 1 FROM message_outbox earlier
-                    WHERE earlier.group_id=o.group_id AND earlier.state IN ('pending','sending')
-                    AND earlier.id<o.id)""")
+                         ELSE o.available_at END) FILTER (
+                    WHERE NOT EXISTS(SELECT 1 FROM message_outbox earlier
+                        WHERE earlier.group_id=o.group_id AND earlier.state IN ('pending','sending')
+                        AND earlier.id<o.id))-NOW()) AS due, array_agg(o.id) AS waiting
+                FROM message_outbox o WHERE o.state IN ('pending','sending')""")
+    waiting = set(row["waiting"] or ())
+    # Only entries committed before this scan began: a newer one may be missing from its snapshot.
+    for key, since in list(tracked.items()):
+        if key not in waiting and since < scanned:
+            del tracked[key]
+    due = row["due"]
     # Due rows may be locked by a peer during deployment. Keep checking while
     # real pending work exists; only an empty queue sleeps until recovery.
     return recovery_delay if due is None else min(recovery_delay, max(1, float(due)))
@@ -301,19 +314,24 @@ async def deliver_one(client) -> bool:
             """)
             if row is None:
                 return False
-            if settings.require_registered_groups and not await conn.fetchval(
+            unregistered = settings.require_registered_groups and not await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id=$1)", row["group_id"]
-            ):
+            )
+            if unregistered:
                 await conn.execute(
-                    "UPDATE message_outbox SET state='failed',error_code='unregistered_group',updated_at=NOW() WHERE id=$1",
+                    """UPDATE message_outbox SET state='failed',error_code='unregistered_group',
+                       updated_at=NOW() WHERE id=$1""",
                     row["id"],
                 )
-                return True
-            await conn.execute(
-                """UPDATE message_outbox SET state='sending',attempts=attempts+1,
-                   updated_at=NOW() WHERE id=$1""",
-                row["id"],
-            )
+            else:
+                await conn.execute(
+                    """UPDATE message_outbox SET state='sending',attempts=attempts+1,
+                       updated_at=NOW() WHERE id=$1""",
+                    row["id"],
+                )
+        if unregistered:
+            UNDELIVERED.pop(row["id"], None)
+            return True
         # The committed sending marker makes a crash distinguishable from a
         # never-attempted send. Never automatically resend an uncertain outcome.
         try:

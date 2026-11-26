@@ -1,6 +1,7 @@
 """Idle scheduling, wake races, durable retry deadlines, and health probe tests."""
 
 import asyncio
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -284,3 +285,36 @@ async def test_queue_ages_show_a_stuck_message_without_touching_the_database(pg,
     sender = MagicMock(deliver_message=AsyncMock(return_value=DeliveryResult("sent")))
     assert await delivery.deliver_one(sender)
     assert runtime.snapshot()["oldest_undelivered_seconds"] is None
+
+
+async def test_queue_ages_forget_rows_no_longer_waiting(pg, monkeypatch):
+    # A peer machine (blue-green overlap) finished these, or the group went away: an empty scan
+    # must drop them, or ops pages on a queue that is actually empty.
+    await setup(pg)
+    monkeypatch.setattr(delivery, "UNPROCESSED", {})
+    monkeypatch.setattr(delivery, "UNDELIVERED", {})
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", AsyncMock(return_value="Reply"))
+    await delivery.accept_message(message("answered"))
+    assert await delivery.execute_one(agent)
+    await pg.execute("DELETE FROM groups WHERE group_id='g1'")
+    sender = MagicMock(deliver_message=AsyncMock(side_effect=AssertionError("unregistered")))
+    assert await delivery.deliver_one(sender)
+    assert delivery.UNDELIVERED == {}  # Failed as unregistered: no longer waiting.
+
+    await pg.execute("INSERT INTO groups(group_id,bot_id) VALUES('g1','fake')")
+    for id in ("peer", "waiting"):
+        await delivery.accept_message(message(id))
+    await pg.execute("UPDATE message_inbox SET state='completed' WHERE message_id='peer'")
+    outbox = await pg.fetchval(
+        """INSERT INTO message_outbox(inbox_id,group_id,body,state)
+           SELECT id,group_id,'sent elsewhere','sent' FROM message_inbox
+           WHERE message_id='peer' RETURNING id"""
+    )
+    delivery.UNDELIVERED[outbox] = 0.0
+    delivery.UNPROCESSED[-1] = time.time() + 60  # Accepted after the scan began: kept.
+    await delivery.next_work_delay("execution", 3600)
+    await delivery.next_work_delay("delivery", 3600)
+    waiting = await pg.fetchval("SELECT id FROM message_inbox WHERE message_id='waiting'")
+    assert set(delivery.UNPROCESSED) == {waiting, -1}
+    assert delivery.UNDELIVERED == {}
