@@ -202,6 +202,24 @@ async def test_file_request_files_once_and_starts_only_buildable_work(monkeypatc
     assert (await tools["file_request"]("feature", "Gym", "Again."))["status"] == "already filed"
 
 
+async def test_an_answer_in_plain_text_is_still_sent():
+    # beerdev must always answer; a model that skips the reply tool used to be dropped.
+    from google import genai
+    from google.genai import types
+
+    part = types.Part(text="About $0.42 so far this month.")
+    answer = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(content=types.Content(role="model", parts=[part]), finish_reason="STOP")
+        ]
+    )
+    agent = BeerAgent()
+    agent.client = genai.Client(api_key="synthetic")
+    agent.client.aio.models.generate_content = AsyncMock(return_value=answer)
+    reply = await beerdev.process(msg("beerdev what's our spend?"), agent)
+    assert reply == "About $0.42 so far this month."
+
+
 async def test_app_status_is_curated_and_json_safe(pg):
     await setup(pg)
     await delivery.accept_message(msg("a private message", id="f1"))

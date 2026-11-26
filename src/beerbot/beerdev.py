@@ -418,11 +418,11 @@ async def process(message: GroupMeMessage, beerius) -> str | None:
         lines.append(f"Replying to: {ctx.replied_text[:300]}")
     session = beerius._session("\n".join(lines), [ctx.text or "(no text)"], tools, "beerdev")
     max_calls = settings.agent_max_executed_tools
-    await run_tools(
+    text = await run_tools(
         session,
         tools,
         max_rounds=settings.agent_max_tool_calls,
         max_calls=max_calls if isinstance(max_calls, int) else 20,
         terminal_tool="reply",
     )
-    return ctx.reply_text
+    return ctx.reply_text or text.strip() or None  # Answered in plain text: still an answer.
