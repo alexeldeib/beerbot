@@ -169,9 +169,9 @@ def _shown(message: GroupMeMessage) -> str:
     return "(video)" if any(a.type == "video" for a in message.attachments) else "(image)"
 
 
-# ponytail: a video up to this size is held in memory (plus the SDK's base64 copy) on a 256MB VM
-# with swap; past it, upload through the provider's file API instead of inline bytes.
-MAX_MEDIA_BYTES = 100 * 1024 * 1024
+# Gemini takes at most 20MB of inline data per request, and the 256MB VM holds a copy or two of
+# it. ponytail: bigger videos are skipped; send them through the provider's file API if they matter.
+MAX_MEDIA_BYTES = 18 * 1024 * 1024
 
 
 async def fetch_media(url: str, default_type: str) -> Media | None:

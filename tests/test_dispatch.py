@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from src.beerbot import dispatch as module
 
@@ -46,11 +47,21 @@ async def test_dispatch_debounces_per_workflow_and_inputs(monkeypatch):
     assert len(sent) == 2
 
 
-async def test_dispatch_can_turn_a_disabled_workflow_back_on_first(monkeypatch):
+@pytest.mark.parametrize(
+    ("state", "calls"),
+    [
+        ("disabled_inactivity", ["GET", "PUT enable", "POST dispatches"]),  # GitHub turned it off
+        ("active", ["GET", "POST dispatches"]),
+        ("disabled_manually", ["GET"]),  # The owner paused it: never turned back on
+    ],
+)
+async def test_dispatch_turns_on_only_what_github_disabled(monkeypatch, state, calls):
     sent = []
 
     def handler(request):
-        sent.append((request.method, request.url.path))
+        sent.append(f"{request.method} {request.url.path.rsplit('/', 1)[-1]}".strip())
+        if request.method == "GET":
+            return httpx.Response(200, json={"state": state})
         return httpx.Response(204)
 
     real = httpx.AsyncClient
@@ -60,5 +71,4 @@ async def test_dispatch_can_turn_a_disabled_workflow_back_on_first(monkeypatch):
     monkeypatch.setattr(module, "_last", {})
     assert module.dispatch("ops.yml", every=3600, enable=True, reason="ops_silent")
     await asyncio.gather(*list(module._tasks))
-    workflow = "/repos/alexeldeib/beerbot/actions/workflows/ops.yml"
-    assert sent == [("PUT", f"{workflow}/enable"), ("POST", f"{workflow}/dispatches")]
+    assert [call.replace("GET ops.yml", "GET") for call in sent] == calls

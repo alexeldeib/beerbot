@@ -1,6 +1,6 @@
 """Best-effort GitHub workflow dispatches: a beerdev build when beerdev files or approves a request,
-ops when a message or reply fails or ops goes silent. Optional: without BEERDEV_GITHUB_TOKEN,
-scheduled runs catch up."""
+ops when a message or reply fails or ops goes silent. Without BEERDEV_GITHUB_TOKEN nothing is
+started: ops still runs on its schedule, and builds wait for the next start."""
 
 import asyncio
 import logging
@@ -17,8 +17,8 @@ _tasks: set[asyncio.Task] = set()
 
 def dispatch(workflow: str, *, every: float, enable: bool = False, **inputs: str) -> bool:
     """Start `workflow` in the background, at most once per `every` seconds per workflow+inputs.
-    `enable` first turns it back on, in case it was disabled (GitHub disables schedules in a
-    repository without commits for 60 days)."""
+    `enable` first turns it back on if GitHub disabled it for inactivity (60 days without
+    commits). A workflow the owner disabled by hand stays off and isn't started."""
     if not settings.github_token:
         return False
     key = workflow + repr(sorted(inputs.items()))
@@ -39,9 +39,14 @@ async def _post(workflow: str, inputs: dict[str, str], enable: bool) -> None:
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             if enable:
-                enabled = await http.put(f"{url}/enable", headers=headers)
-                if enabled.status_code != 204:
-                    logger.warning("Enabling %s failed: HTTP %s", workflow, enabled.status_code)
+                state = (await http.get(url, headers=headers)).json().get("state")
+                if state == "disabled_manually":  # Paused on purpose: leave it paused.
+                    logger.warning("%s is disabled by hand, so it wasn't started", workflow)
+                    return
+                if state == "disabled_inactivity":
+                    enabled = await http.put(f"{url}/enable", headers=headers)
+                    if enabled.status_code != 204:
+                        logger.warning("Enabling %s failed: HTTP %s", workflow, enabled.status_code)
             response = await http.post(
                 f"{url}/dispatches", headers=headers, json={"ref": "main", "inputs": inputs}
             )
