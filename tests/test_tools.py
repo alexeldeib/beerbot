@@ -160,6 +160,15 @@ class TestLogDrinks:
         with pytest.raises(ValueError, match="Cannot target user"):
             await log_drinks(count=1, drink_type="beer", target_user_ids=["hacker-id"])
 
+    @patch("src.beerbot.tools.beer_repo")
+    @patch("src.beerbot.tools.user_repo")
+    async def test_unknown_drink_type_is_an_error_not_a_beer(self, mock_user, mock_beer):
+        # Inside a message the audit wrapper hands this ValueError back to the model to fix.
+        log_drinks = _find_tool(create_tools(_make_ctx()), "log_drinks")
+        with pytest.raises(ValueError, match="use beer, wine, cocktail, or claw"):
+            await log_drinks(count=1, drink_type="whiskey")
+        mock_beer.create.assert_not_called()
+
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
     @patch("src.beerbot.tools.user_repo")

@@ -17,7 +17,8 @@ class DrinkType(str, Enum):
 
     @classmethod
     def from_string(cls, s: str) -> "DrinkType":
-        """Parse drink type from string, defaulting to BEER."""
+        """Parse a drink type (plurals and "seltzer" too). Anything else is a ValueError naming
+        the valid types, which a tool hands back to the model to fix."""
         mapping = {
             "beer": cls.BEER,
             "beers": cls.BEER,
@@ -30,7 +31,9 @@ class DrinkType(str, Enum):
             "seltzer": cls.CLAW,
             "seltzers": cls.CLAW,
         }
-        return mapping.get(s.lower(), cls.BEER)
+        if s.lower() not in mapping:
+            raise ValueError(f"Unknown drink type {s!r}: use beer, wine, cocktail, or claw")
+        return mapping[s.lower()]
 
 
 class GroupMeAttachment(BaseModel):
