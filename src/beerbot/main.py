@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -278,13 +279,14 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
-async def verify_ops_token(authorization: str | None = Header(None)) -> None:
+async def verify_ops_token(authorization: str | None = Header(None)) -> bool:
     """ops (ops.yml) holds OPS_TOKEN: it may only read worker and queue status and usage. Every
-    other admin route, waking the queue included, needs ADMIN_TOKEN."""
+    other admin route, waking the queue included, needs ADMIN_TOKEN. True when it was ops."""
     supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
     if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
-        return
+        return True
     await verify_admin_token(authorization)
+    return False
 
 
 @app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
@@ -325,11 +327,14 @@ async def message_status():
     return await queue_status()
 
 
-@app.get("/admin/workers/status", dependencies=[Depends(verify_ops_token)])
-async def worker_status(request: Request):
-    """In-memory diagnostics do not wake Postgres."""
+@app.get("/admin/workers/status")
+async def worker_status(request: Request, from_ops: bool = Depends(verify_ops_token)):
+    """In-memory diagnostics do not wake Postgres. ops' own reads are its heartbeat: the status
+    shows how long ago the previous one was, and a silent ops gets restarted (watch_ops)."""
     runtime = getattr(request.app.state, "queue_runtime", None)
     status = runtime.snapshot() if runtime else {"status": "not_started"}
+    if runtime and from_ops:
+        runtime.ops_seen = time.time()
     return status | {"model_usage_since_boot": usage.since_boot()}
 
 

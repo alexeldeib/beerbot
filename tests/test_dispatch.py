@@ -33,3 +33,21 @@ async def test_dispatch_debounces_per_workflow_and_inputs(monkeypatch):
     path = "/repos/alexeldeib/beerbot/actions/workflows/ops.yml/dispatches"
     assert sent[0] == (path, "Bearer t", {"ref": "main", "inputs": {"reason": "ValueError"}})
     assert len(sent) == 2
+
+
+async def test_dispatch_can_turn_a_disabled_workflow_back_on_first(monkeypatch):
+    sent = []
+
+    def handler(request):
+        sent.append((request.method, request.url.path))
+        return httpx.Response(204)
+
+    real = httpx.AsyncClient
+    fake = lambda **kw: real(transport=httpx.MockTransport(handler), **kw)  # noqa: E731
+    monkeypatch.setattr(module.httpx, "AsyncClient", fake)
+    monkeypatch.setattr(module.settings, "github_token", "t")
+    monkeypatch.setattr(module, "_last", {})
+    assert module.dispatch("ops.yml", every=3600, enable=True, reason="ops_silent")
+    await asyncio.gather(*list(module._tasks))
+    workflow = "/repos/alexeldeib/beerbot/actions/workflows/ops.yml"
+    assert sent == [("PUT", f"{workflow}/enable"), ("POST", f"{workflow}/dispatches")]

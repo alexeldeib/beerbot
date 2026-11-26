@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
+OPS_SILENT = 3600  # Seconds without an ops check before the app starts ops itself.
 # Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
 # Postgres; the durable record is the failed rows themselves.
 TERMINAL_FAILURES: Counter[str] = Counter()
@@ -83,6 +84,8 @@ class QueueRuntime:
         self.last_scan = {name: None for name in self.events}
         self.next_scan = {name: None for name in self.events}
         self.probe_failed = False
+        self.started = time.time()
+        self.ops_seen: float | None = None  # When ops last read the status with its own token.
 
     def wake(self, name=None):
         for key in [name] if name else self.events:
@@ -90,6 +93,13 @@ class QueueRuntime:
 
     def recovery_delay(self):
         return self.recovery_seconds - time.time() % self.recovery_seconds
+
+    def watch_ops(self) -> None:
+        """ops reads the status every 5 minutes. Silent for an hour (GitHub disabled its schedule,
+        or it keeps failing before it gets here), turn ops.yml back on and start it. Memory and
+        GitHub only, never the database; rate-limited, and a no-op without a GitHub token."""
+        if time.time() - (self.ops_seen or self.started) > OPS_SILENT:
+            dispatch("ops.yml", every=OPS_SILENT, enable=True, reason="ops_silent")
 
     async def wait(self, name, delay):
         self.next_scan[name] = datetime.fromtimestamp(time.time() + delay, UTC).isoformat()
@@ -112,6 +122,7 @@ class QueueRuntime:
             "git_sha": settings.git_sha,
             "oldest_unprocessed_seconds": _oldest(UNPROCESSED),
             "oldest_undelivered_seconds": _oldest(UNDELIVERED),
+            "ops_last_seen_seconds": round(time.time() - self.ops_seen) if self.ops_seen else None,
         }
 
 
@@ -538,4 +549,8 @@ async def execution_worker(agent, runtime):
 
 
 async def delivery_worker(client, runtime):
-    await _worker("delivery", runtime, lambda: deliver_one(client), maintenance=maintain_queue)
+    async def maintenance() -> bool:
+        runtime.watch_ops()  # Rides the hourly sweep: no wake of its own.
+        return await maintain_queue()
+
+    await _worker("delivery", runtime, lambda: deliver_one(client), maintenance=maintenance)

@@ -271,6 +271,40 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
     pool.assert_not_awaited()
 
 
+def test_ops_reads_of_the_status_are_its_heartbeat(monkeypatch):
+    monkeypatch.setattr(main.settings, "admin_token", "test-admin")
+    monkeypatch.setattr(main.settings, "ops_token", "test-ops")
+    with TestClient(main.app) as client:
+        status = "/admin/workers/status"
+        admin = client.get(status, headers={"Authorization": "Bearer test-admin"}).json()
+        assert admin["ops_last_seen_seconds"] is None
+        ops = {"Authorization": "Bearer test-ops"}
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] is None
+        main.app.state.queue_runtime.ops_seen -= 120  # Two minutes until ops' next check:
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] == 120
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] == 0
+
+
+async def test_a_silent_ops_is_turned_back_on_by_the_hourly_sweep(monkeypatch):
+    started = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, **kw: started.append((workflow, kw)))
+    runtime = delivery.QueueRuntime()
+    runtime.watch_ops()
+    runtime.ops_seen = time.time() - 600
+    runtime.watch_ops()
+    assert started == []  # Up under an hour, then heard from ten minutes ago.
+    monkeypatch.setattr(delivery, "maintain_queue", AsyncMock(return_value=False))
+    monkeypatch.setattr(delivery, "deliver_one", AsyncMock(return_value=False))
+    monkeypatch.setattr(delivery, "next_work_delay", AsyncMock(return_value=3600))
+    runtime.ops_seen = time.time() - 3700
+    task = asyncio.create_task(delivery.delivery_worker(MagicMock(), runtime))
+    try:
+        await until(lambda: started)
+    finally:
+        await stop(task)
+    assert started == [("ops.yml", {"every": 3600, "enable": True, "reason": "ops_silent"})]
+
+
 def test_manual_retry_wakes_delivery_worker(monkeypatch):
     monkeypatch.setattr(main.settings, "admin_token", "test-admin")
     monkeypatch.setattr(main, "retry_delivery", AsyncMock(return_value=True))
