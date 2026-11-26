@@ -1,8 +1,12 @@
 """Tests for tool factory and individual tool functions."""
 
+from contextlib import nullcontext
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.beerbot.database import bind_execution
 from src.beerbot.tools import ToolContext, create_tools
 
 
@@ -95,7 +99,6 @@ class TestLogDrinks:
 
         result = await log_drinks(count=1, drink_type="beer")
 
-        assert ctx.tools_called is True
         assert result["results"][0]["status"] == "logged"
         assert result["results"][0]["user"] == "Alice"
         assert result["results"][0]["new_total"] == 5
@@ -249,6 +252,19 @@ class TestReply:
         assert ctx.reply_text is None
 
 
+@patch("src.beerbot.tools.debt_repo")
+async def test_any_tool_but_reply_marks_the_message_as_using_tools(mock_debt):
+    # Beerius always sends a reply that used tools; a bare reply spends the rate limit.
+    ctx = _make_ctx()
+    mock_debt.get_debt_leaderboard = AsyncMock(return_value=[])
+    with bind_execution(SimpleNamespace(transaction=nullcontext)):
+        tools = {tool.__name__: tool for tool in create_tools(ctx)}
+        await tools["reply"](message="hi")
+        assert not ctx.tools_called
+        await tools["get_debt_leaderboard"]()
+    assert ctx.tools_called
+
+
 class TestGetRecentDrinks:
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
@@ -267,7 +283,6 @@ class TestGetRecentDrinks:
         result = await recent()
         assert result["total"] == 25
         assert result["until"] == "now"
-        assert ctx.tools_called is True
 
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
