@@ -126,9 +126,14 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends bubblewrap socat
-          # Ubuntu blocks the unprivileged user namespaces bubblewrap needs.
+          # Ubuntu blocks the unprivileged user namespaces bubblewrap needs, and its bwrap profile
+          # blocks the nested one the env scrub uses to hide other processes ("write
+          # /proc/self/setgroups: Permission denied"). This runner is thrown away after the job.
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
           fi
           initdb="$(ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1)"
           if [ -z "$initdb" ]; then
