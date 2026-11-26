@@ -78,6 +78,27 @@ def test_report_appends_to_a_live_issue_and_otherwise_opens_one():
             assert calls[0][1] == "/repos/o/r/issues/4" and "inbox-9" in issues[0]["body"]
 
 
+def test_a_failure_back_soon_after_closing_reopens_for_the_owner():
+    batch = ("Messages failing with ValueError", "- inbox 9", ops.INCIDENT)
+    recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    shipped = {
+        "number": 4,
+        "state": "closed",
+        "closed_at": recent,
+        "labels": [{"name": name} for name in ops.INCIDENT],
+        "body": "<!-- ops:key=failed:ValueError -->",
+    }
+    calls = []
+    ops.report(client({}, calls), "o/r", [shipped], "failed:ValueError", batch)
+    update, comment = (json.loads(body) for _, _, body in calls)
+    # A fix that didn't hold goes to a person: no `beerdev`, so no new build loops on it.
+    assert update["state"] == "open" and update["labels"] == ["bug", "inbox", "ops"]
+    assert comment["body"].startswith("Back within a week: the fix didn't hold")
+    calls.clear()
+    ops.report(client({}, calls), "o/r", [shipped], "failed:ValueError", batch)
+    assert "state" not in json.loads(calls[0][2])  # Open now: later batches just append.
+
+
 def test_diagnose_reports_what_the_workers_last_saw():
     def workers(payload):
         respond = lambda _: httpx.Response(200, json=payload)  # noqa: E731

@@ -35,8 +35,8 @@ DEPLOY_WINDOW = timedelta(minutes=60)  # Breakage this soon after a deploy rolls
 # changing production: waiting on it forever would leave ops blind.
 STALE_RUN = timedelta(minutes=30)
 QUEUE_LIMIT = 300  # Seconds a message or reply may wait before it counts as stuck.
-# A class closed this recently gets appended to instead of reopened as a new build: a fix that
-# didn't stick goes to a person rather than looping beerdev.
+# A class back this soon after closing reopens in the owner's inbox instead of starting another
+# build: a fix that didn't stick goes to a person rather than looping beerdev.
 REPEAT_WINDOW = timedelta(days=7)
 DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Neon).
 INCIDENT_MARKER = "<!-- ops:incident -->"
@@ -122,7 +122,7 @@ def describe(key: str, rows: list[dict]) -> tuple[str, str, list[str]]:
 
 
 def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch: tuple) -> None:
-    """Append to the live issue for this key, or open one."""
+    """Append to the live issue for this key, or open one. A closed one reopens in the inbox."""
     title, text, labels = batch
     marker = f"<!-- ops:key={key} -->"
     now = datetime.now(UTC)
@@ -138,8 +138,14 @@ def report(github: httpx.Client, repo: str, issues: list[dict], key: str, batch:
     if live:
         issue = max(live, key=lambda i: i["number"])
         issue["body"] = f"{issue['body']}\n\n{text}"
+        update = {"body": issue["body"]}
+        if issue["state"] != "open":
+            names = {label["name"] for label in issue.get("labels") or []}
+            update |= {"state": "open", "labels": sorted(names - {"beerdev"} | {"inbox"})}
+            issue.update(state="open", labels=[{"name": name} for name in update["labels"]])
+            text = f"Back within a week: the fix didn't hold, so it waits for the owner.\n\n{text}"
         url = f"/repos/{repo}/issues/{issue['number']}"
-        github.patch(url, json={"body": issue["body"]}).raise_for_status()
+        github.patch(url, json=update).raise_for_status()
         github.post(f"{url}/comments", json={"body": text}).raise_for_status()
     else:
         body = f"{marker}\n{text}"
