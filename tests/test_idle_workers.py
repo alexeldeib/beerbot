@@ -248,6 +248,7 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
     monkeypatch.setattr(main, "get_pool", pool)
     monkeypatch.setattr(main.beer_agent, "client", MagicMock())
     monkeypatch.setattr(main.settings, "admin_token", "test-admin")
+    monkeypatch.setattr(main.settings, "ops_token", "test-ops")
     with TestClient(main.app) as client:
         for _ in range(10):
             assert client.get("/ready").status_code == 200
@@ -257,6 +258,9 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
             "/admin/workers/status", headers={"Authorization": "Bearer test-admin"}
         ).json()["scans"] == {"execution": 0, "delivery": 0}
         assert client.post("/admin/messages/wake").status_code == 401
+        ops = {"Authorization": "Bearer test-ops"}
+        assert client.get("/admin/workers/status", headers=ops).status_code == 200
+        assert client.post("/admin/messages/wake", headers=ops).status_code == 403  # Admin only.
         assert (
             client.post(
                 "/admin/messages/wake", headers={"Authorization": "Bearer test-admin"}

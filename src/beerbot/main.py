@@ -279,8 +279,8 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
 
 
 async def verify_ops_token(authorization: str | None = Header(None)) -> None:
-    """ops (ops.yml) holds OPS_TOKEN: it may read status and usage, and wake the queue, a harmless
-    nudge for a worker waiting after an error. Every other admin route needs ADMIN_TOKEN."""
+    """ops (ops.yml) holds OPS_TOKEN: it may only read worker and queue status and usage. Every
+    other admin route, waking the queue included, needs ADMIN_TOKEN."""
     supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
     if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
         return
@@ -342,7 +342,7 @@ async def model_usage():
         return await usage.report(conn)
 
 
-@app.post("/admin/messages/wake", dependencies=[Depends(verify_ops_token)])
+@app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])
 async def wake_messages(request: Request):
     runtime = getattr(request.app.state, "queue_runtime", None)
     if runtime is None:
