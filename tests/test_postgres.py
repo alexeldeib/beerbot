@@ -12,7 +12,7 @@ import pytest
 from src.beerbot import database
 from src.beerbot.models import DrinkType
 from src.beerbot.reconciliation import LOCK_KEY, ReconciliationBusy, reconcile_identities
-from src.beerbot.repositories import beer_repo
+from src.beerbot.repositories import GroupRepository, beer_repo
 
 
 async def seed(pool):
@@ -151,3 +151,18 @@ async def test_failed_page_rolls_back_all_repairs(pg):
         await reconcile_identities(apply=True)
     assert await pg.fetchval("SELECT COUNT(*) FROM people") == 0
     assert await pg.fetchval("SELECT COUNT(*) FROM users WHERE person_id IS NOT NULL") == 0
+
+
+async def test_group_registration_keeps_workspace_for_the_app(pg):
+    await database.init_db()
+    groups = GroupRepository()  # conftest stubs the shared instance's lookup
+    group = await groups.register(group_id="g9", bot_id="bot-1", name="Friends")
+    assert (group.workspace_id, group.bot_id, group.name) == ("groupme:g9", "bot-1", "Friends")
+    await groups.register(group_id="g9", bot_id="bot-2")
+    assert await groups.get_bot_id("g9") == "bot-2"
+    assert (await groups.get_by_group_id("g9")).workspace_id == "groupme:g9"
+    assert [g.group_id for g in await groups.list_all()] == ["g9"]
+    assert await pg.fetchval("SELECT name FROM workspaces WHERE id='groupme:g9'") == "GroupMe g9"
+    assert await groups.delete("g9") and not await groups.delete("g9")
+    assert await groups.get_by_group_id("g9") is None
+    assert await pg.fetchval("SELECT count(*) FROM workspaces") == 1

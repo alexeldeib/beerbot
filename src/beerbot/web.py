@@ -36,10 +36,8 @@ CHALLENGE_COOKIE = "beerbot_challenge"
 EASTERN = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
-# Workspaces are the tenant, not the gateway or the person's identity. Missing
-# classification preserves existing legacy visibility; explicitly non-production
-# workspaces never enter personal app history, even via a direct group filter.
-PRODUCTION_WORKSPACE = "coalesce(w.settings->>'environment','production')='production'"
+# Explicitly non-production workspaces never enter personal app history, even via
+# a direct group filter.
 PERSONAL_HISTORY_SCOPE = (
     "FROM personal_activity b WHERE b.person_id=$1 "
     "AND ($2::text IS NULL OR b.group_key=$2) AND b.environment='production'"

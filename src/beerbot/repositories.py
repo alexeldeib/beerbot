@@ -1,6 +1,5 @@
 """Data access layer for users and beers."""
 
-import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,37 +9,16 @@ from .models import (
     Beer,
     DebtLeaderboardEntry,
     DrinkType,
-    GatewayConnection,
-    GatewayRoute,
     Group,
     GroupStats,
-    ExternalIdentity,
-    IdentityContext,
-    Person,
     SplitGGroupStats,
     SplitGUserStats,
     User,
     UserStats,
-    Workspace,
-    WorkspaceContext,
-    WorkspaceMembership,
-)
-from .routing import (
-    GROUPME_GATEWAY_TYPE,
-    groupme_connection_id,
-    groupme_route_id,
-    groupme_route_key,
-    groupme_workspace_id,
 )
 
 # Use Eastern time for all date calculations
 EASTERN = ZoneInfo("America/New_York")
-
-
-def _json_object(value: object) -> dict[str, object]:
-    """Decode asyncpg's default JSON string representation when necessary."""
-
-    return json.loads(value) if isinstance(value, str) else value
 
 
 class UserRepository:
@@ -1051,12 +1029,9 @@ class GroupRepository:
         bot_id: str,
         name: str | None = None,
     ) -> Group:
-        """Register a new group or update existing one."""
+        """Register a new group or update existing one, with its workspace for /app."""
         pool = await get_pool()
-        workspace_id = groupme_workspace_id(group_id)
-        connection_id = groupme_connection_id(group_id)
-        route_id = groupme_route_id(group_id)
-        display_name = name or f"GroupMe {group_id}"
+        workspace_id = f"groupme:{group_id}"
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1069,49 +1044,7 @@ class GroupRepository:
                         updated_at = NOW()
                     """,
                     workspace_id,
-                    display_name,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO gateway_connections (
-                        id, gateway_type, name, credential_ref, config, status
-                    )
-                    VALUES ($1, $2, $3, $4, $5::jsonb, 'active')
-                    ON CONFLICT (id) DO UPDATE
-                    SET name = EXCLUDED.name,
-                        credential_ref = EXCLUDED.credential_ref,
-                        config = EXCLUDED.config,
-                        status = 'active',
-                        updated_at = NOW()
-                    """,
-                    connection_id,
-                    GROUPME_GATEWAY_TYPE,
-                    f"{display_name} bot",
-                    f"legacy:groups/{group_id}/bot_id",
-                    json.dumps({"legacy_group_id": group_id}),
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO gateway_routes (
-                        id, gateway_type, route_key, workspace_id,
-                        gateway_connection_id, external_conversation_id, name, status
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
-                    ON CONFLICT (gateway_type, route_key) DO UPDATE
-                    SET workspace_id = EXCLUDED.workspace_id,
-                        gateway_connection_id = EXCLUDED.gateway_connection_id,
-                        external_conversation_id = EXCLUDED.external_conversation_id,
-                        name = EXCLUDED.name,
-                        status = 'active',
-                        updated_at = NOW()
-                    """,
-                    route_id,
-                    GROUPME_GATEWAY_TYPE,
-                    groupme_route_key(group_id),
-                    workspace_id,
-                    connection_id,
-                    group_id,
-                    display_name,
+                    name or f"GroupMe {group_id}",
                 )
                 row = await conn.fetchrow(
                     """
@@ -1139,220 +1072,15 @@ class GroupRepository:
             return [Group(**dict(row)) for row in rows]
 
     async def delete(self, group_id: str) -> bool:
-        """Disable a GroupMe route and delete its legacy registration."""
+        """Delete a group's registration; its workspace and history remain."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    UPDATE gateway_routes
-                    SET status = 'inactive', updated_at = NOW()
-                    WHERE gateway_type = $1 AND route_key = $2
-                    """,
-                    GROUPME_GATEWAY_TYPE,
-                    groupme_route_key(group_id),
-                )
-                await conn.execute(
-                    """
-                    UPDATE gateway_connections
-                    SET status = 'inactive', updated_at = NOW()
-                    WHERE id = $1
-                    """,
-                    groupme_connection_id(group_id),
-                )
-                result = await conn.execute(
-                    "DELETE FROM groups WHERE group_id = $1",
-                    group_id,
-                )
+            result = await conn.execute(
+                "DELETE FROM groups WHERE group_id = $1",
+                group_id,
+            )
             return result == "DELETE 1"
-
-
-class GatewayRouteRepository:
-    """Resolve provider-owned route keys into workspace context."""
-
-    async def resolve(self, gateway_type: str, route_key: str) -> WorkspaceContext | None:
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    w.id AS workspace_id,
-                    w.name AS workspace_name,
-                    w.timezone AS workspace_timezone,
-                    w.settings AS workspace_settings,
-                    w.created_at AS workspace_created_at,
-                    w.updated_at AS workspace_updated_at,
-                    c.id AS connection_id,
-                    c.gateway_type AS connection_gateway_type,
-                    c.name AS connection_name,
-                    c.credential_ref AS connection_credential_ref,
-                    c.config AS connection_config,
-                    c.status AS connection_status,
-                    c.created_at AS connection_created_at,
-                    c.updated_at AS connection_updated_at,
-                    r.id AS route_id,
-                    r.gateway_type AS route_gateway_type,
-                    r.route_key,
-                    r.external_conversation_id,
-                    r.name AS route_name,
-                    r.config AS route_config,
-                    r.status AS route_status,
-                    r.created_at AS route_created_at,
-                    r.updated_at AS route_updated_at
-                FROM gateway_routes r
-                JOIN workspaces w ON w.id = r.workspace_id
-                JOIN gateway_connections c ON c.id = r.gateway_connection_id
-                WHERE r.gateway_type = $1
-                  AND r.route_key = $2
-                  AND r.status = 'active'
-                  AND c.status = 'active'
-                """,
-                gateway_type,
-                route_key,
-            )
-            if not row:
-                return None
-
-            data = dict(row)
-
-            workspace = Workspace(
-                id=data["workspace_id"],
-                name=data["workspace_name"],
-                timezone=data["workspace_timezone"],
-                settings=_json_object(data["workspace_settings"]),
-                created_at=data["workspace_created_at"],
-                updated_at=data["workspace_updated_at"],
-            )
-            connection = GatewayConnection(
-                id=data["connection_id"],
-                gateway_type=data["connection_gateway_type"],
-                name=data["connection_name"],
-                credential_ref=data["connection_credential_ref"],
-                config=_json_object(data["connection_config"]),
-                status=data["connection_status"],
-                created_at=data["connection_created_at"],
-                updated_at=data["connection_updated_at"],
-            )
-            route = GatewayRoute(
-                id=data["route_id"],
-                gateway_type=data["route_gateway_type"],
-                route_key=data["route_key"],
-                workspace_id=data["workspace_id"],
-                gateway_connection_id=data["connection_id"],
-                external_conversation_id=data["external_conversation_id"],
-                name=data["route_name"],
-                config=_json_object(data["route_config"]),
-                status=data["route_status"],
-                created_at=data["route_created_at"],
-                updated_at=data["route_updated_at"],
-            )
-            return WorkspaceContext(workspace=workspace, connection=connection, route=route)
-
-
-class IdentityRepository:
-    """Read and maintain the shadow global identity model."""
-
-    async def resolve(
-        self,
-        gateway_type: str,
-        issuer_key: str,
-        subject_key: str,
-        workspace_id: str,
-    ) -> IdentityContext | None:
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    p.id AS person_id,
-                    p.display_name AS person_display_name,
-                    p.avatar_url AS person_avatar_url,
-                    p.status AS person_status,
-                    p.canonical_person_id,
-                    p.settings AS person_settings,
-                    p.created_at AS person_created_at,
-                    p.updated_at AS person_updated_at,
-                    e.id AS identity_id,
-                    e.gateway_type,
-                    e.issuer_key,
-                    e.subject_key,
-                    e.display_name AS identity_display_name,
-                    e.avatar_url AS identity_avatar_url,
-                    e.assurance,
-                    e.status AS identity_status,
-                    e.metadata AS identity_metadata,
-                    e.first_seen_at,
-                    e.last_seen_at,
-                    m.id AS membership_id,
-                    m.workspace_id,
-                    m.display_name AS membership_display_name,
-                    m.role AS membership_role,
-                    m.status AS membership_status,
-                    m.settings AS membership_settings,
-                    m.joined_at,
-                    m.updated_at AS membership_updated_at
-                FROM external_identities e
-                JOIN people p ON p.id = e.person_id
-                JOIN workspace_memberships m
-                  ON m.person_id = p.id AND m.workspace_id = $4
-                WHERE e.gateway_type = $1
-                  AND e.issuer_key = $2
-                  AND e.subject_key = $3
-                  AND e.status = 'active'
-                  AND m.status = 'active'
-                """,
-                gateway_type,
-                issuer_key,
-                subject_key,
-                workspace_id,
-            )
-            if not row:
-                return None
-
-            data = dict(row)
-            person = Person(
-                id=data["person_id"],
-                display_name=data["person_display_name"],
-                avatar_url=data["person_avatar_url"],
-                status=data["person_status"],
-                canonical_person_id=data["canonical_person_id"],
-                settings=_json_object(data["person_settings"]),
-                created_at=data["person_created_at"],
-                updated_at=data["person_updated_at"],
-            )
-            identity = ExternalIdentity(
-                id=data["identity_id"],
-                gateway_type=data["gateway_type"],
-                issuer_key=data["issuer_key"],
-                subject_key=data["subject_key"],
-                person_id=data["person_id"],
-                display_name=data["identity_display_name"],
-                avatar_url=data["identity_avatar_url"],
-                assurance=data["assurance"],
-                status=data["identity_status"],
-                metadata=_json_object(data["identity_metadata"]),
-                first_seen_at=data["first_seen_at"],
-                last_seen_at=data["last_seen_at"],
-            )
-            membership = WorkspaceMembership(
-                id=data["membership_id"],
-                workspace_id=data["workspace_id"],
-                person_id=data["person_id"],
-                display_name=data["membership_display_name"],
-                role=data["membership_role"],
-                status=data["membership_status"],
-                settings=_json_object(data["membership_settings"]),
-                joined_at=data["joined_at"],
-                updated_at=data["membership_updated_at"],
-            )
-            return IdentityContext(
-                person=person,
-                external_identity=identity,
-                membership=membership,
-            )
 
 
 class RecapRepository:
@@ -1408,6 +1136,4 @@ beer_repo = BeerRepository()
 debt_repo = DebtRepository()
 zyn_repo = ZynRepository()
 group_repo = GroupRepository()
-gateway_route_repo = GatewayRouteRepository()
-identity_repo = IdentityRepository()
 recap_repo = RecapRepository()
