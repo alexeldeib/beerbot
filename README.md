@@ -129,56 +129,40 @@ ngrok http 8080
 uv run pytest
 ```
 
+Tests that need PostgreSQL skip unless `BEERBOT_TEST_DATABASE_URL` points at a disposable
+database; each test creates and drops its own schema there. They never use `DATABASE_URL`.
+`BEERBOT_LIVE_LLM=1` also runs the real-model chat scenarios in `tests/test_live_chat.py`.
+
 ---
 
-## ⚙️ Environment Variables
+## ⚙️ Configuration
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BEERBOT_BOT_ID` | Yes | Your GroupMe bot ID |
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `GROUPME_WEBHOOK_SECRET` | Production | Random bearer token included in the callback URL |
-| `REQUIRE_REGISTERED_GROUPS` | No | Reject unknown GroupMe groups (default: `true`) |
-| `LLM_PROVIDER` | No | Runtime model adapter; currently `google` |
-| `LLM_MODEL` | No | Pinned model name (default: `gemini-3.6-flash`) |
-| `LLM_API_KEY` | No | Model endpoint credential; falls back to `GEMINI_API_KEY` |
-| `LLM_BASE_URL` | No | Reserved for an OpenAI-compatible/self-hosted adapter |
-| `ENABLE_IMAGE_ANALYSIS` | No | Set `false` to disable (default: `true`) |
-| `ENVIRONMENT` | No | `development` or `production` |
-| `ADMIN_TOKEN` | No | Bearer token for admin endpoints |
+Settings live in `src/beerbot/config.py` (Pydantic Settings, read from the environment or
+`.env`). The required ones are `BEERBOT_BOT_ID`, `DATABASE_URL`, and `LLM_API_KEY` (or
+`GEMINI_API_KEY`). Production secrets and where each one lives are in
+[docs/runbook.md](docs/runbook.md#credentials).
 
 ---
 
 ## 🚢 Deployment (Fly.io)
 
+Every push to `main` runs CI, deploys blue-green, and verifies `/health`, `/ready`, `/version`
+(the new git SHA), and `/ready/db`; a failed deploy rolls itself back. You normally never run
+`fly deploy` yourself. Deploys, rollbacks, and incidents: [docs/runbook.md](docs/runbook.md).
+
+For a new deployment:
+
 ```bash
-# Install Fly CLI
-curl -L https://fly.io/install.sh | sh
-fly auth login
-
-# Create app
 fly launch --no-deploy
-
-# Set secrets
-fly secrets set BEERBOT_BOT_ID=your_bot_id
-fly secrets set DATABASE_URL="postgresql://..."
-fly secrets set GROUPME_WEBHOOK_SECRET=your_random_webhook_secret
-fly secrets set LLM_API_KEY=your_model_key
-fly secrets set ADMIN_TOKEN=your_admin_token
-
-# Deploy
+fly secrets set BEERBOT_BOT_ID=your_bot_id DATABASE_URL="postgresql://..." \
+  GROUPME_WEBHOOK_SECRET=your_random_webhook_secret LLM_API_KEY=your_model_key \
+  ADMIN_TOKEN=your_admin_token
 fly deploy --build-arg GIT_SHA="$(git rev-parse HEAD)"
+curl https://your-app.fly.dev/ready/db  # after every manual deploy
 ```
 
-Normally you never run `fly deploy` yourself: every push to `main` (and every manual or beerdev
-dispatch of the CI workflow) runs the tests, then deploys blue-green with the `FLY_API_TOKEN`
-repository secret and verifies `/health`, `/ready`, `/version` (the new git SHA), and `/ready/db`.
-
-Set a long random `GROUPME_WEBHOOK_SECRET`, register the group through the admin
-API, and set the GroupMe bot callback URL to:
-```
-https://your-app.fly.dev/callback?token=YOUR_WEBHOOK_SECRET
-```
+Register the group through the admin API (below), then set the GroupMe bot callback URL to
+`https://your-app.fly.dev/callback?token=YOUR_WEBHOOK_SECRET`.
 
 ---
 
@@ -202,52 +186,47 @@ curl https://your-app.fly.dev/admin/groups \
 
 ## 🛠 beerdev: asks from the chat, shipped
 
-`beerdev` is a second GroupMe bot that turns asks in the chat into shipped changes, answers
-questions about the queue and the code, and keeps the chat posted in its own voice. Beerius hands
-asks over and stays silent.
+`beerdev` is a second GroupMe bot in the same app. It answers questions about the bot, the
+request queue, recent errors, deploys, and costs, and it turns asks into shipped changes.
 
 | In the chat | Meaning |
 |---|---|
 | 💡 Queued: … | Accepted; beerdev will build it |
-| 🤓 … | An answer about the queue, how the bot works, recent errors and deploys, or costs ("beerdev any errors lately?") |
+| 🤓 … | An answer ("beerdev any errors lately?") |
 | 👀 Filed for a human: … | Needs setup a person must do (it is in the inbox) |
 | 🛠️ New: … / ✅ Shipped: … | Deployed and verified |
-| 👀 Needs the owner's review: … | The independent reviewer held an infrastructure change for the owner |
+| 👀 Needs the owner's review: … | Held for the owner as an open PR |
 | 🤷 Skipping: … | beerdev declined it, with the reason |
 | 🚫 Vetoed: … | The owner stopped it, or it is being removed |
 | 📜 beerdev this week | Monday digest: shipped, declined, and waiting on a human |
 
-1. **talk to beerdev**: any message that says "beerdev" or replies in its thread goes to beerdev,
-   a peer bot in the same app. Beerius never sees those messages. beerdev answers questions from
-   live status, the request queue, deploys, and the docs. It files requests as issues, with no
-   names or chat text, since this repository is public: `beerdev` (plus `bug`) marks code changes,
-   and `beerdev-infra` + `inbox` marks asks that need a person. Each agent can call only its own
-   narrow tools.
-2. **build** (`beerdev-build.yml`): Claude Code takes the oldest `beerdev` issue, and incidents
-   first. Lint, the full suite (including the pipeline policy in `tests/test_policy.py`), and the
-   live chat e2e then run with only read-only credentials. Changes beyond app code (workflows,
-   scripts, Docker, Fly) need an independent Claude reviewer's approval, or they wait for the
-   owner as an open PR. Dependency changes always wait for the owner. `ship` refuses changes to beerdev's own kernel, applies the
-   patch to a fresh checkout, appends `CHANGELOG.md`, merges, deploys through CI (which rolls back
-   a failed deploy), and tells the chat. An issue closed mid-build (a veto) never ships.
-3. **lead** (`beerdev-lead.yml`, Mondays) reviews the code, incidents, and backlog with
-   read-only access and proposes up to three improvements. beerdev builds them, except that
-   kernel changes, new secrets or paid services, costs, data deletion, and product calls wait in
-   the inbox as a `proposal`.
-4. **ops** (`ops.yml`) files production incidents with their diagnosis; beerdev fixes them first.
+1. **Talk to beerdev:** start a message with "beerdev", or reply to one of beerdev's posts.
+   Everything else goes to Beerius, which never sees beerdev's messages. beerdev answers from
+   live status, the request queue, deploys, and the docs, using only its own narrow tools. It
+   files requests as issues with no names or chat text, since this repository is public.
+2. **Build** (`beerdev-build.yml`): Claude Code builds the next `beerdev` issue, incidents first,
+   then runs lint, the full suite (including the pipeline policy in `tests/test_policy.py`), and
+   the live chat e2e with read-only credentials. Changes beyond routine app code (workflows,
+   scripts, Docker, Fly, and security-sensitive files such as auth, config, and migrations) need
+   an independent reviewer's approval, or they wait for the owner as an open PR. Dependency
+   changes always wait for the owner. Ship refuses changes to beerdev's kernel, merges, deploys
+   through CI, appends `CHANGELOG.md`, and tells the chat.
+3. **Lead** (`beerdev-lead.yml`, Mondays) proposes up to three improvements. Kernel changes, new
+   secrets or paid services, data deletion, and product calls wait in the inbox as a `proposal`.
+4. **ops** (`ops.yml`) is the SRE: every 5 minutes it checks what users would feel, rolls back a
+   deploy that broke production, pages the owner in a private GroupMe group, and files tickets
+   that start a beerdev build. See the runbook's "Incidents".
 
-**Steering:**
-- **From the chat (owner only):** reply to one of beerdev's messages with "veto" or "approve",
-  or say "beerdev veto the gym tracker". beerdev refuses anyone else by their GroupMe id, and
-  binds the command to the owner's own words, never the model's reading. A veto closes queued work, stops a build at merge, or removes shipped work through a
-  new build. Approve makes a proposal or waiting ask buildable.
-- From a terminal: `gh issue close <n> --reason "not planned"` vetoes, and
-  `gh issue edit <n> --add-label beerdev --remove-label inbox` approves.
-- Close an issue to cancel it quietly. Remove `beerdev-failed` to retry.
+**Steering (owner only):**
+- In the chat, reply "veto" or "approve" to one of beerdev's messages, or say "beerdev veto the
+  gym tracker". beerdev checks the sender's GroupMe id and acts on the owner's own words, never
+  the model's reading. A veto closes queued work, stops a build at merge, or removes shipped work
+  through a new build. Approve makes a proposal or waiting ask buildable, merges a held PR, and
+  retries a failed build.
+- From a terminal: `gh issue close <n> --reason "not planned"` vetoes; `gh issue edit <n>
+  --add-label beerdev --remove-label inbox` then `gh workflow run beerdev-build.yml` approves.
 - The inbox lists everything waiting on you:
   https://github.com/alexeldeib/beerbot/issues?q=is%3Aopen+label%3Ainbox
-
-Setup, credentials, and the access map are in `docs/runbook.md`.
 
 ---
 
@@ -255,18 +234,23 @@ Setup, credentials, and the access map are in `docs/runbook.md`.
 
 ```
 src/beerbot/
-├── main.py           # FastAPI app, webhook handler, routing
-├── agent.py          # Beerius prompt, multimodal input, model orchestration
-├── tools.py          # Request-scoped, validated read/write tools
-├── delivery.py       # Durable inbox, atomic execution, outbox delivery and retention
+├── main.py           # FastAPI app, webhook router (Beerius or beerdev), admin endpoints
+├── agent.py          # Beerius: prompt, multimodal input, rate limiting, recaps
+├── beerdev.py        # beerdev, the peer agent: router rule, prompt, narrow tools
+├── tools.py          # Beerius's request-scoped, validated tools
+├── model_runtime.py  # Bounded tool loop; Google and OpenAI-compatible sessions
+├── delivery.py       # Durable inbox, atomic execution, outbox delivery, retention, status
+├── usage.py          # Token counts and the spend report
+├── dispatch.py       # Starts GitHub workflows (ops, builds) from the app
 ├── repositories.py   # Database operations
 ├── models.py         # Pydantic models and enums
 ├── llm.py            # Provider-neutral model profile and capabilities
-├── gateways/         # Canonical transport contracts and shadow adapters
-├── routing.py        # Stable provider route identifiers
 ├── groupme_client.py # GroupMe API with multi-group support
 ├── database.py       # asyncpg pool and versioned migrations
-└── config.py         # Environment configuration
+├── config.py         # Environment configuration
+├── web.py            # /app: invite-only accounts and personal history
+├── activity.py       # /app native Log/Edit/Undo (feature-gated)
+└── app_groups.py     # /app app-only groups and invitations (feature-gated)
 ```
 
 **Key Design Decisions:**
@@ -277,292 +261,14 @@ src/beerbot/
 - **Registered groups only**: Inbound and outbound GroupMe traffic must map to a configured group
 - **No chat corpus in Git**: Production messages, media, and local evaluation data belong in private storage
 
----
-
-## Direction of Travel
-
-GroupMe is the only production transport today. Its callbacks now enter a durable
-inbox; its existing prompts, tools, and statistics remain authoritative. Workspace, gateway connection,
-and gateway route records are maintained as a shadow model so additional
-functionality can be built and verified without changing existing user behavior.
-
-The first-party web/iOS application is intended to become the primary product
-surface for accounts, global personal history, settings, and rich activity UI.
-Messaging providers remain transport adapters: they normalize provider events
-into a common envelope and deliver replies or notifications, but do not own
-users, agent sessions, or activity semantics.
-
-The target tenant boundary is a workspace rather than a messaging provider. A
-workspace may have multiple gateway routes—GroupMe, SMS, WhatsApp, Discord, or
-other channels—and each route uses provider-owned identifiers such as a GroupMe
-group ID or receiving number plus sender/thread identity. Global people,
-external identities, and workspace memberships are maintained as shadow state:
-each existing GroupMe user maps to one provisional global person, while
-memberships are inferred only from observed group-scoped activity or debt. The
-legacy `users`, `beers`, and `group_id` paths remain authoritative; no global
-stats or account behavior is exposed until shadow parity and the future activity
-model are verified.
-
-## Message execution and delivery
-
-`POST /callback` validates the existing GroupMe registration and stores the event
-before returning HTTP 200 with action `queued` or `duplicate`. A worker executes
-pending messages in receipt order within each group. PostgreSQL claims and a
-transaction-scoped group lock protect concurrent workers. The existing agent and
-tools execute inside a single database transaction, bounded to 90 seconds. All
-repository acquisitions share that connection; related writes and the stored
-reply either commit together or roll back together. Model failures retry up to
-three attempts with backoff; cancellation rolls back and leaves the inbox pending.
-The recorded tool arguments/results describe successful committed executions.
-
-A separate worker sends stored replies. Connect failures and HTTP 429 responses
-retry up to five attempts with backoff; Retry-After seconds are honored. Read/write
-timeouts, HTTP 408/5xx, and interrupted sends become `uncertain` rather than being
-automatically repeated. GroupMe has no bot-post idempotency key, so uncertain
-delivery cannot be resolved into exactly-once sending automatically.
-
-Authenticated admins can inspect `GET /admin/messages/status` for counts, oldest
-pending age, and the last 50 failures/uncertain deliveries (IDs and error codes,
-without message content). `POST /admin/messages/outbox/{id}/retry` retries only a
-stored failed reply. For uncertain delivery, pass `acknowledge_uncertain=true`
-only after accepting the risk of a duplicate chat reply. This never reruns tools.
-Failed executions require investigation; the worker does not retry them forever.
-
-Completed message history survives restarts. Inbox payloads, tool results, and
-outbound text expire after three days, with bounded cleanup roughly every minute.
-Message IDs and state remain as deduplication tombstones. Media is fetched for
-analysis, not stored as binary data. Expired content is not retryable.
-
-`/health` remains process liveness. `/ready` checks model configuration, worker
-tasks and known worker failures **without querying Postgres**. Fly routes traffic on
-`/health` only and runs `/ready` as a top-level check, which gates deploys but never routing,
-so a processing failure can't stop the durable inbox from accepting messages. `/ready/db` performs the explicit database check and wakes
-workers after deployment. CI calls it after verifying the new revision and the
-old fleet has stopped; manual deployments must do the same.
-Shutdown cancels workers, rolls back incomplete execution, and closes the pool.
-
-Workers are event-driven: durable receipts and manual retries wake them immediately,
-and persisted retry/sending deadlines arm timers. Empty queues share an hourly
-recovery sweep (`QUEUE_RECOVERY_SECONDS=3600`). Idle pool connections close after
-60 seconds. This lets Neon suspend between actual work instead of keeping compute
-awake with one-second polling. `GET /admin/workers/status` is an authenticated,
-database-free diagnostic; `POST /admin/messages/wake` is an explicit recovery wake.
-See [idle compute and wakeup design](docs/idle-compute.md), including the deployment
-handoff, retention, rare missed-wake latency, and why Fly's running-machine floor
-must not be changed to zero without an external scheduler.
-Migration 4 is additive. Deduplication protects messages first accepted by this
-release; it cannot retrospectively identify every command processed by earlier
-releases. Weekly recaps still use their existing independent scheduler and are
-not part of this message outbox. Rolling back to code predating migration 4 leaves
-pending inbox/outbox records retained; deploy compatible worker code to drain them.
-
-Identity maintenance is explicit and outside the message path. Authenticated
-admins can inspect `GET /admin/identities/parity` and repair missing records with
-`POST /admin/identities/reconcile`. Both accept `after_id` (default 0) and `limit`
-(default 100, maximum 500). Follow `next_after_id` until null for a complete pass.
-Reports contain counts and cursors only. Apply reports describe gaps repaired in
-that page; preview again to verify the result. Conflicting links and blocked
-identities are reported without modification. Existing names, roles, lifecycle
-states, and identity links are preserved. New historical memberships have status
-`observed`, which must never grant app access. Legacy migration-created active
-memberships remain shadow data and also require explicit authorization at app cutover.
-
-Repairs are atomic per page, serialized using a PostgreSQL advisory lock, and
-use short statement/lock timeouts. A busy repair returns HTTP 409; a database
-failure rolls the page back. Retry the same cursor after a failure. Reconciliation
-is intentionally not scheduled yet. Future linking writers must share its locking
-and transaction discipline. The old unconditional single-user observer was removed.
-
-CI runs real PostgreSQL migration and reconciliation regressions. To run these
-locally, set `BEERBOT_TEST_DATABASE_URL` to a disposable test database and run
-`uv run --extra dev pytest`. Each test creates and drops a unique schema there;
-the tests never use the application's `DATABASE_URL` for integration testing.
-
-The model loop is explicit and provider-independent. `model_runtime.py` validates
-each batch of tool arguments, executes tools sequentially, and feeds results back
-through the selected adapter. `reply` completes the turn; raw model text does not
-publish chat messages. Silence remains a successful turn with no reply call.
-`AGENT_MAX_TOOL_CALLS` bounds model rounds (default 5); `AGENT_MAX_EXECUTED_TOOLS`
-bounds actual tool executions (default 20). Invalid calls, incomplete responses,
-or exhausted budgets raise and roll back the enclosing message transaction.
-
-`LLM_PROVIDER=google` remains the default. Its adapter disables SDK automatic tool
-execution and preserves the full native model content, including thought
-signatures, between calls. Images and video remain supported through Gemini.
-
-For a hosted or self-hosted compatible server, set `LLM_PROVIDER=openai_compatible`,
-`LLM_BASE_URL` to its API prefix (for example `https://server.example/v1`), and
-`LLM_MODEL` to its model identifier. Set `LLM_API_KEY` if required; the adapter never
-sends `GEMINI_API_KEY` to a compatible server. It uses the OpenAI SDK Chat
-Completions interface with automatic SDK retries disabled, preserves call IDs and
-returned reasoning fields, and supports text, images, and function tools. Recaps
-use the same configured adapter. A keyless local server may omit `LLM_API_KEY`.
-
-Compatible video input is opt-in: `LLM_VIDEO_FORMAT=video_url` enables that
-server-specific content format; `disabled` rejects video input if video analysis
-is enabled. Set `LLM_SUPPORTS_VIDEO=false` to disable video analysis instead.
-This is transport support, not a claim that every Kimi or compatible deployment
-accepts video or meets Beerius's quality requirements. Run an isolated canary
-against the actual endpoint before changing production away from Gemini.
-
-General CI lives in `.github/workflows/ci.yml` and runs lint, formatting, tests,
-package build, and container build. A successful push to `main` is deployed to
-Fly with a health-checked blue-green replacement; production deploys are
-serialized, superseded revisions are skipped, and `/health` plus `/version` are
-verified before the workflow succeeds. Production-derived evaluation data must
-not be committed; a future replay suite should use sanitized fixtures or an
-access-controlled external store.
+More detail:
+- [docs/architecture.md](docs/architecture.md): message execution, delivery, retention, and the model loop
+- [docs/idle-compute.md](docs/idle-compute.md): wakeups, health checks, and keeping Neon idle
+- [docs/runbook.md](docs/runbook.md): credentials, access, deploys, incidents, spend
+- [docs/app.md](docs/app.md): the web app, accounts, native logging, and app groups
+- [docs/production-launch.md](docs/production-launch.md): what's left before a wider rollout
 
 ---
-
-## Personal dashboard (invite-only)
-
-Only registered production groups contribute to the personal dashboard. Classify
-a workspace with `PATCH /admin/workspaces/{workspace_id}/environment` (admin bearer
-token) and `{"environment":"test"}` to exclude every gateway group mapped to it
-from totals, charts, recent activity, and the group picker. Explicit requests for
-an excluded group return 404. The setting is stored in `workspaces.settings`,
-preserves other settings, and can be reversed with `{"environment":"production"}`.
-Unclassified legacy workspaces retain production visibility. This changes only
-personal-dashboard visibility: no identities, drink rows, group registrations,
-bot replies, or group-specific leaderboards/recaps are modified. It is not process,
-database, or credential isolation; use a separate deployment/database for risky tests.
-
-`/app` is the first-party personal view: this week and last week,
-all-time drinks, Split-G total, eight-week trend, drink breakdown, and the latest
-30 entries. It combines authoritative legacy `beers` with native app activity,
-without double counting mirrored entries. It does not read group chats/photos,
-send notifications, or change the GroupMe agent. Group filters expose personal
-history and explicitly granted app groups; shadow memberships grant no app access.
-
-### Native logging (feature-gated)
-
-Migration 6 adds native activity, explicit app workspace access, durable command
-receipts, and a `personal_activity` read view. It does not backfill, rewrite, or
-replace legacy drink rows, and does not modify the GroupMe agent/tools/repositories.
-
-- `APP_ACTIVITY_ENABLED=true` exposes Log / Edit / Undo and app-only group creation.
-  It defaults to false as an independent kill switch; reads still work when off.
-- `PUT /admin/workspaces/{workspace_id}/app-access`, with admin bearer authorization
-  and `{"account_id":"<confirmed-account>","role":"member","active":true}`, grants
-  self-logging access. Set `active:false` to revoke it. Inferred historical
-  memberships are never sufficient. Production group access must be explicitly
-  confirmed by an operator; the app cannot claim existing groups by ID or name.
-- Admin invitations accept either an existing `person_id`, or a `name` to create
-  a new native person with no GroupMe identity. Normal email proof is still required.
-- App-only groups create an internal workspace and an explicit owner grant. They
-  do not register a GroupMe bot, create fake users, or send chat messages. Owners
-  can manage these groups and create email-specific invitation links in the app.
-- In a connected workspace, app writes require exactly one real legacy group and
-  one real mapped legacy user. A log inserts both the authoritative legacy row
-  and its app record in one transaction. No provider message ID is fabricated.
-  Ambiguous/missing mappings fail closed. GroupMe stats and recaps therefore count
-  app-created drinks, but logging in the app sends no GroupMe message.
-- Edits and undo apply only to the account's own app-created entries. Old GroupMe
-  entries remain managed through GroupMe. Opaque revisions reject stale edits,
-  including concurrent changes made by GroupMe. GroupMe deletions cascade to the
-  app reference; its durable create receipt prevents a retry from resurrecting it.
-- Every mutation has an account-scoped UUID request ID and payload fingerprint.
-  The receipt commits with the mutation, survives undo, and is retained. The UI
-  retains an unconfirmed request in tab session storage for safe retry; the
-  database, never browser storage, is authoritative. A tab refresh preserves the
-  pending request, and sign-out clears the local draft.
-- Writes are limited to 120 commands/account/hour and 20 owned groups/account.
-  These controls supplement, not replace, future public-launch abuse protection.
-
-Run `tests/test_activity.py` with a disposable PostgreSQL database before release.
-It covers native users, mirrored statistics, GroupMe edit/undo compatibility,
-atomic failure rollback, concurrent retries, test-workspace exclusion, revoked
-access, mapping drift, and CSRF. Roll back by disabling the feature or redeploying
-the prior application; leave additive schema/data intact. Old app code may omit
-native-only history until rolled forward, but GroupMe remains on its legacy rows.
-
-### App group invitations and management
-
-Migration 7 adds `app_group_invitations` and `app_group_events`. Owners can rename
-an app-only group, create/revoke invitations, remove members, or transfer ownership
-to a current verified member. Members can leave after transferring ownership if
-they are the owner. Existing GroupMe groups cannot use these management endpoints,
-even if an operator grants an app owner role. Test workspaces remain excluded.
-
-Invitation flow:
-
-1. The owner chooses **Manage app groups**, enters a friend's email, and creates
-   a link. The owner shares it manually; creation sends no invitation email.
-2. The link contains a random UUID locator in the fragment. It is not an auth
-   credential: no membership is granted without proof of the exact invited email.
-   Public previews expose only the group and inviter names, never recipient emails.
-3. An unregistered recipient can prepare a pending native account through the
-   valid invitation, then complete the existing email-code flow. A display name
-   is set only after email proof. Existing accounts/person mappings are reused
-   without name-based matching, reassignment, or renaming.
-4. The recipient explicitly chooses **Join group**. Acceptance rechecks expiry,
-   revocation, matching verified email, current inviter ownership/account status,
-   and native production workspace eligibility. An accepted invitation cannot
-   reactivate a removed member. Re-inviting an inactive former owner grants only
-   member access, not their former privileges.
-
-Links expire after seven days. Creating another invitation for the same email
-revokes earlier pending links. Ownership transfer revokes pending invitations;
-revoking the inviter's access also makes their links unavailable. The UI preserves
-the locator through sign-in in tab session storage. Neither a missing invitation
-nor an unverified email can create group membership.
-
-Joining shares display names and membership roles with that group's members.
-Recipient emails on pending invitations are visible only to owners. Personal drink
-histories remain person-scoped: group membership does not expose another person's
-stats or records. Leaving/removal revokes group management and logging/edit access,
-but does not delete personal history or accounts. Cross-group notifications and
-group-shared activity feeds are not part of this increment.
-
-Mutations use durable account-scoped request IDs and retain group action events.
-Creation is bounded to 50 invitations/group/day in addition to account command
-limits. These are pilot limits, not a substitute for public-launch abuse controls.
-Keep `APP_ACTIVITY_ENABLED=false` as the shared app-write kill switch. Rollbacks
-leave additive tables intact and do not affect the GroupMe agent.
-
-### Email configuration and operator onboarding
-
-Before enabling real sign-in, configure `WEB_ORIGIN` to the exact HTTPS app origin,
-plus `SMTP_HOST`, `SMTP_PORT` (465 for implicit TLS, otherwise mandatory STARTTLS),
-`SMTP_FROM`, and the provider's `SMTP_USERNAME` / `SMTP_PASSWORD` as Fly secrets.
-No plaintext SMTP or certificate-validation fallback is supported. An empty email
-configuration fails closed, without affecting GroupMe readiness. Set
-`WEB_ORIGIN=http://127.0.0.1:8089` and `ENVIRONMENT=development` only for local testing.
-
-Account rollout:
-
-1. An administrator independently confirms the existing person and the email they
-   want to use. Never match by display name alone or infer account ownership from
-   a group membership, incoming message, or unverified email.
-2. `POST /admin/accounts/invite` with the existing admin bearer token and JSON
-   `{"person_id":"<confirmed-person-id>","email":"<confirmed-email>"}` creates a
-   pending account with a seven-day invitation. Existing person/email bindings
-   conflict; they are never overwritten. The endpoint itself sends no email.
-3. The invited person opens `/app`, requests a code, and types the emailed eight
-   digits in the **same browser** within ten minutes. Email delivery must be tested
-   with the real mailbox before declaring this flow ready. Unknown, throttled,
-   expired, and delivery-failed requests have the same generic response.
-4. Successful proof activates the account, consumes its outstanding challenges,
-   and creates a 30-day HttpOnly, Secure, SameSite=Strict session. The database
-   stores only hashes of session/browser tokens and codes. Sign-out revokes the
-   session server-side. Disabled accounts and merged/disabled people fail closed.
-
-Limits: five attempts per challenge; one code/minute, three/15 minutes/account,
-and 100/15 minutes globally across machines. Challenges are removed after a day
-and expired sessions removed on login requests. SMTP failure logs omit recipients,
-codes, and provider error details. This initial flow deliberately does not include
-self-service identity claiming, email changes, account merging, or password recovery.
-For emergency revocation, set the affected account's `status` to `disabled` through
-an authenticated operator database session; all its sessions immediately fail their
-next authorization check. Re-invitation/reassignment requires explicit operator
-review, not a public reset endpoint.
-
-Migration 5 adds only new tables; old releases ignore them. Keep the existing
-blue-green deploy strategy and `/ready` checks. An application rollback can leave
-these additive tables in place. Run the real PostgreSQL suite (including
-`tests/test_web.py`) using `BEERBOT_TEST_DATABASE_URL` before release. Do not test
-against the application's production `DATABASE_URL`.
 
 ## 📄 License
 
