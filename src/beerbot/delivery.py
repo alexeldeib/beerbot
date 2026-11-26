@@ -30,10 +30,19 @@ STARTED_AT = datetime.now(UTC).isoformat()
 
 
 def failure_detail(exc: BaseException) -> str:
-    """Exception type and this repo's stack frames, never the message: it can hold chat data."""
+    """Exception type (module-qualified, with the HTTP status it carries) and this repo's stack
+    frames, never the message: it can hold chat data. ops tells a failing dependency from a bug
+    by it, e.g. "google.genai.errors.ServerError 503 at agent.py:458 process_message"."""
+    kind = type(exc)
+    name = kind.__qualname__
+    if kind.__module__ != "builtins":
+        name = f"{kind.__module__}.{name}"
+    codes = (getattr(exc, "code", None), getattr(exc, "status_code", None))
+    if (status := next((code for code in codes if type(code) is int), None)) is not None:
+        name += f" {status}"
     frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/src/beerbot/" in f.filename]
     where = " <- ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames))
-    return f"{type(exc).__name__} at {where or 'unknown'}"[:500]
+    return f"{name} at {where or 'unknown'}"[:500]
 
 
 def _backoff(attempts: int) -> int:

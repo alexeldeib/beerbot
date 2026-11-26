@@ -29,6 +29,28 @@ async def stop(*tasks):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def test_failure_detail_names_the_dependency_and_status_never_the_message():
+    import openai
+    from google.genai import errors
+
+    def detail(exc: Exception) -> str:
+        try:
+            raise exc
+        except Exception as raised:
+            return delivery.failure_detail(raised)
+
+    google = detail(errors.ServerError(503, {"error": {"message": "chat text"}}))
+    assert google.startswith("google.genai.errors.ServerError 503 at ")
+    request = httpx.Request("POST", "https://compatible.test")
+    limited = openai.RateLimitError(
+        "chat text", response=httpx.Response(429, request=request), body=None
+    )
+    assert detail(limited).startswith("openai.RateLimitError 429 at ")
+    assert detail(ValueError("chat text")) == "ValueError at unknown"  # No frames of ours here.
+    assert all("chat text" not in d for d in (google, detail(limited)))
+    assert len(detail(RuntimeError("x" * 1000))) <= 500
+
+
 async def test_empty_worker_sleeps_without_repeated_database_scans(monkeypatch):
     runtime = delivery.QueueRuntime()
     work = AsyncMock(return_value=False)
