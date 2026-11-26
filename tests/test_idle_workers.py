@@ -260,6 +260,8 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
         assert client.post("/admin/messages/wake").status_code == 401
         ops = {"Authorization": "Bearer test-ops"}
         assert client.get("/admin/workers/status", headers=ops).status_code == 200
+        bare = {"Authorization": "test-ops"}  # One parser for both tokens: "Bearer <token>".
+        assert client.get("/admin/workers/status", headers=bare).status_code == 401
         assert client.post("/admin/messages/wake", headers=ops).status_code == 403  # Admin only.
         assert (
             client.post(

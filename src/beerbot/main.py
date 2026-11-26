@@ -152,15 +152,24 @@ async def health_check():
     return {"status": "healthy"}
 
 
+NOT_READY = {"status": "not_ready"}
+
+
+def _workers_running(request: Request) -> bool:
+    """Both queue workers alive and a model configured. Memory only."""
+    workers = getattr(request.app.state, "message_workers", [])
+    alive = len(workers) == 2 and not any(task.done() for task in workers)
+    return alive and beer_agent.client is not None
+
+
 @app.get("/ready")
 async def readiness(request: Request):
     """Frequent Fly probe: no database I/O, so a sleeping Neon compute stays asleep."""
-    workers = getattr(request.app.state, "message_workers", [])
-    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
-        return JSONResponse({"status": "not_ready"}, status_code=503)
     runtime = getattr(request.app.state, "queue_runtime", None)
-    if runtime and (runtime.probe_failed or any(runtime.failed.values())):
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+    if not _workers_running(request) or (
+        runtime and (runtime.probe_failed or any(runtime.failed.values()))
+    ):
+        return JSONResponse(NOT_READY, status_code=503)
     return {"status": "ready"}
 
 
@@ -171,10 +180,9 @@ async def database_readiness(request: Request):
     Waking after the old blue-green fleet has exited closes the handoff race:
     a late committed receipt cannot be stranded after the new worker's boot scan.
     """
-    workers = getattr(request.app.state, "message_workers", [])
     runtime = getattr(request.app.state, "queue_runtime", None)
-    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+    if not _workers_running(request):
+        return JSONResponse(NOT_READY, status_code=503)
     try:
         async with asyncio.timeout(10):
             pool = await get_pool()
@@ -184,7 +192,7 @@ async def database_readiness(request: Request):
         if runtime:
             runtime.probe_failed = True
             runtime.wake()
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+        return JSONResponse(NOT_READY, status_code=503)
     if runtime:
         runtime.probe_failed = False
         runtime.wake()
@@ -261,8 +269,25 @@ class GroupRegistration(BaseModel):
     name: str | None = None
 
 
+def _group_json(group) -> dict:
+    """A registered group for the admin API, without its bot credential."""
+    return {
+        "group_id": group.group_id,
+        "workspace_id": group.workspace_id,
+        "credential_configured": bool(group.bot_id),
+        "name": group.name,
+        "created_at": group.created_at.isoformat(),
+    }
+
+
 class WorkspaceEnvironment(BaseModel):
     environment: Literal["production", "test"]
+
+
+def _bearer(authorization: str | None) -> str | None:
+    """The token of an "Authorization: Bearer <token>" header; None for any other shape."""
+    parts = (authorization or "").split()
+    return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else None
 
 
 async def verify_admin_token(authorization: str | None = Header(None)) -> None:
@@ -270,18 +295,17 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=503, detail="Admin endpoints not configured")
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
+    if (token := _bearer(authorization)) is None:
         raise HTTPException(status_code=401, detail="Invalid authorization format")
-    if not hmac.compare_digest(parts[1], settings.admin_token):
+    if not hmac.compare_digest(token, settings.admin_token):
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
 async def verify_ops_token(authorization: str | None = Header(None)) -> bool:
     """ops (ops.yml) holds OPS_TOKEN: it may only read worker and queue status and usage. Every
     other admin route, waking the queue included, needs ADMIN_TOKEN. True when it was ops."""
-    supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
-    if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
+    token = _bearer(authorization)
+    if settings.ops_token and token and hmac.compare_digest(token, settings.ops_token):
         return True
     await verify_admin_token(authorization)
     return False
@@ -388,13 +412,7 @@ async def register_group(registration: GroupRegistration):
 
     return {
         "status": "ok",
-        "group": {
-            "group_id": group.group_id,
-            "workspace_id": group.workspace_id,
-            "credential_configured": bool(group.bot_id),
-            "name": group.name,
-            "created_at": group.created_at.isoformat(),
-        },
+        "group": _group_json(group),
     }
 
 
@@ -403,16 +421,7 @@ async def list_groups():
     groups = await group_repo.list_all()
     return {
         "status": "ok",
-        "groups": [
-            {
-                "group_id": g.group_id,
-                "workspace_id": g.workspace_id,
-                "credential_configured": bool(g.bot_id),
-                "name": g.name,
-                "created_at": g.created_at.isoformat(),
-            }
-            for g in groups
-        ],
+        "groups": [_group_json(g) for g in groups],
     }
 
 
