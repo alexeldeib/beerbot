@@ -7,8 +7,8 @@ Run every 5 minutes, after CI on main, and right away when the app reports a fai
   5 minutes. They come from public endpoints and memory-only status, so a check never wakes the
   database.
 - The decision table runs with no model:
-  - Breakage within an hour of a deploy rolls back (rollback.yml).
-  - A failing dependency is left alone.
+  - A failing dependency is left alone: there's nothing to undo.
+  - Otherwise, breakage within an hour of a deploy rolls back (rollback.yml), once per deploy.
   - Anything else gets the owner.
 - Each incident is one GitHub issue assigned to the owner, paged in the private "beerbot alerts"
   GroupMe group on open, on a rollback, and on resolve.
@@ -269,35 +269,43 @@ def runs(github: httpx.Client, repo: str, workflow: str, **params: str) -> list[
     return response.raise_for_status().json()["workflow_runs"]
 
 
-def changing(github: httpx.Client, repo: str) -> bool:
+def trusted(run: dict, repo: str) -> bool:
+    """This repository's own push or dispatch: a fork can name its branch main."""
+    head = (run.get("head_repository") or {}).get("full_name")
+    return run.get("event") in ("push", "workflow_dispatch") and head == repo
+
+
+def changing(found: list[dict]) -> bool:
     """A deploy or a rollback is changing production right now: wait for it."""
-    return any(
-        run["status"] != "completed"
-        for workflow in ("ci.yml", "rollback.yml")
-        for run in runs(github, repo, workflow)
-    )
+    return any(run["status"] != "completed" for run in found)
 
 
-def last_deploy(github: httpx.Client, repo: str) -> dict | None:
-    """The newest successful deploy of main, if any."""
-    for run in runs(github, repo, "ci.yml", status="success"):
-        if run["event"] in ("push", "workflow_dispatch"):
-            return {"sha": run["head_sha"][:7], "at": datetime.fromisoformat(run["updated_at"])}
+def last_deploy(ci: list[dict], repo: str) -> dict | None:
+    """The deploy production runs, if CI finished it cleanly. CI fails a run whose deploy it rolled
+    back, and a failed run may never have deployed: either way, what runs is the release before,
+    which isn't ops' to roll back."""
+    run = next((run for run in ci if run["status"] == "completed" and trusted(run, repo)), None)
+    if run and run["conclusion"] == "success":
+        return {"sha": run["head_sha"][:7], "at": datetime.fromisoformat(run["updated_at"])}
     return None
 
 
-def mitigate(github: httpx.Client, repo: str, workers: dict) -> str:
+def mitigate(
+    github: httpx.Client, repo: str, workers: dict, ci: list[dict], rollbacks: list[dict]
+) -> str:
     """The decision table, run once as an incident opens: a deploy that landed during an incident
     is a fix attempt, not the cause. Returns what was done, or why not."""
-    deploy = last_deploy(github, repo)
+    if dependency := blame(workers):  # An outage: rolling back a healthy release fixes nothing.
+        return f"Waiting: {dependency} is failing, so there's nothing to undo or restart."
+    deploy = last_deploy(ci, repo)
     if deploy and datetime.now(UTC) - deploy["at"] < DEPLOY_WINDOW:
+        if any(datetime.fromisoformat(run["created_at"]) > deploy["at"] for run in rollbacks):
+            return f"A rollback already ran since {deploy['sha']} deployed, so this needs you."
         github.post(
             f"/repos/{repo}/actions/workflows/rollback.yml/dispatches",
             json={"ref": "main", "inputs": {"dry_run": "false"}},
         ).raise_for_status()
         return f"Rolling back {deploy['sha']}: it deployed under an hour ago. {ROLLED_BACK}"
-    if dependency := blame(workers):
-        return f"Waiting: {dependency} is failing, so there's nothing to undo or restart."
     return "No safe automatic fix: this needs you."
 
 
@@ -326,10 +334,11 @@ def handle_incident(
     )
     now = datetime.now(UTC)
     if found:
-        if changing(github, repo):
+        ci, rollbacks = runs(github, repo, "ci.yml"), runs(github, repo, "rollback.yml")
+        if changing(ci + rollbacks):
             return f"Symptoms during a deploy or rollback; checking again next run: {found}"
         if incident is None:
-            action = mitigate(github, repo, workers)
+            action = mitigate(github, repo, workers, ci, rollbacks)
             body = (
                 f"{INCIDENT_MARKER}\n**Opened {now:%Y-%m-%d %H:%M} UTC:** {'; '.join(found)}.\n\n"
                 f"{diagnose(workers)}\n\n**Action:** {action}"

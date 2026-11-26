@@ -140,13 +140,29 @@ def test_blame_names_failing_dependencies_only():
     assert ops.blame({}) is None
 
 
-class FakeGitHub:
-    """Enough of the GitHub API for the incident lifecycle: runs, issues, dispatches."""
+def run(minutes_ago=1, status="completed", conclusion="success", event="push", repo="o/r", id=1):
+    """A workflow run as GitHub lists it."""
+    at = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
+    return {
+        "id": id,
+        "status": status,
+        "conclusion": conclusion if status == "completed" else None,
+        "event": event,
+        "head_sha": "abcdef1234",
+        "head_repository": {"full_name": repo},
+        "html_url": f"https://g/o/r/actions/runs/{id}",
+        "created_at": at,
+        "run_started_at": at,
+        "updated_at": at,
+    }
 
-    def __init__(self, deployed_minutes_ago=None, changing=False):
+
+class FakeGitHub:
+    """Enough of the GitHub API for ops: workflow runs (newest first), issues, dispatches."""
+
+    def __init__(self, ci=(), rollbacks=()):
         self.calls, self.created, self.dispatched = [], [], []
-        self.deployed = deployed_minutes_ago
-        self.changing = changing
+        self.runs = {"ci.yml": list(ci), "rollback.yml": list(rollbacks)}
 
     def transport(self):
         def respond(request):
@@ -154,21 +170,10 @@ class FakeGitHub:
             body = json.loads(request.content or "null")
             self.calls.append((method, path, body))
             if path.endswith("/runs"):
-                status = request.url.params.get("status")
-                runs = []
-                if self.changing and not status:
-                    runs.append({"status": "in_progress"})
-                if self.deployed is not None:
-                    at = datetime.now(UTC) - timedelta(minutes=self.deployed)
-                    runs.append(
-                        {
-                            "status": "completed",
-                            "event": "push",
-                            "head_sha": "abcdef1234",
-                            "updated_at": at.isoformat(),
-                        }
-                    )
-                return httpx.Response(200, json={"workflow_runs": runs})
+                found = self.runs[path.split("/")[-2]]
+                if status := request.url.params.get("status"):
+                    found = [r for r in found if status in (r["status"], r["conclusion"])]
+                return httpx.Response(200, json={"workflow_runs": found})
             if path.endswith("/dispatches"):
                 self.dispatched.append(path.split("/")[-2])
                 return httpx.Response(204)
@@ -237,7 +242,7 @@ def incident_run(monkeypatch, fake, found, workers=None, issues=None):
 
 
 def test_breakage_right_after_a_deploy_rolls_it_back_and_pages(monkeypatch):
-    fake = FakeGitHub(deployed_minutes_ago=12)
+    fake = FakeGitHub(ci=[run(12)])
     line, pages = incident_run(monkeypatch, fake, ["/ready is failing"])
     assert fake.dispatched == ["rollback.yml"] and line.startswith("Opened an incident")
     incident = fake.created[0]
@@ -254,9 +259,28 @@ def test_without_a_recent_deploy_ops_never_restarts_it_pages(monkeypatch):
         (dependency, "Waiting: the model provider is failing"),
         ({}, "No safe automatic fix: this needs you."),
     ]:
-        fake = FakeGitHub(deployed_minutes_ago=300)
+        fake = FakeGitHub(ci=[run(300)])
         _, pages = incident_run(monkeypatch, fake, ["/ready is failing"], workers)
         assert fake.dispatched == [] and expected in pages[0]
+
+
+def test_a_deploy_is_rolled_back_at_most_once_and_never_for_an_outage(monkeypatch):
+    database = {"execution": {"at": "x", "detail": "asyncpg.exceptions.CannotConnectNowError at"}}
+    for fake, workers, expected in [
+        # The database is down: the release that just deployed is fine, and stays.
+        (FakeGitHub(ci=[run(12)]), {"last_error": database}, "Waiting: the database"),
+        # It was already rolled back once (by ops or by hand): the owner decides what's next.
+        (FakeGitHub(ci=[run(30)], rollbacks=[run(20)]), {}, "A rollback already ran since"),
+        # CI rolled its own deploy back and failed the run: what runs is the release before it.
+        (FakeGitHub(ci=[run(10, conclusion="failure"), run(40)]), {}, "No safe automatic fix"),
+        # A fork's "main" never counts as a deploy.
+        (FakeGitHub(ci=[run(5, event="pull_request", repo="evil/r")]), {}, "No safe automatic"),
+    ]:
+        _, pages = incident_run(monkeypatch, fake, ["/ready is failing"], workers)
+        assert fake.dispatched == [] and expected in pages[0], expected
+    fake = FakeGitHub(ci=[run(5, event="pull_request", repo="evil/r"), run(15)])
+    incident_run(monkeypatch, fake, ["/ready is failing"])
+    assert fake.dispatched == ["rollback.yml"]  # Past the fork's run to this repo's deploy.
 
 
 def test_an_open_incident_pages_once_and_resolves_with_a_follow_up(monkeypatch):
@@ -269,7 +293,7 @@ def test_an_open_incident_pages_once_and_resolves_with_a_follow_up(monkeypatch):
         "created_at": opened,
         "body": f"{ops.INCIDENT_MARKER} ... {ops.ROLLED_BACK}",
     }
-    fake = FakeGitHub(deployed_minutes_ago=5)  # A fix landed: never roll it back mid-incident.
+    fake = FakeGitHub(ci=[run(5)])  # A fix landed: never roll it back mid-incident.
     line, pages = incident_run(monkeypatch, fake, ["/ready is failing"], issues=[incident])
     assert pages == [] and fake.dispatched == [] and "still open" in line
 
@@ -283,7 +307,7 @@ def test_an_open_incident_pages_once_and_resolves_with_a_follow_up(monkeypatch):
 
 
 def test_ops_waits_while_production_is_changing(monkeypatch):
-    fake = FakeGitHub(deployed_minutes_ago=1, changing=True)
+    fake = FakeGitHub(ci=[run(1, status="in_progress"), run(3)])
     line, pages = incident_run(monkeypatch, fake, ["/health is failing"])
     assert pages == [] and fake.created == [] and "checking again next run" in line
 
