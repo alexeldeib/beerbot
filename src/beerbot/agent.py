@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from .config import settings
 from .database import execution_scope
 from .llm import model_profile
-from .model_runtime import Media, GoogleSession, CompatibleSession, run_tools
+from .model_runtime import Media, GoogleSession, CompatibleSession, ModelProtocolError, run_tools
 from .models import GroupMeAttachment, GroupMeMessage
 from .repositories import beer_repo
 from .tools import ToolContext, create_tools
@@ -485,7 +485,8 @@ class BeerAgent:
         return reply
 
     async def generate_weekly_recap(self, group_id: str) -> str | None:
-        """Generate a weekly recap for a group. Returns None if no activity."""
+        """This week's recap for a group, or None when there is nothing to recap (no drinks, or
+        no model configured). Raises when the model fails, so the scheduler tries again."""
         if not self.client:
             return None
 
@@ -552,12 +553,10 @@ class BeerAgent:
         data_str = "\n".join(data_lines)
         prompt = RECAP_PROMPT.format(data=data_str)
 
-        try:
-            turn = await self._session("", [prompt], [], source="recap").next_turn()
-            return turn.text.strip() or None
-        except Exception:
-            logger.exception("Weekly recap generation failed for group %s", group_id)
-            return None
+        turn = await self._session("", [prompt], [], source="recap").next_turn()
+        if not turn.text.strip():
+            raise ModelProtocolError("The model returned an empty recap")
+        return turn.text.strip()
 
 
 # Singleton

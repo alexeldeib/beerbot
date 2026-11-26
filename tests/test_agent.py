@@ -8,7 +8,7 @@ import pytest
 from google.genai import types
 from src.beerbot import agent as agent_module
 from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users, fetch_media
-from src.beerbot.model_runtime import Media
+from src.beerbot.model_runtime import Media, ModelProtocolError
 from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 
 
@@ -713,6 +713,31 @@ class TestGenerateWeeklyRecap:
         agent = BeerAgent()
         result = await agent.generate_weekly_recap("group-1")
         assert result is None
+
+    @pytest.mark.parametrize(
+        "outcome,error",
+        [(RuntimeError("API error"), "API error"), (empty_response("  "), "empty recap")],
+    )
+    @patch("src.beerbot.agent.beer_repo")
+    @patch("src.beerbot.agent.settings")
+    @patch("src.beerbot.agent.genai")
+    async def test_model_failures_raise_so_the_scheduler_retries(
+        self, mock_genai, mock_settings, mock_beer_repo, outcome, error
+    ):
+        # None means "nothing to recap" (a finished week); a failure must not look like that.
+        mock_settings.gemini_api_key = "test-key"
+        client = MagicMock()
+        client.aio.models.generate_content = AsyncMock(side_effect=[outcome])
+        mock_genai.Client.return_value = client
+        stats = MagicMock(total_beers=3, unique_drinkers=1, drink_type_counts={}, user_stats=[])
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=stats)
+        mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))
+        mock_beer_repo.get_period_total = AsyncMock(return_value=0)
+        mock_beer_repo.get_biggest_day = AsyncMock(return_value=None)
+        mock_beer_repo.get_type_champions = AsyncMock(return_value=[])
+        mock_beer_repo.get_milestones = AsyncMock(return_value=[])
+        with pytest.raises((RuntimeError, ModelProtocolError), match=error):
+            await BeerAgent().generate_weekly_recap("group-1")
 
 
 def test_only_the_owner_gets_the_override_line(monkeypatch):

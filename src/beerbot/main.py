@@ -5,7 +5,7 @@ import hmac
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Literal
 
@@ -57,6 +57,27 @@ EASTERN = ZoneInfo("America/New_York")
 _recap_revision = 0
 
 
+async def _send_recap(group_id: str, week_start: date) -> bool:
+    """One group's weekly recap. True once nothing is left to do this week: sent, possibly sent
+    (an uncertain send is never repeated), claimed by another machine, or a week without drinks.
+    False retries at the next tick."""
+    try:
+        if await recap_repo.has_sent(group_id, week_start):
+            return True
+        recap = await beer_agent.generate_weekly_recap(group_id)
+        if recap is None or not await recap_repo.try_claim(group_id, week_start):
+            return True
+        result = await groupme_client.deliver_message(recap, group_id=group_id)
+        if result.state in ("sent", "uncertain"):  # Uncertain may have posted: keep the claim.
+            logger.info("Weekly recap %s for group %s", result.state, group_id)
+            return True
+        await recap_repo.release_claim(group_id, week_start)  # Never posted: safe to retry.
+        logger.error("Weekly recap delivery failed for group %s: %s", group_id, result.code)
+    except Exception:
+        logger.exception("Weekly recap failed for group %s", group_id)
+    return False
+
+
 async def _recap_scheduler() -> None:
     """Background loop: fires recap on Sunday after WEEKLY_RECAP_HOUR ET."""
     completed_week = None
@@ -73,27 +94,13 @@ async def _recap_scheduler() -> None:
         if completed_week == week_start and completed_revision == _recap_revision:
             continue
         revision = _recap_revision
-        complete = True
         try:
             groups = await group_repo.list_all()
-            for group in groups:
-                if await recap_repo.has_sent(group.group_id, week_start):
-                    continue
-                recap = await beer_agent.generate_weekly_recap(group.group_id)
-                if not recap:
-                    complete = False
-                elif await recap_repo.try_claim(group.group_id, week_start):
-                    sent = await groupme_client.send_message(recap, group_id=group.group_id)
-                    if sent:
-                        logger.info("Sent weekly recap for group %s", group.group_id)
-                    else:
-                        complete = False
-                        await recap_repo.release_claim(group.group_id, week_start)
-                        logger.error("Weekly recap delivery failed for group %s", group.group_id)
-            if complete:
-                completed_week, completed_revision = week_start, revision
         except Exception:
             logger.exception("Weekly recap iteration failed; retrying at the next scheduled tick")
+            continue
+        if all([await _send_recap(group.group_id, week_start) for group in groups]):
+            completed_week, completed_revision = week_start, revision
 
 
 @asynccontextmanager
@@ -410,30 +417,3 @@ async def delete_group(group_id: str):
     groupme_client.clear_cache(group_id)
     _recap_revision += 1
     return {"status": "ok", "deleted": group_id}
-
-
-@app.post("/admin/weekly-recap", dependencies=[Depends(verify_admin_token)])
-async def trigger_weekly_recap():
-    """Generate and send weekly recaps for all active groups."""
-    if not settings.weekly_recap_enabled:
-        return {"status": "disabled"}
-
-    groups = await group_repo.list_all()
-    sent = []
-    failed = []
-
-    for group in groups:
-        recap = await beer_agent.generate_weekly_recap(group.group_id)
-        if recap:
-            delivered = await groupme_client.send_message(recap, group_id=group.group_id)
-            if delivered:
-                sent.append(group.group_id)
-            else:
-                failed.append(group.group_id)
-
-    return {
-        "status": "ok" if not failed else "partial",
-        "recaps_sent": len(sent),
-        "groups": sent,
-        "failed_groups": failed,
-    }

@@ -19,11 +19,11 @@ async def test_accepts_any_successful_2xx_response(mock_http_cls):
     group_repo.get_bot_id = AsyncMock(return_value="registered-bot")
 
     with patch("src.beerbot.repositories.group_repo", group_repo):
-        sent = await GroupMeClient(default_bot_id="default-bot").send_message(
+        sent = await GroupMeClient(default_bot_id="default-bot").deliver_message(
             "hello", group_id="group-1"
         )
 
-    assert sent is True
+    assert sent.state == "sent"
 
 
 async def test_rejects_unregistered_group_when_required():
@@ -35,11 +35,11 @@ async def test_rejects_unregistered_group_when_required():
         patch("src.beerbot.groupme_client.settings") as mock_settings,
     ):
         mock_settings.require_registered_groups = True
-        sent = await GroupMeClient(default_bot_id="default-bot").send_message(
+        sent = await GroupMeClient(default_bot_id="default-bot").deliver_message(
             "hello", group_id="unknown"
         )
 
-    assert sent is False
+    assert sent.state == "failed"
 
 
 @pytest.mark.parametrize(
