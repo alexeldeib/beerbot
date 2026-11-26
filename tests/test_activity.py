@@ -262,3 +262,17 @@ async def test_unregistered_legacy_workspace_does_not_turn_into_native_group(
     assert (
         await browser.post("/app/api/activity", json=request(workspace_id="w1"))
     ).status_code == 409
+
+
+async def test_drink_types_are_checked_by_the_enum_not_the_database(browser, pg, monkeypatch):
+    await enable(monkeypatch)
+    await mirrored_group(pg)
+    await login(browser)
+    soda = request(workspace_id="w1", drink_type="soda")
+    assert (await browser.post("/app/api/activity", json=soda)).status_code == 422
+    await new_drink(browser)
+    async with pg.acquire() as conn:  # a type added to DrinkType later needs no migration
+        await conn.execute("UPDATE beers SET drink_type='cider'")
+        await conn.execute("UPDATE app_activity SET drink_type='cider'")
+    breakdown = (await browser.get("/app/api/me")).json()["breakdown"]
+    assert breakdown == [{"drink_type": "cider", "drinks": 2}]

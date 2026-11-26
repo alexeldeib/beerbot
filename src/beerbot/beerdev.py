@@ -38,6 +38,10 @@ DOCS = (
     "CHANGELOG.md",
     "CLAUDE.md",
     "docs/runbook.md",
+    "docs/architecture.md",
+    "docs/idle-compute.md",
+    "docs/app.md",
+    "docs/production-launch.md",
     "src/beerbot/agent.py",
     "src/beerbot/tools.py",
     "src/beerbot/models.py",
@@ -305,9 +309,11 @@ def create_tools(ctx: Context) -> list:
         """Read one of the bot's docs or behavior files to answer how something works.
 
         Args:
-            path: One of README.md, CHANGELOG.md, CLAUDE.md, docs/runbook.md,
-                src/beerbot/agent.py, src/beerbot/tools.py, src/beerbot/models.py,
-                src/beerbot/usage.py, or src/beerbot/beerdev.py.
+            path: One of README.md, CHANGELOG.md, CLAUDE.md, docs/runbook.md (operations),
+                docs/architecture.md (how a message is handled), docs/idle-compute.md,
+                docs/app.md (the web app), docs/production-launch.md, src/beerbot/agent.py,
+                src/beerbot/tools.py, src/beerbot/models.py, src/beerbot/usage.py, or
+                src/beerbot/beerdev.py.
         """
         if path not in DOCS:
             raise ValueError("Not readable. Choose one of: " + ", ".join(DOCS))

@@ -39,7 +39,7 @@ goes out blue-green.
 | `OPS_ALERT_BOT_ID` | GitHub (ops) | Pages: the `ops` bot can only post to the private "beerbot alerts" group | `bot_id` of the `ops` bot from `GET https://api.groupme.com/v3/bots` |
 | `FLY_API_TOKEN` | GitHub, `production` environment only (deploys from `main` only) | CI deploys and `rollback.yml` | Deploy token `github-actions-beerbot-production`, expires 2027-11-25: `fly tokens create deploy -a beerbot-groupme -n github-actions-beerbot-production -x 8760h \| gh secret set FLY_API_TOKEN --env production` |
 | `GROUPME_ACCESS_TOKEN` | Local `.env.local` only | Manual lookups (listing bots, reading history). No automation holds it | The owner's personal token, with full account access: https://dev.groupme.com/account/access-token |
-| `BEERDEV_SHIP_TOKEN` | GitHub, `beerdev` environment only | The ship job pushes and merges beerdev's changes, including workflow files; its merges start CI. Acts as the owner on GitHub | Fine-grained, this repository only: Contents, Pull requests, and Workflows read and write. Prefilled: https://github.com/settings/personal-access-tokens/new?name=beerdev-ship&description=beerdev+ship+job+pushes+and+merges+changes+including+workflows&target_name=alexeldeib&expires_in=366&contents=write&pull_requests=write&workflows=write. Then `gh secret set BEERDEV_SHIP_TOKEN --env beerdev`. Without it, changes to `.github/workflows` can't ship |
+| `BEERDEV_SHIP_TOKEN` | GitHub, `beerdev` environment only | The ship job pushes and merges beerdev's changes, including workflow files; its merges start CI. Acts as the owner on GitHub | Fine-grained, this repository only: Contents, Pull requests, and Workflows read and write. Prefilled: https://github.com/settings/personal-access-tokens/new?name=beerdev-ship&description=beerdev+ship+job+pushes+and+merges+changes+including+workflows&target_name=alexeldeib&expires_in=366&contents=write&pull_requests=write&workflows=write. Then `gh secret set BEERDEV_SHIP_TOKEN --env beerdev`. Without it, nothing ships |
 | `CLAUDE_CODE_OAUTH_TOKEN` | GitHub | beerdev's coding agent | Set 2026-11-07, expires 2027-11-07. `claude setup-token` (valid one year), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` |
 | `BEERDEV_BOT_ID` | Fly (beerdev's replies); GitHub (digest, ship announcements) | beerdev posts as its own bot | `bot_id` of the `beerdev` bot from `GET https://api.groupme.com/v3/bots` |
 | `OWNER_USER_ID` | Fly (secret) | The owner's GroupMe id: Beerius follows their commands, and beerdev accepts steering only from it | `13419729`; not a secret, kept out of the public code |
@@ -71,18 +71,19 @@ beerdev's `implement` job.
 | beerdev digest | Issues | beerdev's Monday post | `BEERDEV_BOT_ID`, read-only `GITHUB_TOKEN` |
 | beerdev `implement` (agent code) | Repository, its issue, PyPI (`uv add`) | A patch artifact only (refused if it holds anything credential-like) | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
 | beerdev `review` (agent) | The patch as data, GitHub's copy of the issue, the unchanged repository | A verdict only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN`; runs nothing the implement agent wrote |
-| beerdev `ship` | GitHub's copy of the issue, the patch, the verdict | Branch, PR, merge (or a held PR), CI start, beerdev's chat post | `BEERDEV_SHIP_TOKEN`, `GITHUB_TOKEN` (contents, PRs, issues, actions), `BEERDEV_BOT_ID` |
+| beerdev `ship` | GitHub's copy of the issue, the patch, the verdict | Branch, PR, merge (or a held PR), CI start, beerdev's chat post | `BEERDEV_SHIP_TOKEN` (pushes, PRs, merges), `GITHUB_TOKEN` (issues write; actions and contents read), `BEERDEV_BOT_ID` |
 | beerdev lead `plan` (agent) | Repository, issues, CI runs | A plan file only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN` |
 | beerdev lead `file` | The plan (schema-checked, at most three items) | Issues, build starts | `GITHUB_TOKEN` (issues, actions) |
 | ops | Health, status, and spend; CI runs and logs; issues | Incidents and tickets, rollback and build starts, pages to the alerts group | `OPS_TOKEN`, `OPS_ALERT_BOT_ID`, `GITHUB_TOKEN` (issues, actions) |
-| `rollback.yml` | Fly releases | Production: the release before the current one, verified | `FLY_API_TOKEN` (`production` environment, main only) |
+| `rollback.yml` | Fly releases | Production: the newest earlier release with a different image (or a named one), with its commit's `fly.toml`, verified | `FLY_API_TOKEN` (`production` environment, main only) |
 | Owner's machine | Everything | Everything | `gh` (repo scope), `fly` (org), `.env` (production database), `.env.local` |
 
 ### beerdev's kernel and gates
 
 beerdev may change anything, including workflows, scripts, Docker, Fly, and dependencies, except
 its **kernel**: `.github/workflows/beerdev-build.yml`, `.github/workflows/beerdev-lead.yml`,
-`.github/beerdev-*.md`, `.claude/`, and `tests/test_policy.py`. Ship refuses a patch that touches
+`.github/beerdev-*.md`, `.claude/`, `CLAUDE.md` and `CLAUDE.local.md` in any directory (every Claude
+agent loads them as instructions), and `tests/test_policy.py`. Ship refuses a patch that touches
 them, including by rename. Three gates guard everything else:
 1. `tests/test_policy.py` checks that secrets stay in their jobs and only reach known hosts. It
    checks that write permissions and triggers are no broader than today, and that only `main` runs
@@ -95,8 +96,11 @@ them, including by rename. Three gates guard everything else:
    no agent-written code runs there. To change an invariant on purpose, edit the test by hand in
    the same PR.
 2. The independent reviewer must approve any change beyond `src/`, `docs/`, `README.md`, and
-   `tests/test_*.py`. If it doesn't, the change waits as an open PR, and its issue moves to the
-   inbox. Merge or close that PR yourself. Dependency changes (`pyproject.toml`, `uv.lock`) always
+   `tests/test_*.py`, and any change to the app files that hold credentials or decide who may do
+   what: `src/beerbot/{beerdev,main,dispatch,config,database,web}.py` (`ROUTINE` in
+   `beerdev-build.yml`; the gate fails closed). If it doesn't approve, the change waits as an open
+   PR, and its issue moves to the inbox. Merge or close that PR yourself, or reply "approve" in the
+   chat: the next build brings it up to date with `main`, waits for its CI, and merges it. Dependency changes (`pyproject.toml`, `uv.lock`) always
    wait this way: a reviewer can't vet a package's provenance offline. For a human on every
    ship, add a required reviewer to the `beerdev` environment.
 3. CI rolls production back if a deploy fails verification.
@@ -128,8 +132,12 @@ Known gaps, broadest first:
   (noting the rollback) and beerdev fixes forward. Migrations are forward-only: code must keep
   working on the previous schema (add columns, never `SELECT *`).
 - Run `fly deploy` by hand only if CI itself is broken, then call `/ready/db`.
-- To roll back by hand, run `gh workflow run rollback.yml --ref main`. It goes one release back,
-  blue-green, and verifies. Add `-f dry_run=true` to only print the target. To revert the code,
+- To roll back by hand, run `gh workflow run rollback.yml --ref main`. It redeploys the newest
+  earlier release with a different image, with that commit's `fly.toml` (CI labels each image with
+  its SHA), blue-green, and verifies. If production already runs an image it ran before (CI or a
+  rollback already went back), the release before it is the broken one, so it refuses: name the
+  release with `-f version=<n>` (from `flyctl releases --app beerbot-groupme --image`). Add
+  `-f dry_run=true` to only print the target. To revert the code,
   run `gh pr revert <number>` and merge it.
 
 ## Incidents
@@ -151,9 +159,9 @@ status, so checks never wake the database:
 
 | Situation | ops does | You get |
 |---|---|---|
-| A worker stalled after an error (`/ready` red, workers `failed`) | Wakes the queue; if that fixes it, no incident | Nothing |
-| It broke within 60 minutes of a deploy | Runs `rollback.yml` (one release back) | 🚨 page, then ✅ when resolved |
-| Worker errors name the database or the model provider | Nothing; there's nothing to undo or restart | 🚨 page: "waiting on …" |
+| Worker errors name the database or the model provider (checked first) | Nothing; there's nothing to undo or restart | 🚨 page: "waiting on …" |
+| It broke within 60 minutes of a clean deploy | Runs `rollback.yml`, at most once per deploy | 🚨 page, then ✅ when resolved |
+| The rollback failed | Nothing more is automatic | 🚨 page |
 | Anything else | Nothing | 🚨 page: "needs you" |
 | A deploy failed and CI rolled it back | Ticket for beerdev (fix forward) | No page |
 | Messages failed with code errors | Ticket per failure class for beerdev | No page |
@@ -162,14 +170,23 @@ status, so checks never wake the database:
 **Lifecycle:**
 - Each incident is one issue labeled `incident` and assigned to you. That's the record and the
   email backup.
-- Pages go to the private **beerbot alerts** GroupMe group (only you and the `ops` bot): one when
-  the incident opens, and one when it resolves.
+- Pages go to the private **beerbot alerts** GroupMe group (only you and the `ops` bot): when the
+  incident opens, when a rollback fails, and when it resolves.
 - When the signals pass again, ops closes the issue. If code was involved (a rollback, or errors
   in this repo's frames), it opens a **Root cause** ticket for beerdev, which reproduces the
   problem with a failing test and fixes it.
 - ops never restarts the app; Fly restarts crashed processes by itself.
-- While a deploy or rollback is running, ops waits.
-- To silence an incident you've handled, close its issue.
+- While a deploy or rollback is running, ops waits, unless it has been running for over 30
+  minutes (then it's stuck, and ops acts as usual).
+- To stop pages for an incident you're handling, add the `ack` label; ops still resolves it.
+  Closing it while the signals still fail just opens a new one.
+- Each new ticket ops files starts a beerdev build, and each build starts the next, so the queue
+  drains. After two deploy-failure tickets in a day, the next one goes to the inbox instead, so a
+  fix that keeps failing to deploy can't loop.
+- Once a day (12:23 UTC, its own run) ops sweeps what needs the database: failure classes, spend,
+  and expiring credentials. Every 5-minute check also files a CI failure that was missed.
+- If ops stops checking for an hour (GitHub disables schedules after 60 days without commits),
+  the app turns `ops.yml` back on and starts it. A workflow you disabled by hand stays off.
 
 ## Watching it
 
@@ -247,7 +264,8 @@ At about 350 Beerius messages a month (late 2026), list prices come to roughly:
 ## Troubleshooting
 
 **Beerius didn't answer.** Ops files these on its own. By hand, check `failed_executions` in the
-queue status: `error_detail` has the exception type and stack frames. Payloads are kept for 3
+queue status: `error_detail` has the module-qualified exception type, its HTTP status if any, and
+this repo's stack frames. Payloads are kept for 3
 days, so to see the message itself:
 ```sh
 psql "$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" -c "BEGIN READ ONLY;" -c \

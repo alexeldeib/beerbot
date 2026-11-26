@@ -11,9 +11,16 @@ pending messages in receipt order within each group. PostgreSQL claims and a
 transaction-scoped group lock protect concurrent workers. The existing agent and
 tools execute inside a single database transaction, bounded to 90 seconds. All
 repository acquisitions share that connection; related writes and the stored
-reply either commit together or roll back together. Model failures retry up to
-three attempts with backoff; cancellation rolls back and leaves the inbox pending.
-The recorded tool arguments/results describe successful committed executions.
+reply either commit together or roll back together. A message gets three attempts with
+backoff. Each attempt is committed when the message is claimed, with a short lease, so a message
+that crashes the process (out of memory, say) fails after three tries instead of blocking its
+group; a shutdown mid-run also uses an attempt and retries after the backoff. The recorded tool
+arguments/results describe successful committed executions.
+
+Each message sees the group's last ten stored messages, both bots' posts included, as its
+history, so retention bounds what the model sees. Photos and videos are streamed with an 18MB cap
+(Gemini accepts at most 20MB inline). A transient fetch failure retries the message; a permanent
+one tells the model the media couldn't be loaded.
 
 A separate worker sends stored replies. Connect failures and HTTP 429 responses
 retry up to five attempts with backoff; Retry-After seconds are honored. Read/write
