@@ -12,7 +12,7 @@ logging and existing behavior authoritative during the rollout.
 Beerbeta is a test workspace, not a second identity for the same human. Exclude
 test workspaces from all personal app reads without rewriting historical users or
 drink records. Workspace classification is reversible, but is not infrastructure
-isolation. Later gateways map to the same workspace and inherit its classification.
+isolation.
 
 ## Before inviting the existing group
 
@@ -22,20 +22,19 @@ isolation. Later gateways map to the same workspace and inherit its classificati
    the working Fly URL during migration, and redirect only browser app traffic.
    Do not redirect or change the GroupMe callback. Host-only sessions require a
    new sign-in on the new hostname. Add a useful root route to `/app`.
-2. **Account lifecycle:** native group owners can now invite/reinvite/revoke with
-   an audit trail and matching-email proof. Keep linking existing GroupMe history
-   operator-approved, with a documented correction path for mistaken person/email
-   mappings. Never permit claiming by name, an unverified email, or inferred
-   workspace membership. Review with a few volunteer users first.
-3. **Webhook authenticity:** production has historically lacked the optional
-   callback secret. Verify current configuration; stage a coordinated transition
-   of callback URL and secret using an overlap/dual-acceptance period so valid
-   callbacks never fail during a blue-green release. A user ID in an unsigned
-   request is not proof of GroupMe ownership.
-4. **Operational readiness:** confirm actual database backup/PITR retention and
-   exercise a restore into an isolated environment. Add actionable alerts for
-   readiness failures, queue failures/uncertain deliveries, and email failures.
-   Existing health endpoints and logs alone are not an alerting service.
+2. **Account lifecycle:** native group owners can invite/reinvite/revoke with
+   matching-email proof. Linking existing GroupMe history is operator-approved by GroupMe
+   user id (`POST /admin/accounts/invite`); a mistaken binding can be corrected until its
+   email is verified, and `POST /admin/accounts/{id}/disable` revokes an account. Never
+   permit claiming by name, an unverified email, or inferred workspace membership. Review
+   with a few volunteer users first.
+3. **Webhook authenticity:** done. The callback requires `GROUPME_WEBHOOK_SECRET`
+   (runbook: "Rotate the webhook secret"). A user ID in a callback is still not proof
+   of GroupMe ownership.
+4. **Operational readiness:** ops pages on readiness failures and stuck messages or
+   replies, and tickets failed executions (runbook: "Incidents"). Still to do: confirm
+   the actual Neon backup/PITR retention and exercise a restore into an isolated
+   environment, and alert on email delivery failures.
 5. **Email reliability:** use a dedicated sending-only credential and an explicit
    sender domain; verify SPF/DKIM/DMARC and several recipients/providers. One Gmail
    inbox marking a message not spam does not establish general deliverability.
@@ -43,12 +42,13 @@ isolation. Later gateways map to the same workspace and inherit its classificati
 
 ## Before open signup or a broader public launch
 
-- Add source-aware and global abuse controls before SMTP work, with correctly
-  trusted proxy boundaries; current per-account and global code limits are not
-  complete protection against request/connection exhaustion or email harassment.
-- Decouple delivery from HTTP request timing, provide admin-visible delivery
+- Sign-in has per-source limits, in memory on one machine, before any database work.
+  Move them to shared storage before adding machines, and extend them to `/verify`,
+  `/prepare`, and invitation previews; they are not complete protection against
+  request/connection exhaustion or email harassment.
+- Code emails are sent after the response. Still add durable, admin-visible delivery
   state, and make resends/recovery understandable without leaking account existence.
-- Review session host-prefix protection, expiry/revocation, origin/CSRF behavior,
+- Review session host-prefix protection, expiry, origin/CSRF behavior,
   cross-user authorization, and account recovery with adversarial tests.
 - Define retention/deletion/export and who can see personal activity. Publishing
   summaries to groups, photos, write tools, and auto-linking accounts remain out
@@ -72,7 +72,7 @@ self-logging; add photo input after retention/ownership is explicit. Current
 membership consent shares names/roles, not personal drink history, so do not
 silently broaden visibility when adding chat or group summaries.
 
-Test-workspace exclusion → hostname/certificate and origin migration → callback
-authentication and operational checks → invitation lifecycle → small group pilot.
+Test-workspace exclusion → hostname/certificate and origin migration → restore check
+→ invitation lifecycle → small group pilot.
 Expand only after actual sign-in, group isolation, revocation, delivery, and
 restore checks pass. No rewrite or production database cutover is required.
