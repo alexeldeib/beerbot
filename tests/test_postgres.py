@@ -231,6 +231,14 @@ async def test_pace_runs_from_the_first_recent_drink_to_now(pg):
     assert (await countdown())["pace_7d"] == 1.0
 
 
+async def test_the_unused_dev_requests_table_is_dropped(pg):
+    # It held request text forever, past the three-day retention.
+    await database.init_db()
+    assert await pg.fetchval("SELECT to_regclass('dev_requests')") is None
+    assert await pg.fetchval("SELECT MAX(version) FROM schema_migrations") == 13
+    await database.init_db()
+
+
 async def test_chat_queries_survive_a_migration_adding_a_column(pg):
     # Prepared statements outlive DDL (Neon's pooler caches them by text). A star result type
     # changes with the table and fails the cached plan inside a transaction (2026-11-25 outage).

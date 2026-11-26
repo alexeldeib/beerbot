@@ -8,6 +8,17 @@ import httpx
 from src.beerbot import dispatch as module
 
 
+def test_only_beerdevs_token_is_read(monkeypatch):
+    from src.beerbot.config import Settings
+
+    monkeypatch.setenv("GITHUB_DISPATCH_TOKEN", "retired alias")
+    monkeypatch.setenv("GITHUB_TOKEN", "a local shell's")
+    monkeypatch.delenv("BEERDEV_GITHUB_TOKEN", raising=False)
+    assert Settings(_env_file=None).github_token is None
+    monkeypatch.setenv("BEERDEV_GITHUB_TOKEN", "t")
+    assert Settings(_env_file=None).github_token == "t"
+
+
 async def test_dispatch_is_off_without_a_token(monkeypatch):
     monkeypatch.setattr(module.settings, "github_token", None)
     assert not module.dispatch("ops.yml", every=60, reason="ValueError")

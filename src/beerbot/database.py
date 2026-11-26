@@ -643,6 +643,17 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        13,
+        "drop_dev_requests",
+        # Unused since beerdev became a peer bot, and it kept request text past the three-day
+        # retention, forever.
+        ("DROP TABLE IF EXISTS dev_requests",),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():
