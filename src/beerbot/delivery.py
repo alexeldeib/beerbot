@@ -26,7 +26,14 @@ TERMINAL_FAILURES: Counter[str] = Counter()
 # when each started waiting. Memory-only, so ops can see a stuck queue without waking Postgres.
 UNPROCESSED: dict[int, float] = {}
 UNDELIVERED: dict[int, float] = {}
+# Latest failure per worker: a scan, a message attempt, or a send. Kept after recovery, so ops can
+# report it and tell a failing dependency from a bug.
+LAST_ERROR: dict[str, dict | None] = {"execution": None, "delivery": None}
 STARTED_AT = datetime.now(UTC).isoformat()
+
+
+def record_error(worker: str, detail: str) -> None:
+    LAST_ERROR[worker] = {"at": datetime.now(UTC).isoformat(), "detail": detail}
 
 
 def failure_detail(exc: BaseException) -> str:
@@ -73,8 +80,6 @@ class QueueRuntime:
         self.events = {name: asyncio.Event() for name in ("execution", "delivery")}
         self.scans = {name: 0 for name in self.events}
         self.failed = {name: False for name in self.events}
-        # Last scan failure per worker, kept after recovery: what ops reports when /ready fails.
-        self.last_error = {name: None for name in self.events}
         self.last_scan = {name: None for name in self.events}
         self.next_scan = {name: None for name in self.events}
         self.probe_failed = False
@@ -102,7 +107,7 @@ class QueueRuntime:
             "last_scan": self.last_scan.copy(),
             "next_scan": self.next_scan.copy(),
             "terminal_failures": dict(TERMINAL_FAILURES),
-            "last_error": self.last_error.copy(),
+            "last_error": LAST_ERROR.copy(),
             "started_at": STARTED_AT,
             "git_sha": settings.git_sha,
             "oldest_unprocessed_seconds": _oldest(UNPROCESSED),
@@ -238,12 +243,13 @@ async def execute_one(agent) -> bool:
             if row is None or not await _lock_group(conn, row["group_id"]):
                 return False
             attempts = row["attempts"] + 1
+            interrupted = f"interrupted {row['attempts']} times (out of memory, crash, or restart)"
             if attempts > MAX_EXECUTION_ATTEMPTS:  # Every earlier attempt died with its process.
                 await conn.execute(
                     """UPDATE message_inbox SET state='failed',error_code='interrupted',
                        error_detail=$2 WHERE id=$1""",
                     row["id"],
-                    f"stopped mid-run {row['attempts']} times (out of memory, crash, or restart)",
+                    interrupted,
                 )
             else:
                 await conn.execute(
@@ -256,6 +262,7 @@ async def execute_one(agent) -> bool:
         if attempts > MAX_EXECUTION_ATTEMPTS:
             logger.error("Message execution failed: inbox=%s error=interrupted", row["id"])
             UNPROCESSED.pop(row["id"], None)
+            record_error("execution", interrupted)
             record_terminal("interrupted")
             return True
         async with conn.transaction():
@@ -319,7 +326,7 @@ async def execute_one(agent) -> bool:
                                 reply,
                             )
             except Exception as exc:
-                code = type(exc).__name__
+                code, detail = type(exc).__name__, failure_detail(exc)
                 state = (
                     "failed"
                     if attempts >= MAX_EXECUTION_ATTEMPTS or isinstance(exc, PermissionError)
@@ -332,8 +339,9 @@ async def execute_one(agent) -> bool:
                     state,
                     code,
                     _backoff(attempts),
-                    failure_detail(exc),
+                    detail,
                 )
+                record_error("execution", detail)
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
                 finished = state == "failed"
                 if finished:
@@ -395,8 +403,11 @@ async def deliver_one(client) -> bool:
                     result = await client.deliver_message(row["body"], group_id=row["group_id"])
             state, code = result.state, result.code
             delay = max(result.retry_after, min(300, 5 * 2 ** (row["attempts"] + 1)))
+            if state != "sent":
+                record_error("delivery", f"GroupMe {code} ({state})")
         except Exception as exc:
             state, code, delay = "uncertain", type(exc).__name__, 0
+            record_error("delivery", failure_detail(exc))
         if state == "retry":
             state = "pending" if row["attempts"] + 1 < MAX_DELIVERY_ATTEMPTS else "failed"
         await conn.execute(
@@ -511,10 +522,7 @@ async def _worker(name, runtime, work, after_work=None, maintenance=None):
         except Exception as exc:
             failures += 1
             runtime.failed[name] = True
-            runtime.last_error[name] = {
-                "at": datetime.now(UTC).isoformat(),
-                "detail": failure_detail(exc),
-            }
+            record_error(name, failure_detail(exc))
             delay = min(60, 5 * 2 ** min(failures - 1, 4))
             logger.exception("Queue worker scan failed: worker=%s", name)
         await runtime.wait(name, delay)

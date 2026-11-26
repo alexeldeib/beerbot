@@ -109,6 +109,7 @@ async def test_worker_error_is_visible_and_wake_can_recover(monkeypatch):
     runtime = delivery.QueueRuntime()
     work = AsyncMock(side_effect=[RuntimeError("test failure"), False])
     monkeypatch.setattr(delivery, "next_work_delay", AsyncMock(return_value=3600))
+    monkeypatch.setattr(delivery, "LAST_ERROR", {"execution": None, "delivery": None})
     task = asyncio.create_task(delivery._worker("execution", runtime, work))
     try:
         await until(lambda: runtime.failed["execution"])
@@ -120,9 +121,37 @@ async def test_worker_error_is_visible_and_wake_can_recover(monkeypatch):
         )
         runtime.wake("execution")
         await until(lambda: work.await_count == 2 and not runtime.failed["execution"])
-        assert runtime.last_error["execution"] == error  # Kept after recovery for ops to report.
+        # Kept after recovery for ops to report.
+        assert runtime.snapshot()["last_error"]["execution"] == error
     finally:
         await stop(task)
+
+
+async def test_failed_attempts_and_sends_are_the_workers_last_error(pg, monkeypatch):
+    # ops reads these to tell a failing dependency (model, GroupMe) from a bug in our code.
+    from google.genai import errors
+
+    await setup(pg)
+    monkeypatch.setattr(delivery, "LAST_ERROR", {"execution": None, "delivery": None})
+    runtime = delivery.QueueRuntime()
+    agent = BeerAgent()
+    outage = errors.ServerError(503, {"error": {"message": "chat text"}})
+    monkeypatch.setattr(agent, "process_message", AsyncMock(side_effect=[outage, "Reply"]))
+    await delivery.accept_message(message())
+    assert await delivery.execute_one(agent)  # Failed once; it retries later.
+    error = runtime.snapshot()["last_error"]["execution"]
+    assert error["detail"].startswith("google.genai.errors.ServerError 503 at delivery.py:")
+    assert error["at"] and "chat text" not in error["detail"]
+    await pg.execute("UPDATE message_inbox SET available_at=now()")
+    assert await delivery.execute_one(agent)
+    for outcome, detail in [
+        (DeliveryResult("uncertain", "http_502"), "GroupMe http_502 (uncertain)"),
+        (RuntimeError("chat text"), "RuntimeError at delivery.py:"),
+    ]:
+        sender = MagicMock(deliver_message=AsyncMock(side_effect=[outcome]))
+        await pg.execute("UPDATE message_outbox SET state='pending', available_at=now()")
+        assert await delivery.deliver_one(sender)
+        assert runtime.snapshot()["last_error"]["delivery"]["detail"].startswith(detail)
 
 
 async def test_live_workers_process_callback_without_waiting_for_recovery(pg, monkeypatch):
