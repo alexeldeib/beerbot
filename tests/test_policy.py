@@ -231,7 +231,17 @@ def test_only_routine_code_ships_without_the_reviewer():
     for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "tests/test_tools.py"):
         assert re.search(routine, path), path
     # Files that hold credentials or decide who may do what need the reviewer, like infra.
-    sensitive = ("beerdev", "main", "dispatch", "config", "database", "web")
+    sensitive = (
+        "beerdev",
+        "main",
+        "dispatch",
+        "config",
+        "database",
+        "web",
+        "activity",  # The account rules every /app path checks
+        "app_groups",  # Who may invite, join, and manage a group
+        "groupme_client",  # Posts with the bots' credentials
+    )
     for path in [f"src/beerbot/{name}.py" for name in sensitive] + [
         "scripts/ops.py",
         "Dockerfile",

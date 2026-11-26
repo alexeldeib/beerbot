@@ -249,11 +249,15 @@ def failure_excerpt(lines: list[str], limit: int = 40) -> list[str]:
     )
 
 
-def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str]:
-    """Issue key and report for a failed CI run on main, with the failing steps' log tail. Only
-    this repository's own runs get here (ops.yml's guard, latest_ci_failure): a fork's log would
-    reach beerdev's agent."""
+def deploy_failure(github: httpx.Client, repo: str, run_id: str) -> tuple[str, str] | None:
+    """Issue key and report for a failed CI run on main, with the failing steps' log tail. None
+    unless it is this repository's own failed push or dispatch of main, whatever the caller
+    checked: a fork's log, which it controls, must never reach beerdev's agent."""
     run = github.get(f"/repos/{repo}/actions/runs/{run_id}").raise_for_status().json()
+    if run.get("conclusion") != "failure" or run.get("head_branch") != "main":
+        return None
+    if not trusted(run, repo):
+        return None
     jobs = github.get(f"/repos/{repo}/actions/runs/{run_id}/jobs").raise_for_status().json()
     sections = []
     for job in jobs["jobs"]:
@@ -536,8 +540,8 @@ def main() -> None:
     run_id = env.get("CI_RUN_ID") or latest_ci_failure(github, repo)
     if run_id and reported(issues, run_id):  # Another check got to it first.
         run_id = None
-    if run_id:
-        key, text = deploy_failure(github, repo, run_id)
+    if run_id and (failure := deploy_failure(github, repo, run_id)):
+        key, text = failure
         try:  # CI rolls back when verification fails; say what production runs now.
             running = app.get("/version").raise_for_status().json().get("git_sha") or "?"
         except httpx.HTTPError:

@@ -26,7 +26,7 @@ permissions: {}
 env:
   # What ships without the independent reviewer (`grep -P`): app code, docs, and tests, except the
   # app files that hold credentials or decide who may do what. tests/test_policy.py pins it.
-  ROUTINE: '^(?!src/beerbot/(beerdev|main|dispatch|config|database|web)\.py$)(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
+  ROUTINE: '^(?!src/beerbot/(beerdev|main|dispatch|config|database|web|activity|app_groups|groupme_client)\.py$)(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
   # What a credential looks like (`grep -E`): never in an artifact or a pushed change.
   CREDENTIAL: 'sk-ant-|AIza[0-9A-Za-z_-]{30}|gh[pousr]_[A-Za-z0-9]{30}|github_pat_'
 

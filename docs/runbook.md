@@ -97,7 +97,7 @@ them, including by rename. Three gates guard everything else:
    the same PR.
 2. The independent reviewer must approve any change beyond `src/`, `docs/`, `README.md`, and
    `tests/test_*.py`, and any change to the app files that hold credentials or decide who may do
-   what: `src/beerbot/{beerdev,main,dispatch,config,database,web}.py` (`ROUTINE` in
+   what: `src/beerbot/{beerdev,main,dispatch,config,database,web,activity,app_groups,groupme_client}.py` (`ROUTINE` in
    `beerdev-build.yml`; the gate fails closed). If it doesn't approve, the change waits as an open
    PR, and its issue moves to the inbox. Merge or close that PR yourself, or reply "approve" in the
    chat: the next build brings it up to date with `main`, waits for its CI, and merges it. Dependency changes (`pyproject.toml`, `uv.lock`) always
