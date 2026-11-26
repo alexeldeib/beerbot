@@ -364,8 +364,8 @@ def acked(incident: dict) -> bool:
 
 
 def rollback_failed(github: httpx.Client, repo: str, incident: dict, rollbacks: list[dict]) -> bool:
-    """Tell the owner, once per run, that a rollback failed during the incident: production is
-    still broken and nothing automatic is left to try."""
+    """Tell the owner, once for each failed rollback.yml run, that a rollback failed during the
+    incident: production is still broken and nothing automatic is left to try."""
     opened = datetime.fromisoformat(incident["created_at"])
     for run in rollbacks:
         seen = f"<!-- ops:seen=rollback-{run['id']} -->"
