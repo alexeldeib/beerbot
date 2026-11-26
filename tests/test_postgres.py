@@ -12,7 +12,7 @@ import pytest
 from src.beerbot import database
 from src.beerbot.models import DrinkType
 from src.beerbot.reconciliation import LOCK_KEY, ReconciliationBusy, reconcile_identities
-from src.beerbot.repositories import beer_repo
+from src.beerbot.repositories import beer_repo, user_repo
 
 
 async def seed(pool):
@@ -47,12 +47,13 @@ async def test_fresh_migration_and_reconciliation(pg):
     assert (await reconcile_identities(apply=True))["missing_people"] == 0
     assert before == await pg.fetch("SELECT * FROM people ORDER BY id")
     await database.init_db()
-    entries = [
-        (alice, "g1", 1, "round", 0, DrinkType.BEER),
-        (alice, "g1", 1, "round", 0, DrinkType.WINE),
-    ]
-    assert all(await beer_repo.create_batch(entries))
-    assert await beer_repo.create_batch(entries) == [None, None]
+    for _ in range(2):  # One drink per message, user, and type: the retry is a duplicate.
+        logged = [
+            await beer_repo.create(alice, "g1", message_id="round", drink_type=kind)
+            for kind in (DrinkType.BEER, DrinkType.WINE)
+        ]
+    assert logged == [None, None]
+    assert await pg.fetchval("SELECT COUNT(*) FROM beers WHERE message_id='round'") == 2
 
 
 async def test_upgrade_from_two_backfills_without_changing_legacy_activity(pg):
@@ -151,3 +152,20 @@ async def test_failed_page_rolls_back_all_repairs(pg):
         await reconcile_identities(apply=True)
     assert await pg.fetchval("SELECT COUNT(*) FROM people") == 0
     assert await pg.fetchval("SELECT COUNT(*) FROM users WHERE person_id IS NOT NULL") == 0
+
+
+async def test_chat_queries_survive_a_migration_adding_a_column(pg):
+    # Prepared statements outlive DDL (Neon's pooler caches them by text). A star result type
+    # changes with the table and fails the cached plan inside a transaction (2026-11-25 outage).
+    await database.init_db()
+    async with pg.acquire() as conn:
+        with database.bind_execution(conn):
+            user = await user_repo.get_or_create("alice", "Alice")
+            assert await user_repo.get_by_groupme_id("alice") == user
+            assert await beer_repo.create(user.id, "g1", message_id="m1")
+            await pg.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
+            await pg.execute("ALTER TABLE beers ADD COLUMN note TEXT")
+            async with conn.transaction():
+                assert (await user_repo.get_or_create("alice", "Alice")).id == user.id
+                assert await user_repo.get_by_groupme_id("alice")
+                assert await beer_repo.create(user.id, "g1", message_id="m2")

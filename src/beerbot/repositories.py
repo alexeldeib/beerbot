@@ -68,7 +68,7 @@ class UserRepository:
                 SET name = EXCLUDED.name,
                     avatar_url = EXCLUDED.avatar_url,
                     updated_at = NOW()
-                RETURNING *
+                RETURNING id, groupme_user_id, name, avatar_url, person_id, created_at, updated_at
                 """,
                 groupme_user_id,
                 name,
@@ -76,21 +76,14 @@ class UserRepository:
             )
             return User(**dict(row))
 
-    async def get_by_id(self, user_id: int) -> User | None:
-        """Get user by internal ID."""
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
-            return User(**dict(row)) if row else None
-
     async def get_by_groupme_id(self, groupme_user_id: str) -> User | None:
         """Get user by GroupMe user ID."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM users WHERE groupme_user_id = $1",
+                """SELECT id, groupme_user_id, name, avatar_url, person_id, created_at, updated_at
+                   FROM users WHERE groupme_user_id = $1""",
                 groupme_user_id,
             )
             return User(**dict(row)) if row else None
@@ -123,7 +116,8 @@ class BeerRepository:
                 VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                 DO NOTHING
-                RETURNING *
+                RETURNING id, user_id, group_id, quantity, logged_at, message_id, split_the_g,
+                    drink_type
                 """,
                 user_id,
                 group_id,
@@ -422,47 +416,6 @@ class BeerRepository:
                     removed += entry_qty
 
         return removed
-
-    async def create_batch(
-        self,
-        entries: list[tuple[int, str, int, str | None, int, DrinkType]],
-    ) -> list[Beer | None]:
-        """Log multiple drink entries in a single transaction.
-
-        Args:
-            entries: List of (user_id, group_id, quantity, message_id, split_the_g, drink_type) tuples
-
-        Returns:
-            List of Beer/Drink objects (or None for duplicates), in same order as input.
-            All entries are committed together or none are (atomic).
-        """
-        if not entries:
-            return []
-
-        pool = await get_pool()
-        results: list[Beer | None] = []
-
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for user_id, group_id, quantity, message_id, split_the_g, drink_type in entries:
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
-                        DO NOTHING
-                        RETURNING *
-                        """,
-                        user_id,
-                        group_id,
-                        quantity,
-                        message_id,
-                        split_the_g,
-                        drink_type.value,
-                    )
-                    results.append(Beer(**dict(row)) if row else None)
-
-        return results
 
     async def get_rate_stats(
         self,
