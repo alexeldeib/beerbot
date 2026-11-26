@@ -3,9 +3,12 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from google.genai import types
-from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users
+from src.beerbot import agent as agent_module
+from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users, fetch_media
+from src.beerbot.model_runtime import Media
 from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 
 
@@ -472,82 +475,78 @@ class TestReplyContext:
         assert ctx.replied_to_user == ("user-042", "Alice")
 
 
-class TestBeerAgentImageFetching:
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_fetches_image(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-image-data"
-        mock_resp.headers = {"content-type": "image/jpeg"}
-        mock_resp.raise_for_status = MagicMock()
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_image("https://example.com/beer.jpg")
-        assert part is not None
-
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_returns_none_on_error(self, mock_http_cls):
-        import httpx
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(side_effect=httpx.RequestError("timeout"))
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_image("https://example.com/beer.jpg")
-        assert part is None
+def media_server(monkeypatch, handler):
+    """Serve attachment fetches from `handler` instead of the network."""
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        agent_module.httpx,
+        "AsyncClient",
+        lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+    )
 
 
-class TestBeerAgentVideoFetching:
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_fetches_video(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-video-data"
-        mock_resp.headers = {"content-type": "video/mp4"}
-        mock_resp.raise_for_status = MagicMock()
+async def chunks(count: int, size: int = 4, sent: list | None = None):
+    for _ in range(count):
+        if sent is not None:
+            sent.append(size)
+        yield b"x" * size
 
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/kegstand.mp4")
-        assert part is not None
+class TestFetchMedia:
+    async def test_fetches_with_its_content_type(self, monkeypatch):
+        media_server(
+            monkeypatch,
+            lambda r: httpx.Response(200, content=b"img", headers={"content-type": "image/png"}),
+        )
+        assert await fetch_media("https://i.test/a", "image/jpeg") == Media(b"img", "image/png")
 
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_returns_none_on_error(self, mock_http_cls):
-        import httpx
+    async def test_declared_size_over_the_cap_is_never_read(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(agent_module, "MAX_MEDIA_BYTES", 10)
+        media_server(
+            monkeypatch,
+            lambda r: httpx.Response(
+                200, headers={"content-length": "11"}, content=chunks(3, sent=sent)
+            ),
+        )
+        assert await fetch_media("https://v.test/huge.mp4", "video/mp4") is None
+        assert sent == []
 
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(side_effect=httpx.RequestError("timeout"))
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    async def test_streamed_size_over_the_cap_stops_reading(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(agent_module, "MAX_MEDIA_BYTES", 10)
+        media_server(monkeypatch, lambda r: httpx.Response(200, content=chunks(100, sent=sent)))
+        assert await fetch_media("https://v.test/huge.mp4", "video/mp4") is None
+        assert sum(sent) <= 12  # Stopped at the cap instead of buffering 400 bytes.
 
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/kegstand.mp4")
-        assert part is None
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_transient_failures_raise_so_the_message_retries(self, monkeypatch, status):
+        media_server(monkeypatch, lambda r: httpx.Response(status))
+        with pytest.raises(httpx.HTTPStatusError):
+            await fetch_media("https://i.test/a", "image/jpeg")
 
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_rejects_oversized_video(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"x" * (101 * 1024 * 1024)  # 101 MB
-        mock_resp.headers = {"content-type": "video/mp4"}
-        mock_resp.raise_for_status = MagicMock()
+    async def test_timeouts_raise(self, monkeypatch):
+        def slow(request):
+            raise httpx.ReadTimeout("slow", request=request)
 
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        media_server(monkeypatch, slow)
+        with pytest.raises(httpx.TimeoutException):
+            await fetch_media("https://i.test/a", "image/jpeg")
 
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/huge.mp4")
-        assert part is None
+    async def test_permanent_failures_tell_the_model(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        media_server(monkeypatch, lambda r: httpx.Response(404))
+        attachments = [
+            GroupMeAttachment(type="image", url="https://i.test/gone"),
+            GroupMeAttachment(type="video", url="https://v.test/gone"),
+        ]
+        contents = await BeerAgent()._build_contents(_make_message(attachments=attachments))
+        assert contents == [
+            "+1 beer",
+            "[photo could not be loaded]",
+            "[video could not be loaded]",
+        ]
 
 
 class TestVideoOnlyMessageHistory:

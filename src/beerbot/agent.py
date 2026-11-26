@@ -174,6 +174,33 @@ class ChatMessage:
     user_id: str | None = None
 
 
+# ponytail: a video up to this size is held in memory (plus the SDK's base64 copy) on a 256MB VM
+# with swap; past it, upload through the provider's file API instead of inline bytes.
+MAX_MEDIA_BYTES = 100 * 1024 * 1024
+
+
+async def fetch_media(url: str, default_type: str) -> Media | None:
+    """Stream one photo or video, stopping past MAX_MEDIA_BYTES. A permanent failure (4xx, too
+    large) returns None. Timeouts, connection errors, 429 and 5xx raise, so the message retries
+    with the usual backoff instead of losing the drink."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as http:
+        async with http.stream("GET", url) as response:
+            if response.status_code == 429 or response.status_code >= 500:
+                response.raise_for_status()
+            declared = int(response.headers.get("content-length") or 0)
+            if response.status_code >= 400 or declared > MAX_MEDIA_BYTES:
+                logger.warning("Media skipped: HTTP %s, %s bytes", response.status_code, declared)
+                return None
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > MAX_MEDIA_BYTES:
+                    logger.warning("Media skipped: over %s bytes", MAX_MEDIA_BYTES)
+                    return None
+                chunks.append(chunk)
+            return Media(b"".join(chunks), response.headers.get("content-type", default_type))
+
+
 def extract_mentioned_users(
     text: str | None, attachments: list[GroupMeAttachment]
 ) -> list[tuple[str, str]]:
@@ -331,54 +358,18 @@ class BeerAgent:
 
         return "\n".join(lines)
 
-    async def _fetch_image(self, url: str) -> Media | None:
-        """Fetch an image URL and return a Gemini Part."""
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as http:
-                resp = await http.get(url, timeout=10.0)
-                resp.raise_for_status()
-                content_type = resp.headers.get("content-type", "image/jpeg")
-                return Media(data=resp.content, mime_type=content_type)
-        except Exception:
-            logger.exception("Failed to fetch image: %s", url)
-            return None
-
-    async def _fetch_video(self, url: str) -> Media | None:
-        """Fetch a video URL and return a Gemini Part for inline analysis."""
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as http:
-                resp = await http.get(url, timeout=30.0)
-                resp.raise_for_status()
-                size_mb = len(resp.content) / (1024 * 1024)
-                if size_mb > 100:
-                    logger.warning("Video too large (%.1f MB): %s", size_mb, url)
-                    return None
-                logger.info("Fetched video (%.1f MB): %s", size_mb, url)
-                content_type = resp.headers.get("content-type", "video/mp4")
-                return Media(data=resp.content, mime_type=content_type)
-        except Exception:
-            logger.exception("Failed to fetch video: %s", url)
-            return None
-
     async def _build_contents(self, message: GroupMeMessage) -> list[Media | str]:
-        """Build multimodal contents from message text and media attachments."""
-        parts: list[Media | str] = []
-
-        if message.text:
-            parts.append(message.text)
-
+        """The message's text and media. Media that can't be loaded is named for the model."""
+        parts: list[Media | str] = [message.text] if message.text else []
         if settings.image_analysis_enabled:
             for att in message.attachments:
                 if att.type == "image" and att.url:
-                    img_part = await self._fetch_image(att.url)
-                    if img_part:
-                        parts.append(img_part)
+                    media = await fetch_media(att.url, "image/jpeg")
+                    parts.append(media or "[photo could not be loaded]")
                 elif att.type == "video" and att.url and settings.video_analysis_enabled:
-                    video_part = await self._fetch_video(att.url)
-                    if video_part:
-                        parts.append(video_part)
-
-        return parts if parts else ["(empty message)"]
+                    media = await fetch_media(att.url, "video/mp4")
+                    parts.append(media or "[video could not be loaded]")
+        return parts or ["(empty message)"]
 
     def _get_lock(self, group_id: str) -> asyncio.Lock:
         if group_id not in self._group_locks:
