@@ -39,12 +39,16 @@ DAILY_HOUR = 12  # UTC hour of the one unconditional database check (it wakes Ne
 INCIDENT_MARKER = "<!-- ops:incident -->"
 ROLLED_BACK = "<!-- ops:rolled-back -->"
 # A worker error naming one of these means an outside dependency failed: there's nothing to undo.
+# Details read "module.Type [HTTP status] at frames", or a bare "Type at frames" from older
+# releases. Only outages count: a SQL or schema error, or a 4xx from the model, is a bad deploy's.
 DEPENDENCIES = {
     "the database": re.compile(
-        r"asyncpg|Postgres|ConnectionRefused|CannotConnect|TooManyConnections|InterfaceError",
-        re.I,
+        r"asyncpg\.[\w.]*(Connection|Shutdown)|ConnectionRefused|CannotConnect"
+        r"|TooManyConnections|ConnectionDoesNotExist|InterfaceError"
     ),
-    "the model provider": re.compile(r"ServerError|ResourceExhausted|Quota|\b429\b", re.I),
+    "the model provider": re.compile(
+        r"(google\.genai\.errors|openai)\.\w+ (429|5\d\d)\b|\bServerError at|ResourceExhausted"
+    ),
 }
 # Credentials that expire, from docs/runbook.md. ops opens an inbox issue 30 days ahead.
 EXPIRES = {

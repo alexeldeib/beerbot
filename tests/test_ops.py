@@ -117,11 +117,26 @@ def test_blame_names_failing_dependencies_only():
     def workers(detail):
         return {"last_error": {"execution": {"at": "x", "detail": detail}}}
 
-    assert ops.blame(workers("ConnectionRefusedError at database.py:40 get_pool")) == "the database"
-    assert ops.blame(workers("ServerError at model_runtime.py:180 next_turn")) == (
-        "the model provider"
-    )
-    assert ops.blame(workers("KeyError at tools.py:88 log_drinks")) is None  # Our bug: no blame.
+    db, model = "the database", "the model provider"
+    for detail, expected in [
+        ("asyncpg.exceptions.ConnectionDoesNotExistError at delivery.py:170 execute_one", db),
+        ("asyncpg.exceptions.AdminShutdownError at delivery.py:170 execute_one", db),
+        ("ConnectionRefusedError at database.py:40 get_pool", db),  # Before module names.
+        (
+            "google.genai.errors.ServerError 503 at agent.py:458 process_message"
+            " <- delivery.py:231 execute_one",
+            model,
+        ),
+        ("google.genai.errors.ClientError 429 at model_runtime.py:180 next_turn", model),
+        ("openai.InternalServerError 500 at model_runtime.py:240 next_turn", model),
+        ("ServerError at model_runtime.py:180 next_turn", model),  # Before module names.
+        # This repo's bugs, which a rollback can undo:
+        ("asyncpg.exceptions.UndefinedColumnError at repositories.py:88 get_stats", None),
+        ("google.genai.errors.ClientError 400 at model_runtime.py:180 next_turn", None),
+        ("KeyError at agent.py:429 process_message", None),  # A line number, not a status.
+        ("KeyError at tools.py:88 log_drinks", None),
+    ]:
+        assert ops.blame(workers(detail)) == expected, detail
     assert ops.blame({}) is None
 
 
