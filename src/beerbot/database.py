@@ -635,7 +635,7 @@ SCHEMA_MIGRATIONS += (
         12,
         "message_agent",
         (
-            # The router's decision: Beerius, or beerdev (mentioned, or replying to its thread).
+            # The router's decision: Beerius, or beerdev (addressed first, or replying to its posts).
             """ALTER TABLE message_inbox
                ADD COLUMN IF NOT EXISTS agent TEXT NOT NULL DEFAULT 'beerius'""",
         ),

@@ -17,14 +17,13 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .config import settings
+from .config import EASTERN, settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
 from .activity import CAN_SIGN_IN, DISPLAY_NAME, LIVE_ACCOUNT, LIVE_PERSON, Command
@@ -35,7 +34,6 @@ router = APIRouter()
 STATIC = Path(__file__).with_name("static")
 SESSION_COOKIE = "beerbot_session"
 CHALLENGE_COOKIE = "beerbot_challenge"
-EASTERN = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
 # Explicitly non-production workspaces never enter personal app history, even via
