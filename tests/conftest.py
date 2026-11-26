@@ -2,6 +2,10 @@
 
 from unittest.mock import AsyncMock, MagicMock
 import asyncio
+import shutil
+import socket
+import subprocess
+import tempfile
 
 import pytest
 import pytest_asyncio
@@ -9,6 +13,39 @@ import asyncpg
 import os
 from uuid import uuid4
 from src.beerbot import database
+
+
+def pytest_configure(config):
+    """With BEERBOT_TEST_PG_BIN (the directory holding initdb), the Postgres tests run against a
+    private, throwaway server: beerdev's sandboxed agent can't reach the CI database service."""
+    bin_dir = os.environ.get("BEERBOT_TEST_PG_BIN")
+    if not bin_dir or os.environ.get("BEERBOT_TEST_DATABASE_URL"):
+        return
+    root = tempfile.mkdtemp(prefix="beerbot-pg-")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    data = f"{root}/data"
+    subprocess.run(
+        [f"{bin_dir}/initdb", "-D", data, "-U", "test", "--auth=trust", "--no-sync"],
+        check=True,
+        capture_output=True,
+    )
+    options = f"-p {port} -c listen_addresses=127.0.0.1 -c unix_socket_directories='' -c fsync=off"
+    subprocess.run(
+        [f"{bin_dir}/pg_ctl", "-D", data, "-l", f"{root}/log", "-o", options, "-w", "start"],
+        check=True,
+        capture_output=True,
+    )
+
+    def stop():
+        subprocess.run(
+            [f"{bin_dir}/pg_ctl", "-D", data, "-m", "immediate", "stop"], capture_output=True
+        )
+        shutil.rmtree(root, ignore_errors=True)
+
+    config.add_cleanup(stop)
+    os.environ["BEERBOT_TEST_DATABASE_URL"] = f"postgresql://test@127.0.0.1:{port}/postgres"
 
 
 @pytest_asyncio.fixture

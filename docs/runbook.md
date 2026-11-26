@@ -69,7 +69,7 @@ beerdev's `implement` job.
 | CI `test` | Repository | Nothing | `GITHUB_TOKEN` (contents: read) |
 | CI `deploy` | Repository | The Fly app | `FLY_API_TOKEN` (deploy token scoped to the app) |
 | beerdev digest | Issues | beerdev's Monday post | `BEERDEV_BOT_ID`, read-only `GITHUB_TOKEN` |
-| beerdev `implement` (agent code) | Repository, its issue, PyPI (`uv add`) | A patch artifact only (refused if it holds anything credential-like) | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY` (live e2e); read-only `GITHUB_TOKEN`, used before the agent starts |
+| beerdev `implement` (agent code) | Repository, its issue, PyPI (`uv add`) | A patch artifact only (refused if it holds anything credential-like) | `CLAUDE_CODE_OAUTH_TOKEN` (the agent's process only: its commands run sandboxed, with no credentials, no network but PyPI, and no view of other processes), `GEMINI_API_KEY` (live e2e, after the agent finishes); read-only `GITHUB_TOKEN`, used before the agent starts |
 | beerdev `review` (agent) | The patch as data, GitHub's copy of the issue, the unchanged repository | A verdict only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN`; runs nothing the implement agent wrote |
 | beerdev `ship` | GitHub's copy of the issue, the patch, the verdict | Branch, PR, merge (or a held PR), CI start, beerdev's chat post | `BEERDEV_SHIP_TOKEN` (pushes, PRs, merges), `GITHUB_TOKEN` (issues write; actions and contents read), `BEERDEV_BOT_ID` |
 | beerdev lead `plan` (agent) | Repository, issues, CI runs | A plan file only | `CLAUDE_CODE_OAUTH_TOKEN`, read-only `GITHUB_TOKEN` |
@@ -118,8 +118,10 @@ Known gaps, broadest first:
   this repo's issues and actions. A second Fly app would isolate it.
 - **`DATABASE_URL` is the database owner,** because migrations run at startup. A runtime role
   without DDL would need a separate migration step.
-- **Agent-written tests can read the Claude and Gemini keys in `implement`.** Use dedicated,
-  low-quota keys for CI.
+- **The live e2e runs agent-written code with the Gemini key** (after the agent, outside its
+  sandbox). Use a dedicated, low-quota key for CI. While the agent works, its commands get none
+  of the job's credentials (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` and Claude Code's sandbox), and
+  their Postgres tests use a private throwaway server (`BEERBOT_TEST_PG_BIN`).
 
 ## Deploys and rollbacks
 
