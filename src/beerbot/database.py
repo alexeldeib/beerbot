@@ -643,6 +643,25 @@ SCHEMA_MIGRATIONS += (
 )
 
 
+SCHEMA_MIGRATIONS += (
+    (
+        14,
+        "app_schema_cleanup",
+        (
+            # Shadow gateway/identity tables: nothing reads them, and no other table or
+            # view references them. Routes reference connections, so routes go first.
+            "DROP TABLE IF EXISTS gateway_routes",
+            "DROP TABLE IF EXISTS gateway_connections",
+            "DROP TABLE IF EXISTS person_merges",
+            "DROP TABLE IF EXISTS workspace_memberships",
+            "DROP TABLE IF EXISTS external_identities",
+            # Never read, and it kept whole request payloads, invitee emails included.
+            "DROP TABLE IF EXISTS app_group_events",
+        ),
+    ),
+)
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the database connection pool."""
     if scope := execution_scope.get():

@@ -64,7 +64,6 @@ async def test_invite_proof_session_and_legacy_unchanged(browser, pg):
         assert await conn.fetchval("SELECT verified_at IS NOT NULL FROM account_emails")
         assert await conn.fetchval("SELECT count(*) FROM beers") == 0
         assert await conn.fetchval("SELECT status FROM people WHERE id='ace'") == "provisional"
-        assert await conn.fetchval("SELECT count(*) FROM workspace_memberships") == 0
     assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 400
     assert (await browser.post("/app/api/logout", json={})).status_code == 200
     browser.cookies.set(web.SESSION_COOKIE, session)

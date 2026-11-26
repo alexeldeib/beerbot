@@ -47,8 +47,23 @@ async def test_upgrade_from_two_backfills_without_changing_legacy_activity(pg):
     await database.init_db()
     await database.init_db()
     assert await pg.fetchval("SELECT COUNT(*) FROM people") == 2
-    assert await pg.fetchval("SELECT COUNT(*) FROM workspace_memberships") == 3
+    assert await pg.fetchval(
+        "SELECT bool_and(person_id='person:groupme:'||groupme_user_id) FROM users"
+    )
     assert before == await pg.fetch("SELECT * FROM beers ORDER BY id")
+    # Migration 3 filled these; migration 14 drops them with their rows.
+    shadow = [
+        "gateway_routes",
+        "gateway_connections",
+        "person_merges",
+        "workspace_memberships",
+        "external_identities",
+        "app_group_events",
+    ]
+    assert not await pg.fetchval(
+        "SELECT count(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename=ANY($1)",
+        shadow,
+    )
 
 
 async def test_group_registration_keeps_workspace_for_the_app(pg):

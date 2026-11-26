@@ -370,13 +370,6 @@ async def group_command(
             else:
                 raise HTTPException(400, "Unknown group action")
         await conn.execute(
-            "INSERT INTO app_group_events(workspace_id,account_id,action,details) VALUES($1,$2,$3,$4::jsonb)",
-            workspace_id,
-            account["id"],
-            action,
-            json.dumps(payload),
-        )
-        await conn.execute(
             "INSERT INTO app_commands(account_id,request_id,fingerprint,result) VALUES($1,$2,$3,$4::jsonb)",
             account["id"],
             command.request_id,
