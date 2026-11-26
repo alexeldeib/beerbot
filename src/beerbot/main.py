@@ -244,7 +244,8 @@ async def groupme_callback(request: Request):
             logger.warning("Rejected callback for unregistered group %s", message.group_id)
             return JSONResponse({"error": "Unknown group"}, status_code=403)
 
-    # The router: beerdev answers messages that name it or reply in its thread; Beerius the rest.
+    # The router: beerdev answers messages that start with "beerdev" or reply to its posts;
+    # Beerius answers the rest.
     agent = "beerdev" if await beerdev.addressed(message) else "beerius"
     result = await accept_message(message, agent)
     if runtime := getattr(request.app.state, "queue_runtime", None):

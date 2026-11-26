@@ -305,7 +305,9 @@ def test_our_bots_posts_become_history_and_reply_targets(monkeypatch, sample_gro
     assert kept == [("beerdev", "beerdev"), ("Beerius", "beerius")]
 
 
-def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_groupme_message):
+def test_callback_routes_messages_opening_with_beerdev_to_beerdev(
+    monkeypatch, sample_groupme_message
+):
     from fastapi.testclient import TestClient
     from src.beerbot import main
 
@@ -319,6 +321,10 @@ def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
     monkeypatch.setattr(main.settings, "require_registered_groups", False)
     with TestClient(main.app) as client:
-        for text in ("beerdev what's our spend?", "+1 beer"):
+        for text in ("beerdev what's our spend?", "+1 beer", "+1 🍺 thanks beerdev"):
             client.post("/callback", json=sample_groupme_message | {"text": text, "id": text})
-    assert routed == [("beerdev what's our spend?", "beerdev"), ("+1 beer", "beerius")]
+    assert routed == [
+        ("beerdev what's our spend?", "beerdev"),
+        ("+1 beer", "beerius"),
+        ("+1 🍺 thanks beerdev", "beerius"),
+    ]

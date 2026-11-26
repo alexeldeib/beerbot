@@ -1,7 +1,7 @@
 """beerdev: Beerius's developer, a peer bot inside the same app.
 
-The router (`addressed`) gives beerdev every message that mentions it or replies in its thread, and
-Beerius never sees those. beerdev has its own prompt and only these tools:
+The router (`addressed`) gives beerdev every message that starts with "beerdev" or replies to one of
+its posts, and Beerius never sees those. beerdev has its own prompt and only these tools:
 - read the app's status, its request queue and deploys (GitHub), and allowlisted docs
 - file a request
 - steer one (owner only, by GroupMe sender id and the owner's own words)
@@ -32,7 +32,8 @@ from .tools import audit
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
-MENTION = re.compile(r"\bbeerdev\b", re.IGNORECASE)
+# "beerdev" first, after nothing but "@", spaces, or punctuation.
+ADDRESSED = re.compile(r"\W*beerdev\b", re.IGNORECASE)
 # The files questions about the bot need; nothing else is readable.
 DOCS = (
     "README.md",
@@ -58,7 +59,8 @@ ACTION_WORDS = {
 FILLER = {"the", "and", "for", "that", "this", "with", "one", "bot", "pls", "please", "beerdev"}
 
 PROMPT = """You are beerdev, the developer behind Beerius, the drink-tracking bot in this GroupMe
-group. People talk to you by name; Beerius handles drinks.
+group. People reach you by starting a message with "beerdev" or by replying to your posts; Beerius
+gets everything else, drinks included.
 
 What you do:
 - Answer questions about the bot: how it works, what it costs, its health and recent errors,
@@ -93,24 +95,24 @@ def _plain(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
-def _reply_id(message: GroupMeMessage) -> str | None:
-    return next((a.reply_id for a in message.attachments if a.type == "reply" and a.reply_id), None)
-
-
 async def addressed(message: GroupMeMessage) -> bool:
-    """The router: beerdev's if it says "beerdev" or replies in beerdev's thread."""
-    if MENTION.search(message.text or ""):
+    """The router: beerdev's when the message opens by addressing it ("beerdev, what's queued?",
+    "@beerdev help") or replies to one of beerdev's own posts. Everything else is Beerius's, even
+    when it names beerdev ("+1 🍺 thanks beerdev")."""
+    if ADDRESSED.match(message.text or ""):
         return True
-    if not (reply_id := _reply_id(message)):
+    if not message.reply_id:
         return False
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # beerdev's posts are its never-processed context rows (delivery.accept_context), which
+        # outlast their payload's retention; a question someone asked beerdev was processed.
         return bool(
             await conn.fetchval(
-                """SELECT agent = 'beerdev' FROM message_inbox
-                   WHERE group_id = $1 AND message_id = $2""",
+                """SELECT agent = 'beerdev' AND state = 'completed' AND attempts = 0
+                   FROM message_inbox WHERE group_id = $1 AND message_id = $2""",
                 message.group_id,
-                reply_id,
+                message.reply_id,
             )
         )
 

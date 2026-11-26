@@ -79,12 +79,23 @@ def github(monkeypatch, issues: list[dict], calls: list) -> None:
     )
 
 
-async def test_router_takes_mentions_and_replies_in_beerdevs_thread(pg):
+async def test_router_takes_messages_opening_with_beerdev_and_replies_to_its_posts(pg, monkeypatch):
     await setup(pg)
-    assert await beerdev.addressed(msg("beerdev what's our spend?"))
-    assert await beerdev.addressed(msg("hey BeerDev, ship it"))
-    for text in ("beerdevelopment is hard", "beer dev", "+1 beer"):
-        assert not await beerdev.addressed(msg(text))
+    for text in (
+        "beerdev what's our spend?",
+        "Beerdev, what's queued?",
+        "@beerdev help",
+        " @BeerDev: hi",
+    ):
+        assert await beerdev.addressed(msg(text)), text
+    for text in (
+        "+1 🍺 thanks beerdev",  # Names beerdev, but it's a drink for Beerius.
+        "hey beerdev, ship it",
+        "beerdevelopment is hard",
+        "beer dev",
+        "+1 beer",
+    ):
+        assert not await beerdev.addressed(msg(text)), text
     line = GroupMeMessage(
         id="dev-1",
         group_id="g1",
@@ -97,9 +108,34 @@ async def test_router_takes_mentions_and_replies_in_beerdevs_thread(pg):
     )
     await delivery.accept_context(line, "beerdev")
     await delivery.accept_message(msg("+1 beer", id="b-1"))
+    await delivery.accept_message(msg("beerdev any errors?", id="q-1", user="kim"), "beerdev")
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", AsyncMock(return_value=None))
+    monkeypatch.setattr(beerdev, "process", AsyncMock(return_value="None lately."))
+    assert await delivery.execute_one(agent) and await delivery.execute_one(agent)
     assert await beerdev.addressed(msg("veto", id="m2", reply_to="dev-1"))
     assert not await beerdev.addressed(msg("lol", id="m3", reply_to="b-1"))  # Beerius's thread
+    assert not await beerdev.addressed(msg("same", id="m4", reply_to="q-1"))  # Kim's question
+    await pg.execute("UPDATE message_inbox SET payload=NULL")  # Retention keeps the routing.
+    assert await beerdev.addressed(msg("veto", id="m5", reply_to="dev-1"))
+    assert await beerdev.replied_text(msg("veto", id="m2", reply_to="dev-1")) == ""
+
+
+async def test_replied_text_reads_the_post_replied_to(pg):
+    await setup(pg)
+    line = GroupMeMessage(
+        id="dev-1",
+        group_id="g1",
+        user_id="b",
+        sender_id="b",
+        sender_type="bot",
+        name="beerdev",
+        text=LINKED,
+        created_at=0,
+    )
+    await delivery.accept_context(line, "beerdev")
     assert await beerdev.replied_text(msg("veto", id="m2", reply_to="dev-1")) == LINKED
+    assert await beerdev.replied_text(msg("veto", id="m3")) == ""
 
 
 def test_named_and_filed_find_the_right_request():

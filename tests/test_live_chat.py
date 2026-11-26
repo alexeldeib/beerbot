@@ -179,6 +179,14 @@ async def test_a_correction_replying_to_beerius_fixes_the_drinker(chat, pg):
     assert {tuple(row) for row in drinks} == {("jerry", "wine", 1)}
 
 
+async def test_a_drink_that_thanks_beerdev_is_still_logged(chat, pg):
+    # Only messages that open with "beerdev" go to beerdev; this one is Beerius's to log.
+    await chat("+1 🍺 thanks beerdev")
+    row = await pg.fetchrow("SELECT agent FROM message_inbox ORDER BY id DESC LIMIT 1")
+    assert row["agent"] == "beerius"
+    assert await pg.fetchval("SELECT SUM(quantity) FROM beers WHERE drink_type='beer'") == 1
+
+
 async def test_beerius_points_capability_asks_to_beerdev(chat, pg):
     reply = await chat("Beerius can you track our gym sessions too?")
     assert reply and "beerdev" in reply.lower(), reply
