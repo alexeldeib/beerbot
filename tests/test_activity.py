@@ -136,9 +136,9 @@ async def test_inferred_membership_does_not_authorize_writes_and_test_groups_den
 ):
     await enable(monkeypatch)
     account_id = await mirrored_group(pg, grant=False)
-    async with pg.acquire() as conn:
+    async with pg.acquire() as conn:  # GroupMe history in the group is not an app grant
         await conn.execute(
-            "INSERT INTO workspace_memberships(id,workspace_id,person_id,status,display_name) VALUES('old','w1','ace','active','Ace')"
+            "INSERT INTO beers(user_id,group_id) SELECT id,'g1' FROM users WHERE person_id='ace'"
         )
     await login(browser)
     payload = request(workspace_id="w1")
@@ -209,6 +209,20 @@ async def test_revoked_access_cannot_edit_and_cross_user_entry_hidden(browser, p
             json=request(revision=row["revision"]),
         )
     ).status_code == 404
+
+
+async def test_drink_types_are_checked_by_the_enum_not_the_database(browser, pg, monkeypatch):
+    await enable(monkeypatch)
+    await mirrored_group(pg)
+    await login(browser)
+    soda = request(workspace_id="w1", drink_type="soda")
+    assert (await browser.post("/app/api/activity", json=soda)).status_code == 422
+    await new_drink(browser)
+    async with pg.acquire() as conn:  # a type added to DrinkType later needs no migration
+        await conn.execute("UPDATE beers SET drink_type='cider'")
+        await conn.execute("UPDATE app_activity SET drink_type='cider'")
+    breakdown = (await browser.get("/app/api/me")).json()["breakdown"]
+    assert breakdown == [{"drink_type": "cider", "drinks": 2}]
 
 
 async def test_write_flag_csrf_and_validation(browser, pg, monkeypatch):

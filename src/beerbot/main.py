@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -21,7 +21,6 @@ from .groupme_client import groupme_client
 from .llm import model_profile
 from .models import GroupMeMessage
 from .repositories import group_repo, recap_repo
-from .reconciliation import ReconciliationBusy, reconcile_identities
 from .delivery import (
     accept_context,
     accept_message,
@@ -31,7 +30,7 @@ from .delivery import (
     retry_delivery,
     QueueRuntime,
 )
-from .web import router as web_router, InviteInput, invite_account
+from .web import router as web_router, InviteInput, disable_account, invite_account
 from .activity import AccessGrant, grant_access
 
 logging.basicConfig(
@@ -311,14 +310,14 @@ async def verify_ops_token(authorization: str | None = Header(None)) -> bool:
     return False
 
 
-@app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
-async def identity_parity(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
-    return await reconcile_identities(after_id=after_id, limit=limit)
-
-
 @app.post("/admin/accounts/invite", dependencies=[Depends(verify_admin_token)])
 async def invite_web_account(invitation: InviteInput):
     return await invite_account(invitation)
+
+
+@app.post("/admin/accounts/{account_id}/disable", dependencies=[Depends(verify_admin_token)])
+async def disable_web_account(account_id: str):
+    return await disable_account(account_id)
 
 
 @app.patch(
@@ -387,16 +386,6 @@ async def retry_outbound(request: Request, outbox_id: int, acknowledge_uncertain
     if runtime := getattr(request.app.state, "queue_runtime", None):
         runtime.wake("delivery")
     return {"status": "queued"}
-
-
-@app.post("/admin/identities/reconcile", dependencies=[Depends(verify_admin_token)])
-async def identity_reconcile(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
-    try:
-        return await reconcile_identities(apply=True, after_id=after_id, limit=limit)
-    except ReconciliationBusy:
-        raise HTTPException(
-            status_code=409, detail="Identity reconciliation already running"
-        ) from None
 
 
 @app.post("/admin/groups", dependencies=[Depends(verify_admin_token)])
