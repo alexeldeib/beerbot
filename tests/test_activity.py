@@ -211,6 +211,20 @@ async def test_revoked_access_cannot_edit_and_cross_user_entry_hidden(browser, p
     ).status_code == 404
 
 
+async def test_drink_types_are_checked_by_the_enum_not_the_database(browser, pg, monkeypatch):
+    await enable(monkeypatch)
+    await mirrored_group(pg)
+    await login(browser)
+    soda = request(workspace_id="w1", drink_type="soda")
+    assert (await browser.post("/app/api/activity", json=soda)).status_code == 422
+    await new_drink(browser)
+    async with pg.acquire() as conn:  # a type added to DrinkType later needs no migration
+        await conn.execute("UPDATE beers SET drink_type='cider'")
+        await conn.execute("UPDATE app_activity SET drink_type='cider'")
+    breakdown = (await browser.get("/app/api/me")).json()["breakdown"]
+    assert breakdown == [{"drink_type": "cider", "drinks": 2}]
+
+
 async def test_write_flag_csrf_and_validation(browser, pg, monkeypatch):
     await login(browser)
     monkeypatch.setattr(web.settings, "app_activity_enabled", False)

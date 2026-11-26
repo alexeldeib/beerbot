@@ -657,6 +657,9 @@ SCHEMA_MIGRATIONS += (
             "DROP TABLE IF EXISTS external_identities",
             # Never read, and it kept whole request payloads, invitee emails included.
             "DROP TABLE IF EXISTS app_group_events",
+            # A copy of DrinkType that beers never had: a new chat drink type would fail
+            # when logged from the app. The app validates with the enum instead.
+            "ALTER TABLE app_activity DROP CONSTRAINT IF EXISTS app_activity_drink_type_check",
         ),
     ),
 )
