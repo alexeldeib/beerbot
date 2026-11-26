@@ -140,7 +140,11 @@ async def send_code(email: str, code: str) -> None:
 
 
 async def invite_account(data: InviteInput) -> dict:
-    """Admin approval is explicit. Never silently reassign an existing binding."""
+    """Admin approval is explicit. A proven binding (verified email) is never reassigned.
+
+    Until an email is verified the admin's latest choice wins, so neither an expired
+    or mistyped invitation nor an email squatted through a group invitation blocks it.
+    """
     pool = await get_pool()
     try:
         async with pool.acquire() as conn, conn.transaction():
@@ -169,6 +173,17 @@ async def invite_account(data: InviteInput) -> dict:
                     person_id,
                     data.name.strip(),
                 )
+            # Lock accounts, then people, then users: the order app commands use.
+            binding = """SELECT a.id,a.status='pending' AND e.verified_at IS NULL AS unproven
+                FROM accounts a JOIN account_emails e ON e.account_id=a.id"""
+            held = await conn.fetchrow(binding + " WHERE e.email=$1 FOR UPDATE OF a", data.email)
+            own = await conn.fetchrow(binding + " WHERE a.person_id=$1 FOR UPDATE OF a", person_id)
+            if held and not held["unproven"]:
+                raise HTTPException(409, "Email already has an account; no binding was changed")
+            if own and not own["unproven"]:
+                raise HTTPException(409, "Person already has an account; no binding was changed")
+            if held and own and held["id"] != own["id"]:
+                raise HTTPException(409, "The email and the person each have a pending invitation")
             person = await conn.fetchrow(
                 "SELECT display_name,status,canonical_person_id FROM people WHERE id=$1 FOR UPDATE",
                 person_id,
@@ -179,7 +194,6 @@ async def invite_account(data: InviteInput) -> dict:
                 or person["status"] not in ("claimed", "provisional")
             ):
                 raise HTTPException(409, "Person is unavailable for invitation")
-            # People before users, the order app commands lock them in.
             if user and not user["person_id"]:
                 if not await conn.fetchval(
                     """UPDATE users SET person_id=$2 WHERE groupme_user_id=$1
@@ -188,19 +202,38 @@ async def invite_account(data: InviteInput) -> dict:
                     person_id,
                 ):
                     raise HTTPException(409, "That GroupMe user was just linked; try again")
-            if await conn.fetchval("SELECT 1 FROM accounts WHERE person_id=$1", person_id):
-                raise HTTPException(409, "Person already has an account; no binding was changed")
-            account_id = "account:" + secrets.token_hex(16)
-            await conn.execute(
-                "INSERT INTO accounts(id,person_id,status) VALUES($1,$2,'pending')",
-                account_id,
-                person_id,
-            )
-            await conn.execute(
-                "INSERT INTO account_emails(account_id,email) VALUES($1,$2)",
-                account_id,
-                data.email,
-            )
+            if held or own:
+                account_id = (held or own)["id"]
+                await conn.execute(
+                    """UPDATE accounts SET person_id=$2,settings=settings-'needs_name',
+                       updated_at=now() WHERE id=$1""",
+                    account_id,
+                    person_id,
+                )
+                await conn.execute(
+                    """UPDATE account_emails SET email=$2,invited_at=now(),
+                       invite_expires_at=now()+interval '7 days' WHERE account_id=$1""",
+                    account_id,
+                    data.email,
+                )
+                # Codes sent under the old binding must not sign in under the new one.
+                await conn.execute(
+                    """UPDATE login_challenges SET consumed_at=now()
+                       WHERE account_id=$1 AND consumed_at IS NULL""",
+                    account_id,
+                )
+            else:
+                account_id = "account:" + secrets.token_hex(16)
+                await conn.execute(
+                    "INSERT INTO accounts(id,person_id,status) VALUES($1,$2,'pending')",
+                    account_id,
+                    person_id,
+                )
+                await conn.execute(
+                    "INSERT INTO account_emails(account_id,email) VALUES($1,$2)",
+                    account_id,
+                    data.email,
+                )
             return {
                 "status": "invited",
                 "account_id": account_id,

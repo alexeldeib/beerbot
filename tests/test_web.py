@@ -167,6 +167,7 @@ async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
             "/admin/accounts/invite", json={"person_id": "other", "email": "other@example.test"}
         )
     ).status_code == 401
+    await login(browser)  # a verified email is a proven binding
     for payload in [
         {"person_id": "ace", "email": "different@example.test"},
         {"person_id": "other", "email": "ace@example.test"},
@@ -216,6 +217,32 @@ async def test_admin_invites_a_groupme_user_with_their_history(browser, pg, monk
     assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 200
     me = (await browser.get("/app/api/me")).json()
     assert me["person"]["name"] == "Newcomer" and me["totals"]["drinks"] == 4
+
+
+async def test_admin_renews_or_corrects_an_unproven_invitation(browser, pg, monkeypatch):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+
+    async def invite(**payload):
+        headers = {"Authorization": "Bearer test-admin"}
+        return await browser.post("/admin/accounts/invite", json=payload, headers=headers)
+
+    async with pg.acquire() as conn:
+        account_id = await conn.fetchval("SELECT id FROM accounts")
+        await conn.execute("UPDATE account_emails SET invite_expires_at=now()-interval '1 second'")
+    renewed = await invite(person_id="ace", email="ace@example.test")
+    assert renewed.status_code == 200 and renewed.json()["account_id"] == account_id
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT invite_expires_at>now() FROM account_emails")
+    corrected = await invite(person_id="ace", email="ace2@example.test")
+    assert corrected.json()["account_id"] == account_id
+    assert (await invite(person_id="other", email="other@example.test")).status_code == 200
+    # Two different pending invitations are never merged.
+    assert (await invite(person_id="other", email="ace2@example.test")).status_code == 409
+    await browser.post("/app/api/login", json={"email": "ace2@example.test"})
+    code = web.send_code.call_args.args[1]
+    assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 200
+    me = (await browser.get("/app/api/me")).json()["person"]
+    assert me == {"name": "Ace Test", "email": "ace2@example.test"}
 
 
 async def test_expired_invitation_cannot_claim(browser, pg):

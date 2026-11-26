@@ -370,3 +370,39 @@ async def test_groupme_user_then_beer_lock_order_is_preserved(browser, pg, monke
         response = await asyncio.wait_for(editing, 2)
     assert response.status_code == 409
     assert (await browser.get("/app/api/me")).json()["totals"]["drinks"] == 3
+
+
+async def test_admin_invitation_takes_over_an_email_squatted_by_a_group_owner(
+    owner, pg, monkeypatch
+):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    owner_client, _ = owner
+    invitation, _ = await invite(owner, "other@example.test")
+    async with client() as squatter:
+        squatter.headers["Fly-Client-IP"] = "203.0.113.9"
+        prepared = await squatter.post(
+            f"/app/api/invitations/{invitation}/prepare", json={"email": "other@example.test"}
+        )
+        assert prepared.status_code == 200
+        await squatter.post("/app/api/login", json={"email": "other@example.test"})
+        phished = web.send_code.call_args.args[1]
+        result = await owner_client.post(
+            "/admin/accounts/invite",
+            json={"groupme_user_id": "2", "email": "other@example.test"},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["person_id"] == "other"
+        # A code issued under the squatted binding cannot sign in as the real person.
+        assert (await squatter.post("/app/api/verify", json={"code": phished})).status_code == 400
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM accounts") == 2
+        # Until the per-account cap is per source, the squatter's request locks this out.
+        await conn.execute("UPDATE login_challenges SET created_at=now()-interval '2 minutes'")
+    async with client() as friend:
+        await friend.post("/app/api/login", json={"email": "other@example.test"})
+        code = web.send_code.call_args.args[1]
+        assert (await friend.post("/app/api/verify", json={"code": code})).status_code == 200
+        assert not (await friend.get("/app/api/groups")).json()["needs_name"]
+        await accept(friend, invitation)  # the name it sends cannot rename the person
+        assert (await friend.get("/app/api/me")).json()["person"]["name"] == "Other"
