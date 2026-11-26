@@ -209,6 +209,9 @@ async def reply_target(
     text): a correction made by replying to "+1🍸 for Jerry" is about Jerry's drink."""
     if not message.reply_id:
         return None, None
+    # ponytail: GroupMe's bot API returns no post id, so a post finds its outbox row by text; of
+    # two identical posts, both resolve to the newer one. Storing the echo's id at send time would
+    # need a delivery receipt GroupMe doesn't give.
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
