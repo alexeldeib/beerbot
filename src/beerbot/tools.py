@@ -1,4 +1,4 @@
-"""Tool factory for Gemini function calling.
+"""Beerius's tools for the explicit model tool loop (model_runtime.run_tools).
 
 Each tool is an async closure that captures a ToolContext, binding group_id,
 message_id, and sender info so the AI never sees security-sensitive identifiers.
@@ -80,10 +80,7 @@ async def _get_or_create_user(ctx: ToolContext, user_id: str):
 
 
 def create_tools(ctx: ToolContext) -> list[Callable]:
-    """Create tool closures bound to the given request context.
-
-    Returns a list of async callables suitable for Gemini AFC.
-    """
+    """Create tool closures bound to the given request context, audited (see `audit`)."""
 
     # === WRITE TOOLS ===
 

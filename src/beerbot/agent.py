@@ -1,4 +1,4 @@
-"""Core agent that processes every GroupMe message via Gemini function calling."""
+"""Beerius: answers each GroupMe message through the explicit, provider-neutral tool loop."""
 
 import logging
 import time

@@ -22,8 +22,8 @@ class ExecutionScope:
 
     @asynccontextmanager
     async def acquire(self):
-        # SDK tool calls may be concurrent. asyncpg needs sequential use of
-        # the connection that owns the encompassing message transaction.
+        # The tool loop runs calls one at a time; the lock keeps every use of the connection
+        # that owns the message transaction sequential, as asyncpg requires.
         async with self.lock:
             yield self.connection
 

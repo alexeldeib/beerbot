@@ -58,10 +58,9 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
 
-    # Optional: start beerdev scans on mentions and ops checks on failures right away. Without a
-    # token, the scheduled workflows pick everything up a little later.
-    # Fine-grained, this repository only: Issues and Actions. beerdev files and steers requests
-    # with it, and the app starts workflows. Not GITHUB_TOKEN, which local shells often set.
+    # Fine-grained, this repository only: Issues and Actions. beerdev reads, files and steers
+    # requests with it, and the app starts builds and ops checks right away (without it, the
+    # scheduled workflows catch up a little later). Not GITHUB_TOKEN, which local shells set.
     github_token: str | None = Field(default=None, validation_alias="BEERDEV_GITHUB_TOKEN")
     beerdev_bot_id: str | None = None  # beerdev's replies post as this bot.
     ops_token: str | None = None  # Read-only: the status and usage endpoints, nothing else.
