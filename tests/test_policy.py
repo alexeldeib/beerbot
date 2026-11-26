@@ -213,6 +213,12 @@ def test_builds_run_one_at_a_time_and_never_repick_an_issue():
     assert "!= needs.pick.outputs.issue" in start["if"]
 
 
+def test_the_weekly_lead_sees_ci_runs():
+    steps = WORKFLOWS["beerdev-lead.yml"]["jobs"]["plan"]["steps"]
+    gather = next(step["run"] for step in steps if "gh run list" in str(step.get("run")))
+    assert "--workflow ci.yml" in gather  # Unscoped, the newest runs are all ops checks.
+
+
 def test_only_routine_app_code_ships_without_the_reviewer():
     workflow = WORKFLOWS["beerdev-build.yml"]
     routine = workflow["env"]["ROUTINE"]  # For grep -P, in syntax Python's re shares.

@@ -43,7 +43,8 @@ jobs:
             --json number,title,state,stateReason,labels,author,body,closedAt \
             | jq --arg owner "$OWNER" '[.[] | select(.author.login == $owner or .author.login == "app/github-actions" or .author.login == "github-actions[bot]")]' \
             > /tmp/lead/issues.json
-          gh run list -R "$GITHUB_REPOSITORY" --limit 30 \
+          # CI only: ops alone runs every 5 minutes, so an unscoped list is all ops.
+          gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --limit 30 \
             --json workflowName,event,status,conclusion,headSha,createdAt > /tmp/lead/runs.json
 
       # Read-only tools, and the plan comes back as the final answer: the agent can neither
