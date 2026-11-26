@@ -59,8 +59,12 @@ def github(monkeypatch, issues: list[dict], calls: list) -> None:
         calls.append((request.method, request.url.path, json.loads(request.content or "null")))
         path = request.url.path
         if request.method == "GET" and path.endswith("/issues"):
-            label = request.url.params["labels"]
-            found = [i for i in issues if label in {lb["name"] for lb in i["labels"]}]
+            label, state = request.url.params["labels"], request.url.params.get("state", "open")
+            found = [
+                i
+                for i in issues
+                if label in {lb["name"] for lb in i["labels"]} and state in ("all", i["state"])
+            ]
             return httpx.Response(200, json=found)
         if request.method == "GET" and "/issues/" in path:
             number = int(path.rsplit("/", 1)[-1])
@@ -200,6 +204,26 @@ async def test_file_request_files_once_and_starts_only_buildable_work(monkeypatc
 
     _, tools = tools_for("beerdev track gym sessions", message_id="m0")  # A retried message:
     assert (await tools["file_request"]("feature", "Gym", "Again."))["status"] == "already filed"
+
+
+async def test_request_queue_shows_work_waiting_on_the_owner(monkeypatch):
+    def issue(number: int, state: str, *labels: str) -> dict:
+        names = [{"name": name} for name in labels]
+        return {"number": number, "title": f"#{number}", "state": state, "labels": names}
+
+    held = [
+        issue(51, "open", "inbox"),  # A change the reviewer held, waiting on its open PR.
+        issue(50, "open", "ops", "inbox"),  # ops' ticket for a person.
+        issue(49, "closed", "ops", "inbox"),  # Done: not waiting on anyone.
+    ]
+    github(monkeypatch, ISSUES + held, [])
+    _, tools = tools_for()
+    rows = (await tools["request_queue"]())["requests"]
+    assert [row["url"].rsplit("/", 1)[1] for row in rows] == ["51", "50", "31", "19"]
+    assert "inbox" in rows[0]["labels"]
+    # Filing and steering still see only beerdev's own requests.
+    async with beerdev._github() as client:
+        assert [i["number"] for i in await beerdev._requests(client)] == [31, 19]
 
 
 async def test_an_answer_in_plain_text_is_still_sent():

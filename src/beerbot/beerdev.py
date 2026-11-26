@@ -170,13 +170,15 @@ def _github() -> httpx.AsyncClient:
     )
 
 
-async def _requests(client: httpx.AsyncClient) -> list[dict]:
-    """Every beerdev request (any state), so nothing is filed twice."""
+async def _requests(client: httpx.AsyncClient, held: bool = False) -> list[dict]:
+    """Every beerdev request (any state), so nothing is filed twice. With `held`, also what is
+    open and waiting on the owner (label inbox): held changes and the owner's items."""
     found: dict[int, dict] = {}
-    for label in QUEUE_LABELS:
+    queries = [(label, "all") for label in QUEUE_LABELS] + ([("inbox", "open")] if held else [])
+    for label, state in queries:
         response = await client.get(
             f"/repos/{settings.github_repository}/issues",
-            params={"labels": label, "state": "all", "per_page": 100},
+            params={"labels": label, "state": state, "per_page": 100},
         )
         for issue in response.raise_for_status().json():
             found[issue["number"]] = issue
@@ -252,11 +254,11 @@ def create_tools(ctx: Context) -> list:
         )
 
     async def request_queue() -> dict:
-        """beerdev's requests on GitHub, newest first: what's queued, waiting on the owner,
-        failed, shipped, or declined."""
+        """beerdev's requests on GitHub, newest first: what's queued, waiting on the owner
+        (held changes and the owner's own items too), failed, shipped, or declined."""
         try:
             async with _github() as client:
-                issues = await _requests(client)
+                issues = await _requests(client, held=True)
         except httpx.HTTPError as exc:
             raise ValueError(f"GitHub didn't answer ({type(exc).__name__}).") from exc
         rows = [
@@ -271,7 +273,8 @@ def create_tools(ctx: Context) -> list:
         ]
         legend = (
             "Labels: beerdev = queued to build (incidents first, then oldest first); inbox = "
-            "waiting on the owner; beerdev-failed = its build failed; proposal = the weekly "
+            "waiting on the owner, including held changes and ops' tickets for a person; "
+            "beerdev-failed = its build failed; proposal = the weekly "
             "lead's idea. Closed as completed = shipped; as not_planned = declined or vetoed."
         )
         return {"legend": legend, "requests": rows}
