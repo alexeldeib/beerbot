@@ -6,8 +6,9 @@ section of docs/runbook.md with its "beerdev's kernel and gates" first, then the
 files it touches.
 
 The patch changes more than routine app code (workflows, scripts, Docker, Fly, dependencies, test
-configuration, or agent instructions), so it ships only with your approval. Approve only if all of
-these hold:
+configuration, agent instructions, or the app files that hold credentials or decide who may do
+what: src/beerbot/beerdev.py, main.py, dispatch.py, config.py, database.py, and web.py), so it ships
+only with your approval. Approve only if all of these hold:
 - It does what the request asks, and nothing unrelated.
 - Secrets stay in the jobs that already use them. Nothing prints, stores, uploads, or sends them,
   and nothing new can reach them. No new network destinations.

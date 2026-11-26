@@ -192,6 +192,27 @@ def test_beerdev_cannot_change_its_kernel():
     assert "review" in ship["needs"] and "claude-code" in yaml.safe_dump(review)
 
 
+def test_only_routine_app_code_ships_without_the_reviewer():
+    workflow = WORKFLOWS["beerdev-build.yml"]
+    routine = workflow["env"]["ROUTINE"]  # For grep -P, in syntax Python's re shares.
+    for path in ("src/beerbot/tools.py", "docs/runbook.md", "README.md", "tests/test_tools.py"):
+        assert re.search(routine, path), path
+    # Files that hold credentials or decide who may do what need the reviewer, like infra.
+    sensitive = ("beerdev", "main", "dispatch", "config", "database", "web")
+    for path in [f"src/beerbot/{name}.py" for name in sensitive] + [
+        "scripts/ops.py",
+        "Dockerfile",
+        "fly.toml",
+        "pyproject.toml",
+        "tests/conftest.py",
+        ".github/workflows/ci.yml",
+    ]:
+        assert not re.search(routine, path), path
+    for job in ("review", "ship"):  # One definition, read by both gates.
+        text = "\n".join(step.get("run", "") for step in workflow["jobs"][job]["steps"])
+        assert 'grep -vP "$ROUTINE"' in text and "routine=" not in text, job
+
+
 # The review job skips the two app checks below (`-k "not app"`): they import agent-written code.
 def test_app_lets_only_the_owner_steer_beerdev():
     from src.beerbot import beerdev

@@ -3,8 +3,9 @@ name: beerdev build
 # Builds the oldest open `beerdev` issue; started by beerdev.yml.
 # - implement: Claude Code makes the change and every test runs (tests/test_policy.py included),
 #   with only read-only credentials.
-# - review: for changes beyond routine app code (workflows, scripts, Docker, Fly, dependencies),
-#   an independent Claude Code reads the patch as data and approves or rejects it.
+# - review: for changes beyond routine app code (ROUTINE below: workflows, scripts, Docker, Fly,
+#   dependencies, and the app files that hold credentials or decide who may do what), an
+#   independent Claude Code reads the patch as data and approves or rejects it.
 # - ship: applies the patch to a fresh checkout without running it, refuses changes to the kernel
 #   (this file, the lead, agent prompts and settings, CLAUDE.md files, the policy test) and
 #   credential-like text,
@@ -17,6 +18,11 @@ on:
   workflow_dispatch:
 
 permissions: {}
+
+env:
+  # What ships without the independent reviewer (`grep -P`): app code, docs, and tests, except the
+  # app files that hold credentials or decide who may do what. tests/test_policy.py pins it.
+  ROUTINE: '^(?!src/beerbot/(beerdev|main|dispatch|config|database|web)\.py$)(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
 
 # One build at a time. A newer queued build replaces an older one, and each picks its issue when
 # it starts, so nothing is built twice.
@@ -183,8 +189,7 @@ jobs:
           git apply --index /tmp/beerdev/change.patch
           changed="$(git diff --cached --name-only --no-renames)"
           git reset -q --hard
-          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
-          if grep -vE "$routine" <<< "$changed" | grep -q .; then
+          if grep -vP "$ROUTINE" <<< "$changed" | grep -q .; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -322,12 +327,11 @@ jobs:
             echo "::error::The change contains what looks like a credential"
             exit 1
           fi
-          routine='^(src/|docs/|README\.md$|tests/test_[^/]*\.py$)'
           if grep -qE '^(pyproject\.toml|uv\.lock)$' <<< "$changed"; then
             # A reviewer can't vet a package's provenance offline, and it runs with every secret.
             echo "hold=true" >> "$GITHUB_OUTPUT"
             echo "why=It changes dependencies, which always wait for the owner." >> "$GITHUB_OUTPUT"
-          elif grep -vE "$routine" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
+          elif grep -vP "$ROUTINE" <<< "$changed" | grep -q . && [ "$VERDICT" != approve ]; then
             echo "hold=true" >> "$GITHUB_OUTPUT"  # Beyond routine code, and not approved.
             echo "why=The independent reviewer did not approve it: ${REASON:-it did not run}" >> "$GITHUB_OUTPUT"
           fi
