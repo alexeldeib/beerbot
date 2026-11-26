@@ -66,20 +66,6 @@ class GroupMeClient:
         else:
             self._bot_id_cache.clear()
 
-    async def send_message(self, text: str, group_id: str | None = None) -> bool:
-        """Send a message to a group.
-
-        Args:
-            text: The message text to send
-            group_id: The GroupMe group ID. If provided, looks up the
-                     registered bot_id for that group. Falls back to
-                     default bot_id if group not registered.
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        return (await self.deliver_message(text, group_id)).state == "sent"
-
     async def deliver_message(
         self,
         text: str,

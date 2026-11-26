@@ -1,7 +1,6 @@
 """Durable GroupMe inbox execution and independently claimed outbound delivery."""
 
 import asyncio
-import copy
 import json
 import logging
 import time
@@ -20,6 +19,7 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT = 90
 MAX_EXECUTION_ATTEMPTS = 3
 MAX_DELIVERY_ATTEMPTS = 5
+OPS_SILENT = 3600  # Seconds without an ops check before the app starts ops itself.
 # Terminal failures since boot, by error code. Memory-only, so ops can poll it without waking
 # Postgres; the durable record is the failed rows themselves.
 TERMINAL_FAILURES: Counter[str] = Counter()
@@ -27,14 +27,41 @@ TERMINAL_FAILURES: Counter[str] = Counter()
 # when each started waiting. Memory-only, so ops can see a stuck queue without waking Postgres.
 UNPROCESSED: dict[int, float] = {}
 UNDELIVERED: dict[int, float] = {}
+# Latest failure per worker: a scan, a message attempt, or a send. Kept after recovery, so ops can
+# report it and tell a failing dependency from a bug.
+LAST_ERROR: dict[str, dict | None] = {"execution": None, "delivery": None}
 STARTED_AT = datetime.now(UTC).isoformat()
 
 
+def record_error(worker: str, detail: str) -> None:
+    LAST_ERROR[worker] = {"at": datetime.now(UTC).isoformat(), "detail": detail}
+
+
 def failure_detail(exc: BaseException) -> str:
-    """Exception type and this repo's stack frames, never the message: it can hold chat data."""
+    """Exception type (module-qualified, with the HTTP status it carries) and this repo's stack
+    frames, never the message: it can hold chat data. ops tells a failing dependency from a bug
+    by it, e.g. "google.genai.errors.ServerError 503 at agent.py:458 process_message"."""
+    kind = type(exc)
+    name = kind.__qualname__
+    if kind.__module__ != "builtins":
+        name = f"{kind.__module__}.{name}"
+    codes = (getattr(exc, "code", None), getattr(exc, "status_code", None))
+    if (status := next((code for code in codes if type(code) is int), None)) is not None:
+        name += f" {status}"
     frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/src/beerbot/" in f.filename]
     where = " <- ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames))
-    return f"{type(exc).__name__} at {where or 'unknown'}"[:500]
+    return f"{name} at {where or 'unknown'}"[:500]
+
+
+def _backoff(attempts: int) -> int:
+    return min(300, 5 * 2**attempts)
+
+
+async def _lock_group(conn, group_id: str) -> bool:
+    """One execution per group at a time, across machines."""
+    return await conn.fetchval(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))", "beerbot-message:" + group_id
+    )
 
 
 def record_terminal(code: str) -> None:
@@ -54,11 +81,11 @@ class QueueRuntime:
         self.events = {name: asyncio.Event() for name in ("execution", "delivery")}
         self.scans = {name: 0 for name in self.events}
         self.failed = {name: False for name in self.events}
-        # Last scan failure per worker, kept after recovery: what ops reports when /ready fails.
-        self.last_error = {name: None for name in self.events}
         self.last_scan = {name: None for name in self.events}
         self.next_scan = {name: None for name in self.events}
         self.probe_failed = False
+        self.started = time.time()
+        self.ops_seen: float | None = None  # When ops last read the status with its own token.
 
     def wake(self, name=None):
         for key in [name] if name else self.events:
@@ -66,6 +93,13 @@ class QueueRuntime:
 
     def recovery_delay(self):
         return self.recovery_seconds - time.time() % self.recovery_seconds
+
+    def watch_ops(self) -> None:
+        """ops reads the status every 5 minutes. Silent for an hour (GitHub disabled its schedule,
+        or it keeps failing before it gets here), turn ops.yml back on and start it. Memory and
+        GitHub only, never the database; rate-limited, and a no-op without a GitHub token."""
+        if time.time() - (self.ops_seen or self.started) > OPS_SILENT:
+            dispatch("ops.yml", every=OPS_SILENT, enable=True, reason="ops_silent")
 
     async def wait(self, name, delay):
         self.next_scan[name] = datetime.fromtimestamp(time.time() + delay, UTC).isoformat()
@@ -83,11 +117,12 @@ class QueueRuntime:
             "last_scan": self.last_scan.copy(),
             "next_scan": self.next_scan.copy(),
             "terminal_failures": dict(TERMINAL_FAILURES),
-            "last_error": self.last_error.copy(),
+            "last_error": LAST_ERROR.copy(),
             "started_at": STARTED_AT,
             "git_sha": settings.git_sha,
             "oldest_unprocessed_seconds": _oldest(UNPROCESSED),
             "oldest_undelivered_seconds": _oldest(UNDELIVERED),
+            "ops_last_seen_seconds": round(time.time() - self.ops_seen) if self.ops_seen else None,
         }
 
 
@@ -96,22 +131,35 @@ def _oldest(waiting: dict[int, float]) -> int | None:
 
 
 async def next_work_delay(name: str, recovery_delay: float) -> float:
-    """Arm a timer for known work, not a poll for hypothetical future work."""
+    """Arm a timer for known work, not a poll for hypothetical future work.
+
+    The same scan lists what is still waiting, so the queue ages forget rows another machine
+    finished (blue-green overlap), maintenance expired, or a crash left behind."""
+    scanned = time.time()
     pool = await get_pool()
     async with pool.acquire() as conn:
         if name == "execution":
-            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(i.available_at)-NOW())
-                FROM message_inbox i WHERE i.state='pending'
-                AND NOT EXISTS(SELECT 1 FROM message_inbox earlier
-                    WHERE earlier.group_id=i.group_id AND earlier.state='pending' AND earlier.id<i.id)""")
+            tracked = UNPROCESSED
+            row = await conn.fetchrow("""SELECT EXTRACT(EPOCH FROM MIN(i.available_at) FILTER (
+                    WHERE NOT EXISTS(SELECT 1 FROM message_inbox earlier WHERE
+                        earlier.group_id=i.group_id AND earlier.state='pending' AND earlier.id<i.id)
+                    )-NOW()) AS due, array_agg(i.id) AS waiting
+                FROM message_inbox i WHERE i.state='pending'""")
         else:
-            due = await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(
+            tracked = UNDELIVERED
+            row = await conn.fetchrow("""SELECT EXTRACT(EPOCH FROM MIN(
                     CASE WHEN o.state='sending' THEN o.updated_at+INTERVAL '121 seconds'
-                         ELSE o.available_at END)-NOW())
-                FROM message_outbox o WHERE o.state IN ('pending','sending')
-                AND NOT EXISTS(SELECT 1 FROM message_outbox earlier
-                    WHERE earlier.group_id=o.group_id AND earlier.state IN ('pending','sending')
-                    AND earlier.id<o.id)""")
+                         ELSE o.available_at END) FILTER (
+                    WHERE NOT EXISTS(SELECT 1 FROM message_outbox earlier
+                        WHERE earlier.group_id=o.group_id AND earlier.state IN ('pending','sending')
+                        AND earlier.id<o.id))-NOW()) AS due, array_agg(o.id) AS waiting
+                FROM message_outbox o WHERE o.state IN ('pending','sending')""")
+    waiting = set(row["waiting"] or ())
+    # Only entries committed before this scan began: a newer one may be missing from its snapshot.
+    for key, since in list(tracked.items()):
+        if key not in waiting and since < scanned:
+            del tracked[key]
+    due = row["due"]
     # Due rows may be locked by a peer during deployment. Keep checking while
     # real pending work exists; only an empty queue sleeps until recovery.
     return recovery_delay if due is None else min(recovery_delay, max(1, float(due)))
@@ -136,28 +184,62 @@ async def accept_message(message: GroupMeMessage, agent: str = "beerius") -> dic
     return {"status": "ok", "action": "queued" if row else "duplicate"}
 
 
-async def accept_context(message: GroupMeMessage) -> None:
-    """Keep beerdev's own posts as completed, never-processed rows in its thread: replies to them
-    route to beerdev, and "veto" in reply to "💡 Queued: … /issues/31" carries its issue."""
+async def accept_context(message: GroupMeMessage, agent: str) -> None:
+    """Keep a bot's own post, as GroupMe echoes it back, as a completed, never-processed row:
+    it is chat history and a reply target. Replies to beerdev's posts route to beerdev, and "veto"
+    in reply to "💡 Queued: … /issues/31" carries its issue."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO message_inbox(group_id,message_id,payload,state,completed_at,agent)
-               VALUES($1,$2,$3::jsonb,'completed',NOW(),'beerdev')
+               VALUES($1,$2,$3::jsonb,'completed',NOW(),$4)
                ON CONFLICT(group_id,message_id) DO NOTHING""",
             message.group_id,
             message.id,
             message.model_dump_json(),
+            agent,
         )
 
 
-async def execute_one(agent) -> bool:
-    """Claim a group's oldest pending message and commit all DB effects together.
+async def reply_target(
+    message: GroupMeMessage,
+) -> tuple[GroupMeMessage | None, GroupMeMessage | None]:
+    """The message this one replies to, while the inbox still holds it (three days), and, when
+    that is one of Beerius's posts, the message the post answered (its outbox row has the post's
+    text): a correction made by replying to "+1🍸 for Jerry" is about Jerry's drink."""
+    if not message.reply_id:
+        return None, None
+    # ponytail: GroupMe's bot API returns no post id, so a post finds its outbox row by text; of
+    # two identical posts, both resolve to the newer one. Storing the echo's id at send time would
+    # need a delivery receipt GroupMe doesn't give.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT t.payload, (SELECT a.payload FROM message_outbox o
+                    JOIN message_inbox a ON a.id=o.inbox_id
+                    WHERE t.agent='beerius' AND t.payload->>'sender_type'='bot'
+                      AND o.group_id=t.group_id AND o.body=t.payload->>'text'
+                    ORDER BY o.id DESC LIMIT 1) AS answered
+               FROM message_inbox t
+               WHERE t.group_id=$1 AND t.message_id=$2 AND t.payload IS NOT NULL""",
+            message.group_id,
+            message.reply_id,
+        )
+    if row is None:
+        return None, None
+    answered = row["answered"] and GroupMeMessage.model_validate_json(row["answered"])
+    return GroupMeMessage.model_validate_json(row["payload"]), answered
 
-    The outer transaction holds the inbox row and group lock. A savepoint owns
-    all model/tool effects, so execution failure can roll them back while the
-    outer transaction records a bounded retry. Process death rolls everything
-    back automatically, leaving the durable inbox message pending.
+
+async def execute_one(agent) -> bool:
+    """Claim a group's oldest pending message, then commit all its DB effects together.
+
+    The claim commits the attempt before anything runs, leasing the row for the retry backoff so
+    no peer takes it before execution locks it again: a message that kills the process still uses
+    up its attempts instead of blocking its group forever. Execution holds the inbox row and the
+    group lock. A savepoint owns all model/tool effects, so execution failure can roll them back
+    while the outer transaction records a bounded retry. Process death rolls execution back,
+    leaving the durable inbox message pending.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -172,18 +254,40 @@ async def execute_one(agent) -> bool:
                         AND earlier.id<i.id)
                 ORDER BY i.id LIMIT 1 FOR UPDATE OF i SKIP LOCKED
             """)
-            if row is None:
+            if row is None or not await _lock_group(conn, row["group_id"]):
                 return False
-            if not await conn.fetchval(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
-                "beerbot-message:" + row["group_id"],
-            ):
+            attempts = row["attempts"] + 1
+            interrupted = f"interrupted {row['attempts']} times (out of memory, crash, or restart)"
+            if attempts > MAX_EXECUTION_ATTEMPTS:  # Every earlier attempt died with its process.
+                await conn.execute(
+                    """UPDATE message_inbox SET state='failed',error_code='interrupted',
+                       error_detail=$2 WHERE id=$1""",
+                    row["id"],
+                    interrupted,
+                )
+            else:
+                await conn.execute(
+                    """UPDATE message_inbox SET attempts=$2,
+                       available_at=NOW()+$3*INTERVAL '1 second' WHERE id=$1""",
+                    row["id"],
+                    attempts,
+                    _backoff(attempts),
+                )
+        if attempts > MAX_EXECUTION_ATTEMPTS:
+            logger.error("Message execution failed: inbox=%s error=interrupted", row["id"])
+            UNPROCESSED.pop(row["id"], None)
+            record_error("execution", interrupted)
+            record_terminal("interrupted")
+            return True
+        async with conn.transaction():
+            # Leased above, so no peer claims it: this lock only waits out a passing scan, and
+            # retention may have expired it meanwhile.
+            pending = await conn.fetchval(
+                "SELECT state='pending' FROM message_inbox WHERE id=$1 FOR UPDATE", row["id"]
+            )
+            if not pending or not await _lock_group(conn, row["group_id"]):
                 return False
             group_id = row["group_id"]
-            # Preserve legacy in-memory behavior on rollback; durable history
-            # takes over after the first completed run and survives restarts.
-            history_before = copy.deepcopy(agent._get_history(group_id))
-            bucket_before = copy.deepcopy(agent._get_bucket(group_id))
             finished, outbox_id = False, None
             try:
                 async with conn.transaction():
@@ -194,50 +298,29 @@ async def execute_one(agent) -> bool:
                             "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id=$1)", group_id
                         ):
                             raise PermissionError("Group is no longer registered")
-                        payload = row["payload"]
-                        message = GroupMeMessage.model_validate_json(payload)
-                        history = await conn.fetch(
-                            """SELECT payload,reply,agent FROM message_inbox
-                               WHERE group_id=$1 AND state='completed' AND payload IS NOT NULL
-                               ORDER BY id DESC LIMIT 10""",
-                            group_id,
-                        )
-                        if history:
-                            agent._get_history(group_id).clear()
-                            for previous in reversed(history):
-                                msg = GroupMeMessage.model_validate_json(previous["payload"])
-                                placeholder = (
-                                    "(video)"
-                                    if any(a.type == "video" for a in msg.attachments)
-                                    else "(image)"
-                                )
-                                agent.record_message(
+                        message = GroupMeMessage.model_validate_json(row["payload"])
+                        # The chat before this message, as stored: everyone's messages and both
+                        # bots' posts, within retention.
+                        history = [
+                            GroupMeMessage.model_validate_json(previous["payload"])
+                            for previous in reversed(
+                                await conn.fetch(
+                                    """SELECT payload FROM message_inbox WHERE group_id=$1
+                                       AND id<$2 AND payload IS NOT NULL
+                                       ORDER BY id DESC LIMIT 10""",
                                     group_id,
-                                    msg.text or placeholder,
-                                    msg.name,
-                                    is_bot=msg.sender_type == "bot",
-                                    message_id=msg.id,
-                                    user_id=msg.user_id,
+                                    row["id"],
                                 )
-                                # beerdev's answers arrive as its own posts (context rows).
-                                if previous["reply"] and previous["agent"] == "beerius":
-                                    agent.record_message(
-                                        group_id, previous["reply"], "Beerius", is_bot=True
-                                    )
+                            )
+                        ]
                         with bind_execution(conn) as scope:
-                            if row["agent"] == "beerdev":
-                                from . import beerdev  # beerdev reads status from this module
-
-                                reply = await beerdev.process(message, agent)
-                            else:
-                                reply = await agent.process_message(message)
+                            reply = await agent.answer(message, history, row["agent"])
                             if scope.failed:
                                 raise RuntimeError("Tool execution failed")
                             trace = json.dumps(scope.tools)
                         await conn.execute(
                             """UPDATE message_inbox SET state='completed', completed_at=NOW(),
-                               attempts=attempts+1, reply=$2,tool_results=$3::jsonb,error_code=NULL
-                               WHERE id=$1""",
+                               reply=$2,tool_results=$3::jsonb,error_code=NULL WHERE id=$1""",
                             row["id"],
                             reply,
                             trace,
@@ -251,28 +334,23 @@ async def execute_one(agent) -> bool:
                                 group_id,
                                 reply,
                             )
-            except BaseException as exc:
-                agent._message_history[group_id] = history_before
-                agent._rate_limiters[group_id] = bucket_before
-                if not isinstance(exc, Exception):
-                    raise
-                code = type(exc).__name__
-                attempts = row["attempts"] + 1
+            except Exception as exc:
+                code, detail = type(exc).__name__, failure_detail(exc)
                 state = (
                     "failed"
                     if attempts >= MAX_EXECUTION_ATTEMPTS or isinstance(exc, PermissionError)
                     else "pending"
                 )
                 await conn.execute(
-                    """UPDATE message_inbox SET attempts=$2,state=$3,error_code=$4,
-                       available_at=NOW()+$5*INTERVAL '1 second',error_detail=$6 WHERE id=$1""",
+                    """UPDATE message_inbox SET state=$2,error_code=$3,
+                       available_at=NOW()+$4*INTERVAL '1 second',error_detail=$5 WHERE id=$1""",
                     row["id"],
-                    attempts,
                     state,
                     code,
-                    min(300, 5 * 2**attempts),
-                    failure_detail(exc),
+                    _backoff(attempts),
+                    detail,
                 )
+                record_error("execution", detail)
                 logger.error("Message execution %s: inbox=%s error=%s", state, row["id"], code)
                 finished = state == "failed"
                 if finished:
@@ -301,19 +379,24 @@ async def deliver_one(client) -> bool:
             """)
             if row is None:
                 return False
-            if settings.require_registered_groups and not await conn.fetchval(
+            unregistered = settings.require_registered_groups and not await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM groups WHERE group_id=$1)", row["group_id"]
-            ):
+            )
+            if unregistered:
                 await conn.execute(
-                    "UPDATE message_outbox SET state='failed',error_code='unregistered_group',updated_at=NOW() WHERE id=$1",
+                    """UPDATE message_outbox SET state='failed',error_code='unregistered_group',
+                       updated_at=NOW() WHERE id=$1""",
                     row["id"],
                 )
-                return True
-            await conn.execute(
-                """UPDATE message_outbox SET state='sending',attempts=attempts+1,
-                   updated_at=NOW() WHERE id=$1""",
-                row["id"],
-            )
+            else:
+                await conn.execute(
+                    """UPDATE message_outbox SET state='sending',attempts=attempts+1,
+                       updated_at=NOW() WHERE id=$1""",
+                    row["id"],
+                )
+        if unregistered:
+            UNDELIVERED.pop(row["id"], None)
+            return True
         # The committed sending marker makes a crash distinguishable from a
         # never-attempted send. Never automatically resend an uncertain outcome.
         try:
@@ -329,8 +412,11 @@ async def deliver_one(client) -> bool:
                     result = await client.deliver_message(row["body"], group_id=row["group_id"])
             state, code = result.state, result.code
             delay = max(result.retry_after, min(300, 5 * 2 ** (row["attempts"] + 1)))
+            if state != "sent":
+                record_error("delivery", f"GroupMe {code} ({state})")
         except Exception as exc:
             state, code, delay = "uncertain", type(exc).__name__, 0
+            record_error("delivery", failure_detail(exc))
         if state == "retry":
             state = "pending" if row["attempts"] + 1 < MAX_DELIVERY_ATTEMPTS else "failed"
         await conn.execute(
@@ -445,10 +531,7 @@ async def _worker(name, runtime, work, after_work=None, maintenance=None):
         except Exception as exc:
             failures += 1
             runtime.failed[name] = True
-            runtime.last_error[name] = {
-                "at": datetime.now(UTC).isoformat(),
-                "detail": failure_detail(exc),
-            }
+            record_error(name, failure_detail(exc))
             delay = min(60, 5 * 2 ** min(failures - 1, 4))
             logger.exception("Queue worker scan failed: worker=%s", name)
         await runtime.wait(name, delay)
@@ -464,4 +547,8 @@ async def execution_worker(agent, runtime):
 
 
 async def delivery_worker(client, runtime):
-    await _worker("delivery", runtime, lambda: deliver_one(client), maintenance=maintain_queue)
+    async def maintenance() -> bool:
+        runtime.watch_ops()  # Rides the hourly sweep: no wake of its own.
+        return await maintain_queue()
+
+    await _worker("delivery", runtime, lambda: deliver_one(client), maintenance=maintenance)

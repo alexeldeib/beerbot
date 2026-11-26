@@ -1,8 +1,12 @@
 """Tests for tool factory and individual tool functions."""
 
+from contextlib import nullcontext
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.beerbot.database import bind_execution
 from src.beerbot.tools import ToolContext, create_tools
 
 
@@ -95,7 +99,6 @@ class TestLogDrinks:
 
         result = await log_drinks(count=1, drink_type="beer")
 
-        assert ctx.tools_called is True
         assert result["results"][0]["status"] == "logged"
         assert result["results"][0]["user"] == "Alice"
         assert result["results"][0]["new_total"] == 5
@@ -160,6 +163,15 @@ class TestLogDrinks:
         with pytest.raises(ValueError, match="Cannot target user"):
             await log_drinks(count=1, drink_type="beer", target_user_ids=["hacker-id"])
 
+    @patch("src.beerbot.tools.beer_repo")
+    @patch("src.beerbot.tools.user_repo")
+    async def test_unknown_drink_type_is_an_error_not_a_beer(self, mock_user, mock_beer):
+        # Inside a message the audit wrapper hands this ValueError back to the model to fix.
+        log_drinks = _find_tool(create_tools(_make_ctx()), "log_drinks")
+        with pytest.raises(ValueError, match="use beer, wine, cocktail, or claw"):
+            await log_drinks(count=1, drink_type="whiskey")
+        mock_beer.create.assert_not_called()
+
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
     @patch("src.beerbot.tools.user_repo")
@@ -169,7 +181,7 @@ class TestLogDrinks:
         user_mock.id = 42
         user_mock.name = "Alice"
         mock_user.get_by_groupme_id = AsyncMock(return_value=user_mock)
-        mock_beer.remove_beers_by_type = AsyncMock(return_value=1)
+        mock_beer.remove_beers = AsyncMock(return_value=1)
         mock_beer.get_user_total_by_type = AsyncMock(return_value=4)
 
         ctx = _make_ctx(
@@ -240,6 +252,19 @@ class TestReply:
         assert ctx.reply_text is None
 
 
+@patch("src.beerbot.tools.debt_repo")
+async def test_any_tool_but_reply_marks_the_message_as_using_tools(mock_debt):
+    # Beerius always sends a reply that used tools; a bare reply spends the rate limit.
+    ctx = _make_ctx()
+    mock_debt.get_debt_leaderboard = AsyncMock(return_value=[])
+    with bind_execution(SimpleNamespace(transaction=nullcontext)):
+        tools = {tool.__name__: tool for tool in create_tools(ctx)}
+        await tools["reply"](message="hi")
+        assert not ctx.tools_called
+        await tools["get_debt_leaderboard"]()
+    assert ctx.tools_called
+
+
 class TestGetRecentDrinks:
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
@@ -258,7 +283,6 @@ class TestGetRecentDrinks:
         result = await recent()
         assert result["total"] == 25
         assert result["until"] == "now"
-        assert ctx.tools_called is True
 
     @pytest.mark.asyncio
     @patch("src.beerbot.tools.beer_repo")
@@ -291,6 +315,7 @@ class TestGetRecentDrinks:
         mock_user.get_or_create = AsyncMock(return_value=user_mock)
 
         user_stat = MagicMock()
+        user_stat.user_id = 1
         user_stat.name = "Alice"
         user_stat.total_beers = 7
         stats = MagicMock()
@@ -332,7 +357,7 @@ class TestRemoveDrinks:
     @patch("src.beerbot.tools.user_repo")
     async def test_removes_from_sender(self, mock_user, mock_beer):
         mock_user.get_by_groupme_id = AsyncMock(return_value=MagicMock(id=1, name="Alice"))
-        mock_beer.remove_beers_by_type = AsyncMock(return_value=3)
+        mock_beer.remove_beers = AsyncMock(return_value=3)
         mock_beer.get_user_total_by_type = AsyncMock(return_value=7)
 
         ctx = _make_ctx()
@@ -413,8 +438,8 @@ class TestGetMillionCountdown:
         mock_beer.get_group_total_by_type = AsyncMock(return_value=5000)
         mock_beer.get_rate_stats = AsyncMock(
             side_effect=[
-                (5000, 100, 7.0),  # 7-day stats
-                (5000, 400, 28.0),  # 30-day stats
+                (100, 7.0),  # 7-day stats
+                (400, 28.0),  # 30-day stats
             ]
         )
 

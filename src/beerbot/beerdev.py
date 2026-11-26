@@ -1,7 +1,7 @@
 """beerdev: Beerius's developer, a peer bot inside the same app.
 
-The router (`addressed`) gives beerdev every message that mentions it or replies in its thread, and
-Beerius never sees those. beerdev has its own prompt and only these tools:
+The router (`addressed`) gives beerdev every message that starts with "beerdev" or replies to one of
+its posts, and Beerius never sees those. beerdev has its own prompt and only these tools:
 - read the app's status, its request queue and deploys (GitHub), and allowlisted docs
 - file a request
 - steer one (owner only, by GroupMe sender id and the owner's own words)
@@ -17,22 +17,21 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import usage
-from .config import settings
+from . import delivery, usage
+from .config import EASTERN, settings
 from .database import get_pool
 from .dispatch import dispatch
-from .model_runtime import run_tools
 from .models import GroupMeMessage
 from .tools import audit
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
-MENTION = re.compile(r"\bbeerdev\b", re.IGNORECASE)
+# "beerdev" first, after nothing but "@", spaces, or punctuation.
+ADDRESSED = re.compile(r"\W*beerdev\b", re.IGNORECASE)
 # The files questions about the bot need; nothing else is readable.
 DOCS = (
     "README.md",
@@ -58,7 +57,8 @@ ACTION_WORDS = {
 FILLER = {"the", "and", "for", "that", "this", "with", "one", "bot", "pls", "please", "beerdev"}
 
 PROMPT = """You are beerdev, the developer behind Beerius, the drink-tracking bot in this GroupMe
-group. People talk to you by name; Beerius handles drinks.
+group. People reach you by starting a message with "beerdev" or by replying to your posts; Beerius
+gets everything else, drinks included.
 
 What you do:
 - Answer questions about the bot: how it works, what it costs, its health and recent errors,
@@ -93,40 +93,32 @@ def _plain(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
-def _reply_id(message: GroupMeMessage) -> str | None:
-    return next((a.reply_id for a in message.attachments if a.type == "reply" and a.reply_id), None)
-
-
 async def addressed(message: GroupMeMessage) -> bool:
-    """The router: beerdev's if it says "beerdev" or replies in beerdev's thread."""
-    if MENTION.search(message.text or ""):
+    """The router: beerdev's when the message opens by addressing it ("beerdev, what's queued?",
+    "@beerdev help") or replies to one of beerdev's own posts. Everything else is Beerius's, even
+    when it names beerdev ("+1 🍺 thanks beerdev")."""
+    if ADDRESSED.match(message.text or ""):
         return True
-    if not (reply_id := _reply_id(message)):
+    if not message.reply_id:
         return False
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # beerdev's posts are its never-processed context rows (delivery.accept_context), which
+        # outlast their payload's retention; a question someone asked beerdev was processed.
         return bool(
             await conn.fetchval(
-                """SELECT agent = 'beerdev' FROM message_inbox
-                   WHERE group_id = $1 AND message_id = $2""",
+                """SELECT agent = 'beerdev' AND state = 'completed' AND attempts = 0
+                   FROM message_inbox WHERE group_id = $1 AND message_id = $2""",
                 message.group_id,
-                reply_id,
+                message.reply_id,
             )
         )
 
 
 async def replied_text(message: GroupMeMessage) -> str:
     """Text of the message this one replies to, while the inbox still holds it (three days)."""
-    if not (reply_id := _reply_id(message)):
-        return ""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        text = await conn.fetchval(
-            "SELECT payload->>'text' FROM message_inbox WHERE group_id = $1 AND message_id = $2",
-            message.group_id,
-            reply_id,
-        )
-    return text or ""
+    replied, _ = await delivery.reply_target(message)
+    return (replied and replied.text) or ""
 
 
 def _words(text: str) -> set[str]:
@@ -176,13 +168,15 @@ def _github() -> httpx.AsyncClient:
     )
 
 
-async def _requests(client: httpx.AsyncClient) -> list[dict]:
-    """Every beerdev request (any state), so nothing is filed twice."""
+async def _requests(client: httpx.AsyncClient, held: bool = False) -> list[dict]:
+    """Every beerdev request (any state), so nothing is filed twice. With `held`, also what is
+    open and waiting on the owner (label inbox): held changes and the owner's items."""
     found: dict[int, dict] = {}
-    for label in QUEUE_LABELS:
+    queries = [(label, "all") for label in QUEUE_LABELS] + ([("inbox", "open")] if held else [])
+    for label, state in queries:
         response = await client.get(
             f"/repos/{settings.github_repository}/issues",
-            params={"labels": label, "state": "all", "per_page": 100},
+            params={"labels": label, "state": state, "per_page": 100},
         )
         for issue in response.raise_for_status().json():
             found[issue["number"]] = issue
@@ -240,9 +234,7 @@ def create_tools(ctx: Context) -> list:
         """The bot's live health: recent failed messages (error type and code location, never
         message text), the message queue, failures since the last restart, model spend this month
         against the budget, and the running version."""
-        from .delivery import TERMINAL_FAILURES, queue_status  # delivery routes messages here
-
-        status = await queue_status()
+        status = await delivery.queue_status()
         pool = await get_pool()
         async with pool.acquire() as conn:
             spend = await usage.report(conn)
@@ -254,17 +246,17 @@ def create_tools(ctx: Context) -> list:
                 "oldest_pending_seconds": status["oldest_pending_seconds"],
                 "recent_failures": status["failed_executions"][:10],
                 "deliveries_needing_attention": status["deliveries_needing_attention"][:10],
-                "failures_since_restart": dict(TERMINAL_FAILURES),
+                "failures_since_restart": dict(delivery.TERMINAL_FAILURES),
                 "spend": spend,
             }
         )
 
     async def request_queue() -> dict:
-        """beerdev's requests on GitHub, newest first: what's queued, waiting on the owner,
-        failed, shipped, or declined."""
+        """beerdev's requests on GitHub, newest first: what's queued, waiting on the owner
+        (held changes and the owner's own items too), failed, shipped, or declined."""
         try:
             async with _github() as client:
-                issues = await _requests(client)
+                issues = await _requests(client, held=True)
         except httpx.HTTPError as exc:
             raise ValueError(f"GitHub didn't answer ({type(exc).__name__}).") from exc
         rows = [
@@ -279,7 +271,8 @@ def create_tools(ctx: Context) -> list:
         ]
         legend = (
             "Labels: beerdev = queued to build (incidents first, then oldest first); inbox = "
-            "waiting on the owner; beerdev-failed = its build failed; proposal = the weekly "
+            "waiting on the owner, including held changes and ops' tickets for a person; "
+            "beerdev-failed = its build failed; proposal = the weekly "
             "lead's idea. Closed as completed = shipped; as not_planned = declined or vetoed."
         )
         return {"legend": legend, "requests": rows}
@@ -410,12 +403,12 @@ async def process(message: GroupMeMessage, beerius) -> str | None:
     ctx = Context(
         group_id=message.group_id,
         message_id=message.id,
-        is_owner=bool(settings.owner_user_id) and message.user_id == settings.owner_user_id,
+        is_owner=settings.is_owner(message.user_id),
         text=message.text or "",
         replied_text=await replied_text(message),
     )
     tools = audit(create_tools(ctx))
-    now = datetime.now(ZoneInfo("America/New_York"))
+    now = datetime.now(EASTERN)
     lines = [
         PROMPT,
         "=== CONTEXT ===",
@@ -424,13 +417,5 @@ async def process(message: GroupMeMessage, beerius) -> str | None:
     ]
     if ctx.replied_text:
         lines.append(f"Replying to: {ctx.replied_text[:300]}")
-    session = beerius._session("\n".join(lines), [ctx.text or "(no text)"], tools, "beerdev")
-    max_calls = settings.agent_max_executed_tools
-    await run_tools(
-        session,
-        tools,
-        max_rounds=settings.agent_max_tool_calls,
-        max_calls=max_calls if isinstance(max_calls, int) else 20,
-        terminal_tool="reply",
-    )
-    return ctx.reply_text
+    text = await beerius.run("\n".join(lines), [ctx.text or "(no text)"], tools, "beerdev")
+    return ctx.reply_text or text.strip() or None  # Answered in plain text: still an answer.

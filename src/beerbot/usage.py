@@ -1,9 +1,9 @@
 """Model token usage and estimated spend.
 
 Every model response is counted in memory, then written to `model_usage` only while the database
-is already awake: after each message and on the hourly sweep (docs/idle-compute.md). GitHub jobs
-report their own calls through POST /admin/usage. Costs use list prices: update PRICES when they
-change. Claude Code runs on the owner's subscription and is reported in the Actions logs instead.
+is already awake: after each message and on the hourly sweep (docs/idle-compute.md). Costs use
+list prices: update PRICES when they change. Claude Code runs on the owner's subscription and is
+reported in the Actions logs instead.
 """
 
 import logging
@@ -46,8 +46,8 @@ _pending: dict[tuple[date, str, str], list[int]] = {}
 SINCE_BOOT: dict[str, list[int]] = {}
 
 
-def add(source: str, model: str, counts: list[int], day: date | None = None) -> None:
-    key = (day or datetime.now(UTC).date(), source, model)
+def add(source: str, model: str, counts: list[int]) -> None:
+    key = (datetime.now(UTC).date(), source, model)
     for totals in (_pending.setdefault(key, [0] * 4), SINCE_BOOT.setdefault(model, [0] * 4)):
         for i, n in enumerate(counts):
             totals[i] += n

@@ -59,8 +59,12 @@ def github(monkeypatch, issues: list[dict], calls: list) -> None:
         calls.append((request.method, request.url.path, json.loads(request.content or "null")))
         path = request.url.path
         if request.method == "GET" and path.endswith("/issues"):
-            label = request.url.params["labels"]
-            found = [i for i in issues if label in {lb["name"] for lb in i["labels"]}]
+            label, state = request.url.params["labels"], request.url.params.get("state", "open")
+            found = [
+                i
+                for i in issues
+                if label in {lb["name"] for lb in i["labels"]} and state in ("all", i["state"])
+            ]
             return httpx.Response(200, json=found)
         if request.method == "GET" and "/issues/" in path:
             number = int(path.rsplit("/", 1)[-1])
@@ -79,12 +83,23 @@ def github(monkeypatch, issues: list[dict], calls: list) -> None:
     )
 
 
-async def test_router_takes_mentions_and_replies_in_beerdevs_thread(pg):
+async def test_router_takes_messages_opening_with_beerdev_and_replies_to_its_posts(pg, monkeypatch):
     await setup(pg)
-    assert await beerdev.addressed(msg("beerdev what's our spend?"))
-    assert await beerdev.addressed(msg("hey BeerDev, ship it"))
-    for text in ("beerdevelopment is hard", "beer dev", "+1 beer"):
-        assert not await beerdev.addressed(msg(text))
+    for text in (
+        "beerdev what's our spend?",
+        "Beerdev, what's queued?",
+        "@beerdev help",
+        " @BeerDev: hi",
+    ):
+        assert await beerdev.addressed(msg(text)), text
+    for text in (
+        "+1 🍺 thanks beerdev",  # Names beerdev, but it's a drink for Beerius.
+        "hey beerdev, ship it",
+        "beerdevelopment is hard",
+        "beer dev",
+        "+1 beer",
+    ):
+        assert not await beerdev.addressed(msg(text)), text
     line = GroupMeMessage(
         id="dev-1",
         group_id="g1",
@@ -95,11 +110,36 @@ async def test_router_takes_mentions_and_replies_in_beerdevs_thread(pg):
         text=LINKED,
         created_at=0,
     )
-    await delivery.accept_context(line)
+    await delivery.accept_context(line, "beerdev")
     await delivery.accept_message(msg("+1 beer", id="b-1"))
+    await delivery.accept_message(msg("beerdev any errors?", id="q-1", user="kim"), "beerdev")
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", AsyncMock(return_value=None))
+    monkeypatch.setattr(beerdev, "process", AsyncMock(return_value="None lately."))
+    assert await delivery.execute_one(agent) and await delivery.execute_one(agent)
     assert await beerdev.addressed(msg("veto", id="m2", reply_to="dev-1"))
     assert not await beerdev.addressed(msg("lol", id="m3", reply_to="b-1"))  # Beerius's thread
+    assert not await beerdev.addressed(msg("same", id="m4", reply_to="q-1"))  # Kim's question
+    await pg.execute("UPDATE message_inbox SET payload=NULL")  # Retention keeps the routing.
+    assert await beerdev.addressed(msg("veto", id="m5", reply_to="dev-1"))
+    assert await beerdev.replied_text(msg("veto", id="m2", reply_to="dev-1")) == ""
+
+
+async def test_replied_text_reads_the_post_replied_to(pg):
+    await setup(pg)
+    line = GroupMeMessage(
+        id="dev-1",
+        group_id="g1",
+        user_id="b",
+        sender_id="b",
+        sender_type="bot",
+        name="beerdev",
+        text=LINKED,
+        created_at=0,
+    )
+    await delivery.accept_context(line, "beerdev")
     assert await beerdev.replied_text(msg("veto", id="m2", reply_to="dev-1")) == LINKED
+    assert await beerdev.replied_text(msg("veto", id="m3")) == ""
 
 
 def test_named_and_filed_find_the_right_request():
@@ -166,6 +206,44 @@ async def test_file_request_files_once_and_starts_only_buildable_work(monkeypatc
     assert (await tools["file_request"]("feature", "Gym", "Again."))["status"] == "already filed"
 
 
+async def test_request_queue_shows_work_waiting_on_the_owner(monkeypatch):
+    def issue(number: int, state: str, *labels: str) -> dict:
+        names = [{"name": name} for name in labels]
+        return {"number": number, "title": f"#{number}", "state": state, "labels": names}
+
+    held = [
+        issue(51, "open", "inbox"),  # A change the reviewer held, waiting on its open PR.
+        issue(50, "open", "ops", "inbox"),  # ops' ticket for a person.
+        issue(49, "closed", "ops", "inbox"),  # Done: not waiting on anyone.
+    ]
+    github(monkeypatch, ISSUES + held, [])
+    _, tools = tools_for()
+    rows = (await tools["request_queue"]())["requests"]
+    assert [row["url"].rsplit("/", 1)[1] for row in rows] == ["51", "50", "31", "19"]
+    assert "inbox" in rows[0]["labels"]
+    # Filing and steering still see only beerdev's own requests.
+    async with beerdev._github() as client:
+        assert [i["number"] for i in await beerdev._requests(client)] == [31, 19]
+
+
+async def test_an_answer_in_plain_text_is_still_sent():
+    # beerdev must always answer; a model that skips the reply tool used to be dropped.
+    from google import genai
+    from google.genai import types
+
+    part = types.Part(text="About $0.42 so far this month.")
+    answer = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(content=types.Content(role="model", parts=[part]), finish_reason="STOP")
+        ]
+    )
+    agent = BeerAgent()
+    agent.client = genai.Client(api_key="synthetic")
+    agent.client.aio.models.generate_content = AsyncMock(return_value=answer)
+    reply = await beerdev.process(msg("beerdev what's our spend?"), agent)
+    assert reply == "About $0.42 so far this month."
+
+
 async def test_app_status_is_curated_and_json_safe(pg):
     await setup(pg)
     await delivery.accept_message(msg("a private message", id="f1"))
@@ -194,11 +272,13 @@ async def test_beerdev_answers_post_as_its_bot_in_the_thread(pg, monkeypatch):
         "bot_id": "beerdev-bot",
         "reply_to": "q1",
     }
-    # Beerius's history never claims beerdev's answer as its own.
+    # Beerius's history never claims beerdev's answer as its own: it shows the question only
+    # until beerdev's own post comes back as beerdev's.
     monkeypatch.setattr(agent, "process_message", AsyncMock(return_value=None))
     await delivery.accept_message(msg("+1 beer", id="b1"))
     assert await delivery.execute_one(agent)
-    assert all(entry.user_name != "Beerius" for entry in agent._get_history("g1"))
+    history = agent.process_message.await_args.args[1]
+    assert [(m.name, m.text) for m in history] == [("Pal", "beerdev what's our spend?")]
 
 
 def test_the_image_ships_every_doc_beerdev_can_read():

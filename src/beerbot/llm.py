@@ -31,15 +31,10 @@ class ModelProfile:
 
 def model_profile(settings: Settings) -> ModelProfile:
     """Build the configured model profile without exposing credentials."""
-
-    provider = settings.llm_provider if isinstance(settings.llm_provider, str) else "google"
-    model = settings.llm_model if isinstance(settings.llm_model, str) else "gemini-3.6-flash"
-    base_url = settings.llm_base_url if isinstance(settings.llm_base_url, str) else None
-
     return ModelProfile(
-        provider=provider.lower(),
-        model=model,
-        base_url=base_url,
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
         capabilities=ModelCapabilities(
             images=settings.llm_supports_images,
             video=settings.llm_supports_video,

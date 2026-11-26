@@ -1,4 +1,4 @@
-"""Tool factory for Gemini function calling.
+"""Beerius's tools for the explicit model tool loop (model_runtime.run_tools).
 
 Each tool is an async closure that captures a ToolContext, binding group_id,
 message_id, and sender info so the AI never sees security-sensitive identifiers.
@@ -10,15 +10,13 @@ from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
-from zoneinfo import ZoneInfo
 
+from .config import EASTERN
 from .models import DrinkType
 from .database import execution_scope
 from .repositories import beer_repo, debt_repo, user_repo, zyn_repo
 
 logger = logging.getLogger(__name__)
-
-EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -33,6 +31,8 @@ class ToolContext:
     mentioned_users: list[tuple[str, str]]  # (user_id, name)
     replied_to_user: tuple[str, str] | None = None  # (user_id, name) from reply context
     is_owner: bool = False  # From the sender's GroupMe id, never from the model.
+    # When GroupMe received the message: a backlog still counts on the day it was sent.
+    sent_at: datetime | None = None
     tools_called: bool = field(default=False, init=False)
     reply_text: str | None = field(default=None, init=False)
 
@@ -77,11 +77,18 @@ async def _get_or_create_user(ctx: ToolContext, user_id: str):
     )
 
 
-def create_tools(ctx: ToolContext) -> list[Callable]:
-    """Create tool closures bound to the given request context.
+def _summary(stats) -> dict:
+    """A group's totals, as the stats tools report them."""
+    return {
+        "total": stats.total_beers,
+        "drinkers": stats.unique_drinkers,
+        "type_breakdown": stats.drink_type_counts,
+        "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
+    }
 
-    Returns a list of async callables suitable for Gemini AFC.
-    """
+
+def create_tools(ctx: ToolContext) -> list[Callable]:
+    """Create tool closures bound to the given request context, audited (see `audit`)."""
 
     # === WRITE TOOLS ===
 
@@ -96,7 +103,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             target_user_ids: User IDs to log for. Defaults to the message sender.
                 When specified, logs ONLY for those users (not the sender unless included).
         """
-        ctx.tools_called = True
         count = max(1, min(100 if ctx.is_owner else 20, count))
         dt = DrinkType.from_string(drink_type)
 
@@ -124,6 +130,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
                 message_id=ctx.message_id,
                 split_the_g=0,
                 drink_type=dt,
+                logged_at=ctx.sent_at,
             )
             if beer is None:
                 results.append({"user": user.name, "status": "duplicate"})
@@ -159,7 +166,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             drink_type: Type of drink: beer, wine, cocktail, or claw.
             target_user_id: User to remove from. Defaults to the message sender.
         """
-        ctx.tools_called = True
         count = max(1, min(50, count))
         dt = DrinkType.from_string(drink_type)
         uid = _validate_user_id(ctx, target_user_id)
@@ -168,7 +174,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         if not user:
             return {"error": "User not found", "removed": 0}
 
-        removed = await beer_repo.remove_beers_by_type(user.id, ctx.group_id, count, dt)
+        removed = await beer_repo.remove_beers(user.id, ctx.group_id, count, dt)
         new_total = await beer_repo.get_user_total_by_type(user.id, ctx.group_id, dt)
 
         return {
@@ -184,7 +190,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             target_user_id: User to undo for. Defaults to the message sender.
         """
-        ctx.tools_called = True
         uid = _validate_user_id(ctx, target_user_id)
 
         user = await user_repo.get_by_groupme_id(uid)
@@ -206,7 +211,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             target_user_id: User who split the G. Defaults to the message sender.
         """
-        ctx.tools_called = True
         uid = _validate_user_id(ctx, target_user_id)
         user = await _get_or_create_user(ctx, uid)
 
@@ -217,6 +221,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             message_id=ctx.message_id,
             split_the_g=1,
             drink_type=DrinkType.BEER,
+            logged_at=ctx.sent_at,
         )
         if beer is None:
             return {"user": user.name, "status": "duplicate"}
@@ -238,7 +243,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             count: Number of splits to remove, between 1 and 20.
             target_user_id: User to remove from. Defaults to the message sender.
         """
-        ctx.tools_called = True
         count = max(1, min(20, count))
         uid = _validate_user_id(ctx, target_user_id)
 
@@ -258,7 +262,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             target_user_id: The mentioned user who owes beers. Must be a mentioned user.
             amount: Number of beers owed, between 1 and 100.
         """
-        ctx.tools_called = True
         amount = max(1, min(100, amount))
 
         # Debt can only be added to mentioned users, not self
@@ -279,7 +282,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             target_user_id: User to forgive. Defaults to the message sender.
             amount: Number of beers to forgive, between 1 and 100.
         """
-        ctx.tools_called = True
         amount = max(1, min(100, amount))
         uid = _validate_user_id(ctx, target_user_id)
 
@@ -307,11 +309,10 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             count: Number of pouches, between 1 and 20.
             target_user_id: User who used them. Defaults to the message sender.
         """
-        ctx.tools_called = True
         count = max(1, min(20, count))
         uid = _validate_user_id(ctx, target_user_id)
         user = await _get_or_create_user(ctx, uid)
-        logged = await zyn_repo.log(user.id, ctx.group_id, ctx.message_id, count)
+        logged = await zyn_repo.log(user.id, ctx.group_id, ctx.message_id, count, ctx.sent_at)
         if not logged:
             return {"user": user.name, "error": "Zyn already logged for this message"}
         return {"user": user.name, "logged": count}
@@ -323,7 +324,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             count: Number of pouches to remove, between 1 and 20.
             target_user_id: User to correct. Defaults to the message sender.
         """
-        ctx.tools_called = True
         count = max(1, min(20, count))
         uid = _validate_user_id(ctx, target_user_id)
         user = await user_repo.get_by_groupme_id(uid)
@@ -336,7 +336,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
 
     async def get_zyn_stats() -> dict:
         """Get Zyn pouch totals per user (all time, today, this week) for this group."""
-        ctx.tools_called = True
         return {"entries": await zyn_repo.stats(ctx.group_id)}
 
     async def get_leaderboard(drink_type: str | None = None, limit: int = 10) -> dict:
@@ -346,7 +345,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
             limit: Number of users to show, between 1 and 50. Default 10.
         """
-        ctx.tools_called = True
         limit = max(1, min(50, limit))
         dt = DrinkType.from_string(drink_type) if drink_type else None
 
@@ -365,7 +363,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
         """
-        ctx.tools_called = True
         dt = DrinkType.from_string(drink_type) if drink_type else None
         now = datetime.now(EASTERN)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -374,10 +371,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         return {
             "period": "today",
             "filter": dt.value if dt else "all",
-            "total": stats.total_beers,
-            "drinkers": stats.unique_drinkers,
-            "type_breakdown": stats.drink_type_counts,
-            "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
+            **_summary(stats),
         }
 
     async def get_week_stats(drink_type: str | None = None) -> dict:
@@ -386,7 +380,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
         """
-        ctx.tools_called = True
         dt = DrinkType.from_string(drink_type) if drink_type else None
         now = datetime.now(EASTERN)
         start = now - timedelta(days=now.weekday())
@@ -396,10 +389,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         return {
             "period": "this_week",
             "filter": dt.value if dt else "all",
-            "total": stats.total_beers,
-            "drinkers": stats.unique_drinkers,
-            "type_breakdown": stats.drink_type_counts,
-            "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
+            **_summary(stats),
         }
 
     async def get_recent_drinks(
@@ -422,7 +412,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
             target_user_id: Specific user to query, or null for the whole group.
         """
-        ctx.tools_called = True
         dt = DrinkType.from_string(drink_type) if drink_type else None
         now = datetime.now(EASTERN)
 
@@ -450,7 +439,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         if target_user_id:
             uid = _validate_user_id(ctx, target_user_id)
             user = await _get_or_create_user(ctx, uid)
-            user_stat = next((u for u in stats.user_stats if u.name == user.name), None)
+            user_stat = next((u for u in stats.user_stats if u.user_id == user.id), None)
             return {
                 "since": since_dt.isoformat(),
                 "until": until_dt.isoformat() if until_dt else "now",
@@ -463,10 +452,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
             "since": since_dt.isoformat(),
             "until": until_dt.isoformat() if until_dt else "now",
             "filter": dt.value if dt else "all",
-            "total": stats.total_beers,
-            "drinkers": stats.unique_drinkers,
-            "type_breakdown": stats.drink_type_counts,
-            "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
+            **_summary(stats),
         }
 
     async def get_user_stats(target_user_id: str | None = None) -> dict:
@@ -475,55 +461,26 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             target_user_id: User to get stats for. Defaults to the message sender.
         """
-        ctx.tools_called = True
         uid = _validate_user_id(ctx, target_user_id)
         user = await _get_or_create_user(ctx, uid)
 
-        stats = await beer_repo.get_user_stats_in_group(user.id, ctx.group_id)
-        by_type = await beer_repo.get_user_stats_by_type(user.id, ctx.group_id)
-
         now = datetime.now(EASTERN)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_of_week = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
+        start_of_week = start_of_day - timedelta(days=now.weekday())
+        summary = await beer_repo.get_user_summary(
+            user.id, ctx.group_id, start_of_day, start_of_week
         )
-
-        today_stats = await beer_repo.get_group_stats(ctx.group_id, since=start_of_day)
-        week_stats = await beer_repo.get_group_stats(ctx.group_id, since=start_of_week)
-
-        today_count = next(
-            (u.total_beers for u in today_stats.user_stats if u.name == user.name), 0
-        )
-        week_count = next((u.total_beers for u in week_stats.user_stats if u.name == user.name), 0)
-
-        breakdown = {dt.value: count for dt, count in by_type.items()}
-
-        return {
-            "user": user.name,
-            "total": stats.total_beers if stats else 0,
-            "today": today_count,
-            "this_week": week_count,
-            "breakdown": breakdown,
-            "last_drink_at": stats.last_beer_at.isoformat()
-            if stats and stats.last_beer_at
-            else None,
-        }
+        last = summary.pop("last_drink_at")
+        return {"user": user.name, **summary, "last_drink_at": last.isoformat() if last else None}
 
     async def get_group_stats() -> dict:
         """Get all-time stats for the entire group."""
-        ctx.tools_called = True
         stats = await beer_repo.get_group_stats(ctx.group_id)
 
-        return {
-            "total": stats.total_beers,
-            "drinkers": stats.unique_drinkers,
-            "type_breakdown": stats.drink_type_counts,
-            "top_users": [{"name": u.name, "count": u.total_beers} for u in stats.user_stats[:10]],
-        }
+        return _summary(stats)
 
     async def get_debt_leaderboard() -> dict:
         """Get the debt leaderboard showing who owes the most beers."""
-        ctx.tools_called = True
         entries = await debt_repo.get_debt_leaderboard(ctx.group_id)
 
         return {
@@ -532,7 +489,6 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
 
     async def get_split_g_leaderboard() -> dict:
         """Get the Split the G leaderboard showing who has the most Guinness splits."""
-        ctx.tools_called = True
         stats = await beer_repo.get_split_g_stats(ctx.group_id)
 
         return {
@@ -546,15 +502,12 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         Args:
             drink_type: Filter by type (beer, wine, cocktail, claw), or null for all.
         """
-        ctx.tools_called = True
         dt = DrinkType.from_string(drink_type) if drink_type else None
         goal = 1_000_000
 
         total = await beer_repo.get_group_total_by_type(ctx.group_id, dt)
-        _, beers_7d, days_7d = await beer_repo.get_rate_stats(ctx.group_id, days=7, drink_type=dt)
-        _, beers_30d, days_30d = await beer_repo.get_rate_stats(
-            ctx.group_id, days=30, drink_type=dt
-        )
+        beers_7d, days_7d = await beer_repo.get_rate_stats(ctx.group_id, days=7, drink_type=dt)
+        beers_30d, days_30d = await beer_repo.get_rate_stats(ctx.group_id, days=30, drink_type=dt)
 
         remaining = goal - total
         result: dict = {
@@ -615,13 +568,14 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         # Meta tools
         reply,
     ]
-    return audit(tools)
+    return audit(tools, ctx)
 
 
-def audit(tools: list) -> list:
+def audit(tools: list, ctx: ToolContext | None = None) -> list:
     """Inside a message's execution, run each tool call in its own savepoint and record it in the
     message's trace. Bad model input (ValueError) undoes only that call and goes back to the model
-    as an error it can fix; anything else fails the message, which then retries."""
+    as an error it can fix; anything else fails the message, which then retries. Any call but
+    reply marks ctx.tools_called: Beerius always sends a reply that used tools."""
     scope = execution_scope.get()
     if scope is None:
         return tools
@@ -629,6 +583,8 @@ def audit(tools: list) -> list:
     def audited(tool):
         @wraps(tool)
         async def invoke(*args, **kwargs):
+            if ctx is not None and tool.__name__ != "reply":
+                ctx.tools_called = True
             try:
                 bound = inspect.signature(tool).bind(*args, **kwargs)
                 bound.apply_defaults()

@@ -3,9 +3,12 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from google.genai import types
-from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users
+from src.beerbot import agent as agent_module
+from src.beerbot.agent import BeerAgent, TokenBucket, extract_mentioned_users, fetch_media
+from src.beerbot.model_runtime import Media, ModelProtocolError
 from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 
 
@@ -99,509 +102,232 @@ class TestExtractMentionedUsers:
         assert result[0] == ("12345678", "User 5678")
 
 
-class TestBeerAgentInit:
-    @patch("src.beerbot.agent.settings")
-    def test_no_api_key(self, mock_settings):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        assert agent.client is None
+@pytest.fixture
+def model(monkeypatch):
+    """Beerius on a fake Google client, configured through the real settings. Returns the
+    client; its generate_content answers with an empty turn unless a test says otherwise."""
+    monkeypatch.setattr(agent_module.settings, "llm_provider", "google")
+    monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+    monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(agent_module.settings, "enable_image_analysis", False)
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(return_value=empty_response())
+    monkeypatch.setattr(agent_module.genai, "Client", lambda api_key: client)
+    return client
 
-    @patch("src.beerbot.agent.genai")
-    @patch("src.beerbot.agent.settings")
-    def test_with_api_key(self, mock_settings, mock_genai):
-        mock_settings.gemini_api_key = "test-key"
-        mock_genai.Client.return_value = MagicMock()
-        agent = BeerAgent()
-        assert agent.client is not None
+
+class TestBeerAgentInit:
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        assert BeerAgent().client is None
+
+    def test_with_api_key(self, model):
+        assert BeerAgent().client is model
 
 
 class TestBeerAgentProcessMessage:
-    @patch("src.beerbot.agent.settings")
-    async def test_returns_none_without_client(self, mock_settings):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message())
-        assert result is None
+    async def test_raises_without_client_so_the_message_retries(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        with pytest.raises(RuntimeError, match="Model client unavailable"):
+            await BeerAgent().process_message(_make_message(), [])
 
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_returns_reply_via_tool(self, mock_genai, mock_settings, mock_create_tools):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
-        # Simulate the reply tool setting ctx.reply_text during AFC
+    async def test_returns_reply_via_tool(self, model, monkeypatch):
+        # Simulate the reply tool setting ctx.reply_text during the tool loop
         def setup_tools(ctx):
             ctx.reply_text = "+1🍺 for Alice. 5🍺 total."
             ctx.tools_called = True
             return []
 
-        mock_create_tools.side_effect = setup_tools
-
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message())
+        monkeypatch.setattr(agent_module, "create_tools", setup_tools)
+        result = await BeerAgent().process_message(_make_message(), [])
         assert result == "+1🍺 for Alice. 5🍺 total."
 
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_suppresses_personality_when_rate_limited(
-        self, mock_genai, mock_settings, mock_create_tools
-    ):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
+    async def test_suppresses_personality_when_rate_limited(self, model, monkeypatch):
         # Model calls reply but no data tools
         def setup_tools(ctx):
             ctx.reply_text = "Nice weather we're having!"
             return []
 
-        mock_create_tools.side_effect = setup_tools
-
+        monkeypatch.setattr(agent_module, "create_tools", setup_tools)
         agent = BeerAgent()
-        # Drain the rate limiter
-        bucket = agent._get_bucket("group-1")
-        bucket.tokens = 0.0
+        agent._get_bucket("group-1").tokens = 0.0  # Drain the rate limiter
+        # Suppressed: no tools were called and the bucket is empty
+        assert await agent.process_message(_make_message(), []) is None
 
-        result = await agent.process_message(_make_message())
-        # Should be suppressed since no tools were called and bucket is empty
-        assert result is None
-
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_handles_gemini_error(self, mock_genai, mock_settings):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API error"))
-        mock_genai.Client.return_value = mock_client
-
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message())
-        assert result is None
-
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_records_conversation_history(self, mock_genai, mock_settings, mock_create_tools):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
-        def setup_tools(ctx):
-            ctx.reply_text = "Nice one!"
-            ctx.tools_called = True
-            return []
-
-        mock_create_tools.side_effect = setup_tools
-
-        agent = BeerAgent()
-        await agent.process_message(_make_message(text="cheers"))
-
-        history = agent._get_history("group-1")
-        # Should have the user message and the bot reply
-        assert len(history) == 2
-        assert history[0].user_name == "Alice"
-        assert history[0].is_bot is False
-        assert history[1].user_name == "Beerius"
-        assert history[1].is_bot is True
+    async def test_model_errors_raise_so_the_message_retries(self, model):
+        model.aio.models.generate_content = AsyncMock(side_effect=Exception("API error"))
+        with pytest.raises(Exception, match="API error"):
+            await BeerAgent().process_message(_make_message(), [])
 
 
-class TestChatMessageId:
-    def test_record_message_stores_message_id(self):
-        agent = BeerAgent()
-        agent.client = None  # Not needed for history
-        agent.record_message("group-1", "cheers", "Alice", message_id="msg-100")
-        history = agent._get_history("group-1")
-        assert history[0].message_id == "msg-100"
-
-    def test_record_message_default_message_id_none(self):
-        agent = BeerAgent()
-        agent.record_message("group-1", "nice", "Beerius", is_bot=True)
-        history = agent._get_history("group-1")
-        assert history[0].message_id is None
+def _bot_post(**overrides) -> GroupMeMessage:
+    return _make_message(**{"sender_type": "bot", "name": "beerius", "user_id": "bot"} | overrides)
 
 
 class TestReplyContext:
-    def test_reply_context_found_in_history(self):
+    def test_reply_context_names_the_sender_and_their_id(self):
+        alice = _make_message(id="msg-050", text="+1 cocktail", user_id="user-042")
+        msg = _make_message(text="that was a wine not a cocktail")
+        context = BeerAgent()._build_context_lines(msg, [alice], alice)
+        assert "Replying to [Alice] (id: user-042): +1 cocktail" in context
+
+    def test_reply_context_bot_message_has_no_target_id(self):
+        post = _bot_post(id="msg-060", text="Logged 1 beer!")
+        context = BeerAgent()._build_context_lines(_make_message(text="undo that"), [], post)
+        assert "Replying to [beerius]: Logged 1 beer!" in context
+
+    def test_reply_context_names_who_beerius_answered(self):
+        jerry = _make_message(id="msg-040", text="+1 cocktail", name="Jerry", user_id="jerry")
+        post = _bot_post(id="msg-041", text="+1🍸 for Jerry")
+        context = BeerAgent()._build_context_lines(_make_message(), [], post, jerry)
+        assert "Replying to [beerius]'s answer to [Jerry] (id: jerry): +1🍸 for Jerry" in context
+
+    def test_reply_context_names_media_without_text(self):
+        photo = _make_message(text=None, attachments=[GroupMeAttachment(type="image")])
+        video = _make_message(text=None, attachments=[GroupMeAttachment(type="video")])
         agent = BeerAgent()
-        agent.record_message(
-            "group-1", "+1 cocktail", "Alice", message_id="msg-050", user_id="user-042"
-        )
-
-        msg = _make_message(
-            text="that was a wine not a cocktail",
-            attachments=[
-                GroupMeAttachment(type="reply", reply_id="msg-050"),
-            ],
-        )
-        context = agent._build_context_lines(msg)
-        assert "Replying to [Alice]" in context
-        assert "+1 cocktail" in context
-
-    def test_reply_context_includes_user_id(self):
-        agent = BeerAgent()
-        agent.record_message(
-            "group-1", "+1 cocktail", "Alice", message_id="msg-050", user_id="user-042"
-        )
-
-        msg = _make_message(
-            text="that was a wine not a cocktail",
-            attachments=[
-                GroupMeAttachment(type="reply", reply_id="msg-050"),
-            ],
-        )
-        context = agent._build_context_lines(msg)
-        assert "(id: user-042)" in context
-
-    def test_reply_context_bot_message(self):
-        agent = BeerAgent()
-        agent.record_message(
-            "group-1", "Logged 1 beer!", "Beerius", is_bot=True, message_id="msg-060"
-        )
-
-        msg = _make_message(
-            text="undo that",
-            attachments=[
-                GroupMeAttachment(type="reply", reply_id="msg-060"),
-            ],
-        )
-        context = agent._build_context_lines(msg)
-        assert "Replying to [Beerius]: Logged 1 beer!" in context
-
-    def test_reply_context_graceful_when_not_found(self):
-        agent = BeerAgent()
-        agent.record_message("group-1", "hello", "Bob", message_id="msg-001", user_id="user-002")
-
-        msg = _make_message(
-            text="that was wrong",
-            attachments=[
-                GroupMeAttachment(type="reply", reply_id="msg-999"),
-            ],
-        )
-        context = agent._build_context_lines(msg)
-        assert "Replying to" not in context
+        assert "(id: user-001): (image)" in agent._build_context_lines(_make_message(), [], photo)
+        assert "(id: user-001): (video)" in agent._build_context_lines(_make_message(), [], video)
 
     def test_reply_context_no_reply_attachment(self):
-        agent = BeerAgent()
-        agent.record_message("group-1", "hello", "Bob", message_id="msg-001")
-
-        msg = _make_message(text="just a normal message")
-        context = agent._build_context_lines(msg)
+        context = BeerAgent()._build_context_lines(_make_message(text="hi"), [], None)
         assert "Replying to" not in context
 
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_process_message_passes_message_id_to_history(
-        self, mock_genai, mock_settings, mock_create_tools
-    ):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
+    def test_recent_messages_show_the_history_with_text(self):
+        history = [
+            _make_message(id="1", text="+1 beer", name="Bob"),
+            _make_message(id="2", text=None, attachments=[GroupMeAttachment(type="image")]),
+            _bot_post(id="3", text="+1🍺 for Bob"),
+        ]
+        context = BeerAgent()._build_context_lines(_make_message(text="nice"), history, None)
+        assert context.endswith("Recent messages:\n  [Bob]: +1 beer\n  [beerius]: +1🍺 for Bob")
 
-        mock_response = empty_response()
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
 
-        def setup_tools(ctx):
-            ctx.reply_text = "Got it!"
-            ctx.tools_called = True
+class TestRepliedToUser:
+    """Who a reply targets: the replied-to sender, or whoever Beerius's post answered; never a
+    bot. The inbox lookup itself is tested against Postgres in test_durable_delivery."""
+
+    async def replied_to(self, monkeypatch, replied, answered=None):
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(
+            agent_module, "reply_target", AsyncMock(return_value=(replied, answered))
+        )
+        captured = {}
+
+        def spy(ctx):
+            captured["ctx"] = ctx
             return []
 
-        mock_create_tools.side_effect = setup_tools
-
         agent = BeerAgent()
-        await agent.process_message(_make_message(id="msg-123", text="cheers"))
+        agent.client = MagicMock()
+        agent.client.aio.models.generate_content = AsyncMock(return_value=empty_response())
+        monkeypatch.setattr(agent_module, "create_tools", spy)
+        msg = _make_message(id="msg-099", text="that was a wine", name="Bob", user_id="user-bob")
+        await agent.process_message(msg, [])
+        return captured["ctx"].replied_to_user
 
-        history = agent._get_history("group-1")
-        # First entry is the user message with message_id and user_id
-        assert history[0].message_id == "msg-123"
-        assert history[0].user_id == "user-001"
-        # Bot reply has no message_id or user_id
-        assert history[1].message_id is None
-        assert history[1].user_id is None
+    async def test_reply_to_a_member_targets_them(self, monkeypatch):
+        alice = _make_message(id="msg-050", text="+1 cocktail", user_id="user-042")
+        assert await self.replied_to(monkeypatch, alice) == ("user-042", "Alice")
 
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_image_only_message_recorded_for_reply_lookup(self, mock_genai, mock_settings):
-        """Image-only messages (no text) are still recorded so reply lookup works."""
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
+    async def test_reply_to_a_photo_targets_its_sender(self, monkeypatch):
+        photo = _make_message(id="msg-070", text=None, name="Bryan", user_id="user-bryan")
+        assert await self.replied_to(monkeypatch, photo) == ("user-bryan", "Bryan")
 
-        mock_response = empty_response()
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
+    async def test_reply_to_beerius_targets_who_it_answered(self, monkeypatch):
+        jerry = _make_message(id="msg-040", text="+1 cocktail", name="Jerry", user_id="jerry")
+        post = _bot_post(id="msg-041", text="+1🍸 for Jerry")
+        assert await self.replied_to(monkeypatch, post, jerry) == ("jerry", "Jerry")
 
-        agent = BeerAgent()
-        # Bryan sends image-only message (text=None)
-        bryan_msg = _make_message(
-            id="msg-070",
-            text=None,
-            name="Bryan",
-            user_id="user-bryan",
-            sender_id="user-bryan",
-            attachments=[GroupMeAttachment(type="image", url="https://example.com/beer.jpg")],
+    async def test_reply_to_a_bot_or_an_unknown_message_targets_nobody(self, monkeypatch):
+        post = _bot_post(id="msg-060", text="+1🍺 for Bob")
+        assert await self.replied_to(monkeypatch, post) is None
+        assert await self.replied_to(monkeypatch, None) is None
+
+
+def media_server(monkeypatch, handler):
+    """Serve attachment fetches from `handler` instead of the network."""
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        agent_module.httpx,
+        "AsyncClient",
+        lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+    )
+
+
+async def chunks(count: int, size: int = 4, sent: list | None = None):
+    for _ in range(count):
+        if sent is not None:
+            sent.append(size)
+        yield b"x" * size
+
+
+class TestFetchMedia:
+    async def test_fetches_with_its_content_type(self, monkeypatch):
+        media_server(
+            monkeypatch,
+            lambda r: httpx.Response(200, content=b"img", headers={"content-type": "image/png"}),
         )
-        await agent.process_message(bryan_msg)
+        assert await fetch_media("https://i.test/a", "image/jpeg") == Media(b"img", "image/png")
 
-        history = agent._get_history("group-1")
-        # Bryan's message should be recorded with "(image)" placeholder
-        bryan_entry = next(m for m in history if m.user_id == "user-bryan")
-        assert bryan_entry.message_id == "msg-070"
-        assert bryan_entry.text == "(image)"
-
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_reply_to_image_only_message_resolves_user(self, mock_genai, mock_settings):
-        """Replying to an image-only message should resolve the original sender."""
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
-        agent = BeerAgent()
-        # Bryan sends image-only message
-        bryan_msg = _make_message(
-            id="msg-070",
-            text=None,
-            name="Bryan",
-            user_id="user-bryan",
-            sender_id="user-bryan",
+    async def test_declared_size_over_the_cap_is_never_read(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(agent_module, "MAX_MEDIA_BYTES", 10)
+        media_server(
+            monkeypatch,
+            lambda r: httpx.Response(
+                200, headers={"content-length": "11"}, content=chunks(3, sent=sent)
+            ),
         )
-        await agent.process_message(bryan_msg)
+        assert await fetch_media("https://v.test/huge.mp4", "video/mp4") is None
+        assert sent == []
 
-        # Ace replies to Bryan's image
-        captured_ctx = {}
-        original_create_tools = __import__(
-            "src.beerbot.tools", fromlist=["create_tools"]
-        ).create_tools
+    async def test_streamed_size_over_the_cap_stops_reading(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(agent_module, "MAX_MEDIA_BYTES", 10)
+        media_server(monkeypatch, lambda r: httpx.Response(200, content=chunks(100, sent=sent)))
+        assert await fetch_media("https://v.test/huge.mp4", "video/mp4") is None
+        assert sum(sent) <= 12  # Stopped at the cap instead of buffering 400 bytes.
 
-        def spy_create_tools(ctx):
-            captured_ctx["ctx"] = ctx
-            return original_create_tools(ctx)
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_transient_failures_raise_so_the_message_retries(self, monkeypatch, status):
+        media_server(monkeypatch, lambda r: httpx.Response(status))
+        with pytest.raises(httpx.HTTPStatusError):
+            await fetch_media("https://i.test/a", "image/jpeg")
 
-        with patch("src.beerbot.agent.create_tools", side_effect=spy_create_tools):
-            ace_msg = _make_message(
-                id="msg-071",
-                text="that was a wine not a cocktail",
-                name="Ace",
-                user_id="user-ace",
-                sender_id="user-ace",
-                attachments=[GroupMeAttachment(type="reply", reply_id="msg-070")],
-            )
-            await agent.process_message(ace_msg)
+    async def test_timeouts_raise(self, monkeypatch):
+        def slow(request):
+            raise httpx.ReadTimeout("slow", request=request)
 
-        ctx = captured_ctx["ctx"]
-        assert ctx.replied_to_user == ("user-bryan", "Bryan")
+        media_server(monkeypatch, slow)
+        with pytest.raises(httpx.TimeoutException):
+            await fetch_media("https://i.test/a", "image/jpeg")
 
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_process_message_sets_replied_to_user_in_ctx(self, mock_genai, mock_settings):
-        """Bob replies to Alice's message — ToolContext.replied_to_user should be Alice."""
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
-        agent = BeerAgent()
-        # Alice sends a message first
-        alice_msg = _make_message(
-            id="msg-050",
-            text="+1 cocktail",
-            name="Alice",
-            user_id="user-042",
-            sender_id="user-042",
-        )
-        await agent.process_message(alice_msg)
-
-        # Capture the ToolContext from Bob's reply
-        captured_ctx = {}
-        original_create_tools = __import__(
-            "src.beerbot.tools", fromlist=["create_tools"]
-        ).create_tools
-
-        def spy_create_tools(ctx):
-            captured_ctx["ctx"] = ctx
-            return original_create_tools(ctx)
-
-        with patch("src.beerbot.agent.create_tools", side_effect=spy_create_tools):
-            bob_msg = _make_message(
-                id="msg-051",
-                text="that was a wine not a cocktail",
-                name="Bob",
-                user_id="user-099",
-                sender_id="user-099",
-                attachments=[GroupMeAttachment(type="reply", reply_id="msg-050")],
-            )
-            await agent.process_message(bob_msg)
-
-        ctx = captured_ctx["ctx"]
-        assert ctx.replied_to_user == ("user-042", "Alice")
-
-
-class TestBeerAgentImageFetching:
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_fetches_image(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-image-data"
-        mock_resp.headers = {"content-type": "image/jpeg"}
-        mock_resp.raise_for_status = MagicMock()
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_image("https://example.com/beer.jpg")
-        assert part is not None
-
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_returns_none_on_error(self, mock_http_cls):
-        import httpx
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(side_effect=httpx.RequestError("timeout"))
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_image("https://example.com/beer.jpg")
-        assert part is None
-
-
-class TestBeerAgentVideoFetching:
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_fetches_video(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-video-data"
-        mock_resp.headers = {"content-type": "video/mp4"}
-        mock_resp.raise_for_status = MagicMock()
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/kegstand.mp4")
-        assert part is not None
-
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_returns_none_on_error(self, mock_http_cls):
-        import httpx
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(side_effect=httpx.RequestError("timeout"))
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/kegstand.mp4")
-        assert part is None
-
-    @patch("src.beerbot.agent.httpx.AsyncClient")
-    async def test_rejects_oversized_video(self, mock_http_cls):
-        mock_resp = MagicMock()
-        mock_resp.content = b"x" * (101 * 1024 * 1024)  # 101 MB
-        mock_resp.headers = {"content-type": "video/mp4"}
-        mock_resp.raise_for_status = MagicMock()
-
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
-        mock_http_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        agent = BeerAgent()
-        part = await agent._fetch_video("https://example.com/huge.mp4")
-        assert part is None
-
-
-class TestVideoOnlyMessageHistory:
-    @pytest.mark.asyncio
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_video_only_message_recorded_with_video_placeholder(
-        self, mock_genai, mock_settings
-    ):
-        """Video-only messages use '(video)' placeholder, not '(image)'."""
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=empty_response())
-        mock_genai.Client.return_value = mock_client
-
-        agent = BeerAgent()
-        video_msg = _make_message(
-            id="msg-vid-1",
-            text=None,
-            name="Aidan",
-            user_id="user-aidan",
-            sender_id="user-aidan",
-            attachments=[
-                GroupMeAttachment(
-                    type="video",
-                    url="https://example.com/kegstand.mp4",
-                    preview_url="https://example.com/thumb.jpg",
-                )
-            ],
-        )
-        await agent.process_message(video_msg)
-
-        history = agent._get_history("group-1")
-        aidan_entry = next(m for m in history if m.user_id == "user-aidan")
-        assert aidan_entry.text == "(video)"
+    async def test_permanent_failures_tell_the_model(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        media_server(monkeypatch, lambda r: httpx.Response(404))
+        attachments = [
+            GroupMeAttachment(type="image", url="https://i.test/gone"),
+            GroupMeAttachment(type="video", url="https://v.test/gone"),
+        ]
+        contents = await BeerAgent()._build_contents(_make_message(attachments=attachments))
+        assert contents == [
+            "+1 beer",
+            "[photo could not be loaded]",
+            "[video could not be loaded]",
+        ]
 
 
 class TestGenerateWeeklyRecap:
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_enriched_recap_includes_fun_facts(
-        self, mock_genai, mock_settings, mock_beer_repo
-    ):
-        mock_settings.gemini_api_key = "test-key"
-
-        mock_response = empty_response("Weekly recap text!")
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
+    async def test_enriched_recap_includes_fun_facts(self, mock_beer_repo, model):
+        model.aio.models.generate_content = AsyncMock(
+            return_value=empty_response("Weekly recap text!")
+        )
 
         # Mock basic stats
         week_stats = MagicMock()
@@ -634,13 +360,12 @@ class TestGenerateWeeklyRecap:
         )
         mock_beer_repo.get_milestones = AsyncMock(return_value=[("Bryan", 200)])
 
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
+        result = await BeerAgent().generate_weekly_recap("group-1")
 
         assert result == "Weekly recap text!"
 
         # Verify the prompt sent to Gemini includes fun facts
-        call_args = mock_client.aio.models.generate_content.call_args
+        call_args = model.aio.models.generate_content.call_args
         prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" in prompt
         assert "Saturday" in prompt
@@ -654,17 +379,9 @@ class TestGenerateWeeklyRecap:
         assert "ALL-TIME OVERALL RANKINGS" not in prompt
         mock_beer_repo.get_leaderboard_with_breakdown.assert_not_awaited()
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_recap_no_fun_facts_when_empty(self, mock_genai, mock_settings, mock_beer_repo):
-        mock_settings.gemini_api_key = "test-key"
-
-        mock_response = empty_response("Quiet week.")
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
+    async def test_recap_no_fun_facts_when_empty(self, mock_beer_repo, model):
+        model.aio.models.generate_content = AsyncMock(return_value=empty_response("Quiet week."))
 
         week_stats = MagicMock()
         week_stats.total_beers = 3
@@ -680,40 +397,43 @@ class TestGenerateWeeklyRecap:
         mock_beer_repo.get_type_champions = AsyncMock(return_value=[])
         mock_beer_repo.get_milestones = AsyncMock(return_value=[])
 
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
+        result = await BeerAgent().generate_weekly_recap("group-1")
 
         assert result == "Quiet week."
-        call_args = mock_client.aio.models.generate_content.call_args
+        call_args = model.aio.models.generate_content.call_args
         prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" not in prompt
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    async def test_recap_returns_none_without_client(self, mock_settings, mock_beer_repo):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
-        assert result is None
+    async def test_recap_returns_none_without_client(self, mock_beer_repo, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        assert await BeerAgent().generate_weekly_recap("group-1") is None
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_recap_returns_none_when_no_activity(
-        self, mock_genai, mock_settings, mock_beer_repo
+    async def test_recap_returns_none_when_no_activity(self, mock_beer_repo, model):
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=MagicMock(total_beers=0))
+        assert await BeerAgent().generate_weekly_recap("group-1") is None
+
+    @pytest.mark.parametrize(
+        "outcome,error",
+        [(RuntimeError("API error"), "API error"), (empty_response("  "), "empty recap")],
+    )
+    @patch("src.beerbot.agent.beer_repo")
+    async def test_model_failures_raise_so_the_scheduler_retries(
+        self, mock_beer_repo, model, outcome, error
     ):
-        mock_settings.gemini_api_key = "test-key"
-        mock_genai.Client.return_value = MagicMock()
-
-        week_stats = MagicMock()
-        week_stats.total_beers = 0
-        mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
-
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
-        assert result is None
+        # None means "nothing to recap" (a finished week); a failure must not look like that.
+        model.aio.models.generate_content = AsyncMock(side_effect=[outcome])
+        stats = MagicMock(total_beers=3, unique_drinkers=1, drink_type_counts={}, user_stats=[])
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=stats)
+        mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))
+        mock_beer_repo.get_period_total = AsyncMock(return_value=0)
+        mock_beer_repo.get_biggest_day = AsyncMock(return_value=None)
+        mock_beer_repo.get_type_champions = AsyncMock(return_value=[])
+        mock_beer_repo.get_milestones = AsyncMock(return_value=[])
+        with pytest.raises((RuntimeError, ModelProtocolError), match=error):
+            await BeerAgent().generate_weekly_recap("group-1")
 
 
 def test_only_the_owner_gets_the_override_line(monkeypatch):
@@ -733,4 +453,4 @@ def test_only_the_owner_gets_the_override_line(monkeypatch):
             text="+25 for @Jay",
             created_at=0,
         )
-        assert ("bot's owner" in agent._build_context_lines(message)) is expected
+        assert ("bot's owner" in agent._build_context_lines(message, [], None)) is expected

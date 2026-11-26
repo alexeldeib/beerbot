@@ -4,9 +4,9 @@ import asyncio
 import hmac
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from .agent import beer_agent
 from . import beerdev, usage
-from .config import settings
+from .config import EASTERN, settings
 from .database import close_pool, init_db, get_pool
 from .groupme_client import groupme_client
 from .llm import model_profile
@@ -53,8 +53,28 @@ def _redact_tokens(record: logging.LogRecord) -> bool:
 
 logging.getLogger("uvicorn.access").addFilter(_redact_tokens)
 
-EASTERN = ZoneInfo("America/New_York")
 _recap_revision = 0
+
+
+async def _send_recap(group_id: str, week_start: date) -> bool:
+    """One group's weekly recap. True once nothing is left to do this week: sent, possibly sent
+    (an uncertain send is never repeated), claimed by another machine, or a week without drinks.
+    False retries at the next tick."""
+    try:
+        if await recap_repo.has_sent(group_id, week_start):
+            return True
+        recap = await beer_agent.generate_weekly_recap(group_id)
+        if recap is None or not await recap_repo.try_claim(group_id, week_start):
+            return True
+        result = await groupme_client.deliver_message(recap, group_id=group_id)
+        if result.state in ("sent", "uncertain"):  # Uncertain may have posted: keep the claim.
+            logger.info("Weekly recap %s for group %s", result.state, group_id)
+            return True
+        await recap_repo.release_claim(group_id, week_start)  # Never posted: safe to retry.
+        logger.error("Weekly recap delivery failed for group %s: %s", group_id, result.code)
+    except Exception:
+        logger.exception("Weekly recap failed for group %s", group_id)
+    return False
 
 
 async def _recap_scheduler() -> None:
@@ -73,27 +93,13 @@ async def _recap_scheduler() -> None:
         if completed_week == week_start and completed_revision == _recap_revision:
             continue
         revision = _recap_revision
-        complete = True
         try:
             groups = await group_repo.list_all()
-            for group in groups:
-                if await recap_repo.has_sent(group.group_id, week_start):
-                    continue
-                recap = await beer_agent.generate_weekly_recap(group.group_id)
-                if not recap:
-                    complete = False
-                elif await recap_repo.try_claim(group.group_id, week_start):
-                    sent = await groupme_client.send_message(recap, group_id=group.group_id)
-                    if sent:
-                        logger.info("Sent weekly recap for group %s", group.group_id)
-                    else:
-                        complete = False
-                        await recap_repo.release_claim(group.group_id, week_start)
-                        logger.error("Weekly recap delivery failed for group %s", group.group_id)
-            if complete:
-                completed_week, completed_revision = week_start, revision
         except Exception:
             logger.exception("Weekly recap iteration failed; retrying at the next scheduled tick")
+            continue
+        if all([await _send_recap(group.group_id, week_start) for group in groups]):
+            completed_week, completed_revision = week_start, revision
 
 
 @asynccontextmanager
@@ -101,7 +107,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     runtime = QueueRuntime()
     app.state.queue_runtime = runtime
-    if settings.is_development is False and not settings.groupme_webhook_secret:
+    if not settings.is_development and not settings.groupme_webhook_secret:
         logger.warning("GROUPME_WEBHOOK_SECRET is not configured")
     tasks = [
         asyncio.create_task(_recap_scheduler()),
@@ -146,15 +152,24 @@ async def health_check():
     return {"status": "healthy"}
 
 
+NOT_READY = {"status": "not_ready"}
+
+
+def _workers_running(request: Request) -> bool:
+    """Both queue workers alive and a model configured. Memory only."""
+    workers = getattr(request.app.state, "message_workers", [])
+    alive = len(workers) == 2 and not any(task.done() for task in workers)
+    return alive and beer_agent.client is not None
+
+
 @app.get("/ready")
 async def readiness(request: Request):
     """Frequent Fly probe: no database I/O, so a sleeping Neon compute stays asleep."""
-    workers = getattr(request.app.state, "message_workers", [])
-    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
-        return JSONResponse({"status": "not_ready"}, status_code=503)
     runtime = getattr(request.app.state, "queue_runtime", None)
-    if runtime and (runtime.probe_failed or any(runtime.failed.values())):
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+    if not _workers_running(request) or (
+        runtime and (runtime.probe_failed or any(runtime.failed.values()))
+    ):
+        return JSONResponse(NOT_READY, status_code=503)
     return {"status": "ready"}
 
 
@@ -165,10 +180,9 @@ async def database_readiness(request: Request):
     Waking after the old blue-green fleet has exited closes the handoff race:
     a late committed receipt cannot be stranded after the new worker's boot scan.
     """
-    workers = getattr(request.app.state, "message_workers", [])
     runtime = getattr(request.app.state, "queue_runtime", None)
-    if len(workers) != 2 or any(task.done() for task in workers) or beer_agent.client is None:
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+    if not _workers_running(request):
+        return JSONResponse(NOT_READY, status_code=503)
     try:
         async with asyncio.timeout(10):
             pool = await get_pool()
@@ -178,7 +192,7 @@ async def database_readiness(request: Request):
         if runtime:
             runtime.probe_failed = True
             runtime.wake()
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+        return JSONResponse(NOT_READY, status_code=503)
     if runtime:
         runtime.probe_failed = False
         runtime.wake()
@@ -219,12 +233,16 @@ async def groupme_callback(request: Request):
         return JSONResponse({"error": "Invalid message format"}, status_code=400)
 
     if message.sender_type == "bot":
-        # beerdev's own messages become context for replies to them; no bot message is processed.
-        if message.name == "beerdev" and (
+        # Our bots' own posts, echoed right after we deliver them (the database is awake), become
+        # history and reply targets. No bot message is processed, and other bots' are ignored.
+        # ponytail: matched by GroupMe bot name; a group whose Beerius bot has another name keeps
+        # no history of its replies.
+        agent = message.name.lower()
+        if agent in ("beerius", "beerdev") and (
             not settings.require_registered_groups
             or await group_repo.get_by_group_id(message.group_id)
         ):
-            await accept_context(message)
+            await accept_context(message, agent)
         return {"status": "ignored", "reason": "bot message"}
 
     if settings.require_registered_groups:
@@ -233,7 +251,8 @@ async def groupme_callback(request: Request):
             logger.warning("Rejected callback for unregistered group %s", message.group_id)
             return JSONResponse({"error": "Unknown group"}, status_code=403)
 
-    # The router: beerdev answers messages that name it or reply in its thread; Beerius the rest.
+    # The router: beerdev answers messages that start with "beerdev" or reply to its posts;
+    # Beerius answers the rest.
     agent = "beerdev" if await beerdev.addressed(message) else "beerius"
     result = await accept_message(message, agent)
     if runtime := getattr(request.app.state, "queue_runtime", None):
@@ -250,8 +269,25 @@ class GroupRegistration(BaseModel):
     name: str | None = None
 
 
+def _group_json(group) -> dict:
+    """A registered group for the admin API, without its bot credential."""
+    return {
+        "group_id": group.group_id,
+        "workspace_id": group.workspace_id,
+        "credential_configured": bool(group.bot_id),
+        "name": group.name,
+        "created_at": group.created_at.isoformat(),
+    }
+
+
 class WorkspaceEnvironment(BaseModel):
     environment: Literal["production", "test"]
+
+
+def _bearer(authorization: str | None) -> str | None:
+    """The token of an "Authorization: Bearer <token>" header; None for any other shape."""
+    parts = (authorization or "").split()
+    return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else None
 
 
 async def verify_admin_token(authorization: str | None = Header(None)) -> None:
@@ -259,20 +295,20 @@ async def verify_admin_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=503, detail="Admin endpoints not configured")
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
+    if (token := _bearer(authorization)) is None:
         raise HTTPException(status_code=401, detail="Invalid authorization format")
-    if not hmac.compare_digest(parts[1], settings.admin_token):
+    if not hmac.compare_digest(token, settings.admin_token):
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
-async def verify_ops_token(authorization: str | None = Header(None)) -> None:
-    """ops (ops.yml) holds OPS_TOKEN: it may read status and usage, and wake the queue, a harmless
-    nudge for a worker waiting after an error. Every other admin route needs ADMIN_TOKEN."""
-    supplied = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ")
-    if settings.ops_token and hmac.compare_digest(supplied, settings.ops_token):
-        return
+async def verify_ops_token(authorization: str | None = Header(None)) -> bool:
+    """ops (ops.yml) holds OPS_TOKEN: it may only read worker and queue status and usage. Every
+    other admin route, waking the queue included, needs ADMIN_TOKEN. True when it was ops."""
+    token = _bearer(authorization)
+    if settings.ops_token and token and hmac.compare_digest(token, settings.ops_token):
+        return True
     await verify_admin_token(authorization)
+    return False
 
 
 @app.get("/admin/identities/parity", dependencies=[Depends(verify_admin_token)])
@@ -313,11 +349,14 @@ async def message_status():
     return await queue_status()
 
 
-@app.get("/admin/workers/status", dependencies=[Depends(verify_ops_token)])
-async def worker_status(request: Request):
-    """In-memory diagnostics do not wake Postgres."""
+@app.get("/admin/workers/status")
+async def worker_status(request: Request, from_ops: bool = Depends(verify_ops_token)):
+    """In-memory diagnostics do not wake Postgres. ops' own reads are its heartbeat: the status
+    shows how long ago the previous one was, and a silent ops gets restarted (watch_ops)."""
     runtime = getattr(request.app.state, "queue_runtime", None)
     status = runtime.snapshot() if runtime else {"status": "not_started"}
+    if runtime and from_ops:
+        runtime.ops_seen = time.time()
     return status | {"model_usage_since_boot": usage.since_boot()}
 
 
@@ -330,7 +369,7 @@ async def model_usage():
         return await usage.report(conn)
 
 
-@app.post("/admin/messages/wake", dependencies=[Depends(verify_ops_token)])
+@app.post("/admin/messages/wake", dependencies=[Depends(verify_admin_token)])
 async def wake_messages(request: Request):
     runtime = getattr(request.app.state, "queue_runtime", None)
     if runtime is None:
@@ -373,13 +412,7 @@ async def register_group(registration: GroupRegistration):
 
     return {
         "status": "ok",
-        "group": {
-            "group_id": group.group_id,
-            "workspace_id": group.workspace_id,
-            "credential_configured": bool(group.bot_id),
-            "name": group.name,
-            "created_at": group.created_at.isoformat(),
-        },
+        "group": _group_json(group),
     }
 
 
@@ -388,16 +421,7 @@ async def list_groups():
     groups = await group_repo.list_all()
     return {
         "status": "ok",
-        "groups": [
-            {
-                "group_id": g.group_id,
-                "workspace_id": g.workspace_id,
-                "credential_configured": bool(g.bot_id),
-                "name": g.name,
-                "created_at": g.created_at.isoformat(),
-            }
-            for g in groups
-        ],
+        "groups": [_group_json(g) for g in groups],
     }
 
 
@@ -410,30 +434,3 @@ async def delete_group(group_id: str):
     groupme_client.clear_cache(group_id)
     _recap_revision += 1
     return {"status": "ok", "deleted": group_id}
-
-
-@app.post("/admin/weekly-recap", dependencies=[Depends(verify_admin_token)])
-async def trigger_weekly_recap():
-    """Generate and send weekly recaps for all active groups."""
-    if not settings.weekly_recap_enabled:
-        return {"status": "disabled"}
-
-    groups = await group_repo.list_all()
-    sent = []
-    failed = []
-
-    for group in groups:
-        recap = await beer_agent.generate_weekly_recap(group.group_id)
-        if recap:
-            delivered = await groupme_client.send_message(recap, group_id=group.group_id)
-            if delivered:
-                sent.append(group.group_id)
-            else:
-                failed.append(group.group_id)
-
-    return {
-        "status": "ok" if not failed else "partial",
-        "recaps_sent": len(sent),
-        "groups": sent,
-        "failed_groups": failed,
-    }

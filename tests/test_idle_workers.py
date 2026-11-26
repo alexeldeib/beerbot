@@ -1,6 +1,7 @@
 """Idle scheduling, wake races, durable retry deadlines, and health probe tests."""
 
 import asyncio
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -26,6 +27,28 @@ async def stop(*tasks):
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def test_failure_detail_names_the_dependency_and_status_never_the_message():
+    import openai
+    from google.genai import errors
+
+    def detail(exc: Exception) -> str:
+        try:
+            raise exc
+        except Exception as raised:
+            return delivery.failure_detail(raised)
+
+    google = detail(errors.ServerError(503, {"error": {"message": "chat text"}}))
+    assert google.startswith("google.genai.errors.ServerError 503 at ")
+    request = httpx.Request("POST", "https://compatible.test")
+    limited = openai.RateLimitError(
+        "chat text", response=httpx.Response(429, request=request), body=None
+    )
+    assert detail(limited).startswith("openai.RateLimitError 429 at ")
+    assert detail(ValueError("chat text")) == "ValueError at unknown"  # No frames of ours here.
+    assert all("chat text" not in d for d in (google, detail(limited)))
+    assert len(detail(RuntimeError("x" * 1000))) <= 500
 
 
 async def test_empty_worker_sleeps_without_repeated_database_scans(monkeypatch):
@@ -86,6 +109,7 @@ async def test_worker_error_is_visible_and_wake_can_recover(monkeypatch):
     runtime = delivery.QueueRuntime()
     work = AsyncMock(side_effect=[RuntimeError("test failure"), False])
     monkeypatch.setattr(delivery, "next_work_delay", AsyncMock(return_value=3600))
+    monkeypatch.setattr(delivery, "LAST_ERROR", {"execution": None, "delivery": None})
     task = asyncio.create_task(delivery._worker("execution", runtime, work))
     try:
         await until(lambda: runtime.failed["execution"])
@@ -97,9 +121,37 @@ async def test_worker_error_is_visible_and_wake_can_recover(monkeypatch):
         )
         runtime.wake("execution")
         await until(lambda: work.await_count == 2 and not runtime.failed["execution"])
-        assert runtime.last_error["execution"] == error  # Kept after recovery for ops to report.
+        # Kept after recovery for ops to report.
+        assert runtime.snapshot()["last_error"]["execution"] == error
     finally:
         await stop(task)
+
+
+async def test_failed_attempts_and_sends_are_the_workers_last_error(pg, monkeypatch):
+    # ops reads these to tell a failing dependency (model, GroupMe) from a bug in our code.
+    from google.genai import errors
+
+    await setup(pg)
+    monkeypatch.setattr(delivery, "LAST_ERROR", {"execution": None, "delivery": None})
+    runtime = delivery.QueueRuntime()
+    agent = BeerAgent()
+    outage = errors.ServerError(503, {"error": {"message": "chat text"}})
+    monkeypatch.setattr(agent, "process_message", AsyncMock(side_effect=[outage, "Reply"]))
+    await delivery.accept_message(message())
+    assert await delivery.execute_one(agent)  # Failed once; it retries later.
+    error = runtime.snapshot()["last_error"]["execution"]
+    assert error["detail"].startswith("google.genai.errors.ServerError 503 at agent.py:")
+    assert error["at"] and "chat text" not in error["detail"]
+    await pg.execute("UPDATE message_inbox SET available_at=now()")
+    assert await delivery.execute_one(agent)
+    for outcome, detail in [
+        (DeliveryResult("uncertain", "http_502"), "GroupMe http_502 (uncertain)"),
+        (RuntimeError("chat text"), "RuntimeError at delivery.py:"),
+    ]:
+        sender = MagicMock(deliver_message=AsyncMock(side_effect=[outcome]))
+        await pg.execute("UPDATE message_outbox SET state='pending', available_at=now()")
+        assert await delivery.deliver_one(sender)
+        assert runtime.snapshot()["last_error"]["delivery"]["detail"].startswith(detail)
 
 
 async def test_live_workers_process_callback_without_waiting_for_recovery(pg, monkeypatch):
@@ -196,6 +248,7 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
     monkeypatch.setattr(main, "get_pool", pool)
     monkeypatch.setattr(main.beer_agent, "client", MagicMock())
     monkeypatch.setattr(main.settings, "admin_token", "test-admin")
+    monkeypatch.setattr(main.settings, "ops_token", "test-ops")
     with TestClient(main.app) as client:
         for _ in range(10):
             assert client.get("/ready").status_code == 200
@@ -205,6 +258,11 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
             "/admin/workers/status", headers={"Authorization": "Bearer test-admin"}
         ).json()["scans"] == {"execution": 0, "delivery": 0}
         assert client.post("/admin/messages/wake").status_code == 401
+        ops = {"Authorization": "Bearer test-ops"}
+        assert client.get("/admin/workers/status", headers=ops).status_code == 200
+        bare = {"Authorization": "test-ops"}  # One parser for both tokens: "Bearer <token>".
+        assert client.get("/admin/workers/status", headers=bare).status_code == 401
+        assert client.post("/admin/messages/wake", headers=ops).status_code == 403  # Admin only.
         assert (
             client.post(
                 "/admin/messages/wake", headers={"Authorization": "Bearer test-admin"}
@@ -213,6 +271,40 @@ def test_health_and_worker_status_are_database_free(monkeypatch):
         )
         assert all(event.is_set() for event in main.app.state.queue_runtime.events.values())
     pool.assert_not_awaited()
+
+
+def test_ops_reads_of_the_status_are_its_heartbeat(monkeypatch):
+    monkeypatch.setattr(main.settings, "admin_token", "test-admin")
+    monkeypatch.setattr(main.settings, "ops_token", "test-ops")
+    with TestClient(main.app) as client:
+        status = "/admin/workers/status"
+        admin = client.get(status, headers={"Authorization": "Bearer test-admin"}).json()
+        assert admin["ops_last_seen_seconds"] is None
+        ops = {"Authorization": "Bearer test-ops"}
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] is None
+        main.app.state.queue_runtime.ops_seen -= 120  # Two minutes until ops' next check:
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] == 120
+        assert client.get(status, headers=ops).json()["ops_last_seen_seconds"] == 0
+
+
+async def test_a_silent_ops_is_turned_back_on_by_the_hourly_sweep(monkeypatch):
+    started = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, **kw: started.append((workflow, kw)))
+    runtime = delivery.QueueRuntime()
+    runtime.watch_ops()
+    runtime.ops_seen = time.time() - 600
+    runtime.watch_ops()
+    assert started == []  # Up under an hour, then heard from ten minutes ago.
+    monkeypatch.setattr(delivery, "maintain_queue", AsyncMock(return_value=False))
+    monkeypatch.setattr(delivery, "deliver_one", AsyncMock(return_value=False))
+    monkeypatch.setattr(delivery, "next_work_delay", AsyncMock(return_value=3600))
+    runtime.ops_seen = time.time() - 3700
+    task = asyncio.create_task(delivery.delivery_worker(MagicMock(), runtime))
+    try:
+        await until(lambda: started)
+    finally:
+        await stop(task)
+    assert started == [("ops.yml", {"every": 3600, "enable": True, "reason": "ops_silent"})]
 
 
 def test_manual_retry_wakes_delivery_worker(monkeypatch):
@@ -284,3 +376,36 @@ async def test_queue_ages_show_a_stuck_message_without_touching_the_database(pg,
     sender = MagicMock(deliver_message=AsyncMock(return_value=DeliveryResult("sent")))
     assert await delivery.deliver_one(sender)
     assert runtime.snapshot()["oldest_undelivered_seconds"] is None
+
+
+async def test_queue_ages_forget_rows_no_longer_waiting(pg, monkeypatch):
+    # A peer machine (blue-green overlap) finished these, or the group went away: an empty scan
+    # must drop them, or ops pages on a queue that is actually empty.
+    await setup(pg)
+    monkeypatch.setattr(delivery, "UNPROCESSED", {})
+    monkeypatch.setattr(delivery, "UNDELIVERED", {})
+    agent = BeerAgent()
+    monkeypatch.setattr(agent, "process_message", AsyncMock(return_value="Reply"))
+    await delivery.accept_message(message("answered"))
+    assert await delivery.execute_one(agent)
+    await pg.execute("DELETE FROM groups WHERE group_id='g1'")
+    sender = MagicMock(deliver_message=AsyncMock(side_effect=AssertionError("unregistered")))
+    assert await delivery.deliver_one(sender)
+    assert delivery.UNDELIVERED == {}  # Failed as unregistered: no longer waiting.
+
+    await pg.execute("INSERT INTO groups(group_id,bot_id) VALUES('g1','fake')")
+    for id in ("peer", "waiting"):
+        await delivery.accept_message(message(id))
+    await pg.execute("UPDATE message_inbox SET state='completed' WHERE message_id='peer'")
+    outbox = await pg.fetchval(
+        """INSERT INTO message_outbox(inbox_id,group_id,body,state)
+           SELECT id,group_id,'sent elsewhere','sent' FROM message_inbox
+           WHERE message_id='peer' RETURNING id"""
+    )
+    delivery.UNDELIVERED[outbox] = 0.0
+    delivery.UNPROCESSED[-1] = time.time() + 60  # Accepted after the scan began: kept.
+    await delivery.next_work_delay("execution", 3600)
+    await delivery.next_work_delay("delivery", 3600)
+    waiting = await pg.fetchval("SELECT id FROM message_inbox WHERE message_id='waiting'")
+    assert set(delivery.UNPROCESSED) == {waiting, -1}
+    assert delivery.UNDELIVERED == {}
