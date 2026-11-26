@@ -2,9 +2,8 @@
 
 import json
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-
+from .config import EASTERN
 from .database import get_pool
 from .models import (
     Beer,
@@ -32,9 +31,6 @@ from .routing import (
     groupme_route_key,
     groupme_workspace_id,
 )
-
-# Use Eastern time for all date calculations
-EASTERN = ZoneInfo("America/New_York")
 
 
 def _json_object(value: object) -> dict[str, object]:
@@ -68,7 +64,7 @@ class UserRepository:
                 SET name = EXCLUDED.name,
                     avatar_url = EXCLUDED.avatar_url,
                     updated_at = NOW()
-                RETURNING *
+                RETURNING id, groupme_user_id, name, avatar_url, person_id, created_at, updated_at
                 """,
                 groupme_user_id,
                 name,
@@ -76,21 +72,14 @@ class UserRepository:
             )
             return User(**dict(row))
 
-    async def get_by_id(self, user_id: int) -> User | None:
-        """Get user by internal ID."""
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
-            return User(**dict(row)) if row else None
-
     async def get_by_groupme_id(self, groupme_user_id: str) -> User | None:
         """Get user by GroupMe user ID."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM users WHERE groupme_user_id = $1",
+                """SELECT id, groupme_user_id, name, avatar_url, person_id, created_at, updated_at
+                   FROM users WHERE groupme_user_id = $1""",
                 groupme_user_id,
             )
             return User(**dict(row)) if row else None
@@ -107,8 +96,9 @@ class BeerRepository:
         message_id: str | None = None,
         split_the_g: int = 0,
         drink_type: DrinkType = DrinkType.BEER,
+        logged_at: datetime | None = None,
     ) -> Beer | None:
-        """Log a drink entry.
+        """Log a drink entry, at `logged_at` (when it was sent; never later than now).
 
         Returns the created Beer/Drink, or None if this was a duplicate
         (same message_id + user_id + drink_type). Allows different drink types
@@ -119,11 +109,14 @@ class BeerRepository:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO beers (
+                    user_id, group_id, quantity, message_id, split_the_g, drink_type, logged_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, LEAST($7::timestamptz, NOW()))
                 ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
                 DO NOTHING
-                RETURNING *
+                RETURNING id, user_id, group_id, quantity, logged_at, message_id, split_the_g,
+                    drink_type
                 """,
                 user_id,
                 group_id,
@@ -131,6 +124,7 @@ class BeerRepository:
                 message_id,
                 split_the_g,
                 drink_type.value,
+                logged_at,
             )
             return Beer(**dict(row)) if row else None
 
@@ -215,7 +209,7 @@ class BeerRepository:
 
             # User stats query
             user_stats_query = f"""
-                SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
+                SELECT u.id, u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
                 FROM beers b
                 JOIN users u ON b.user_id = u.id
                 WHERE {where_clause}
@@ -226,6 +220,7 @@ class BeerRepository:
 
             user_stats = [
                 UserStats(
+                    user_id=row["id"],
                     name=row["name"],
                     total_beers=int(row["total"]),
                     last_beer_at=row["last_beer"],
@@ -255,56 +250,41 @@ class BeerRepository:
 
             drink_type_counts = {row["drink_type"]: int(row["count"]) for row in type_rows}
 
-            # Determine period description
-            if since is None:
-                period = "all time"
-            else:
-                now = datetime.now(EASTERN)
-                diff = now - since
-                if diff <= timedelta(days=1):
-                    period = "today"
-                elif diff <= timedelta(weeks=1):
-                    period = "this week"
-                else:
-                    period = f"since {since.strftime('%Y-%m-%d')}"
-
             return GroupStats(
                 total_beers=int(total),
                 unique_drinkers=len(user_stats),
                 user_stats=user_stats,
-                period_description=period,
                 drink_type_counts=drink_type_counts,
             )
 
-    async def get_user_stats_in_group(
-        self,
-        user_id: int,
-        group_id: str,
-    ) -> UserStats | None:
-        """Get stats for a specific user in a group."""
+    async def get_user_summary(
+        self, user_id: int, group_id: str, day_start: datetime, week_start: datetime
+    ) -> dict:
+        """One member's drinks in a group: totals all time, today and this week, all time by
+        type, and when they last drank. One query, by user id (display names repeat)."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await conn.fetch(
                 """
-                SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
-                FROM beers b
-                JOIN users u ON b.user_id = u.id
-                WHERE b.user_id = $1 AND b.group_id = $2
-                GROUP BY u.id, u.name
+                SELECT drink_type, SUM(quantity) AS total, MAX(logged_at) AS last,
+                       COALESCE(SUM(quantity) FILTER (WHERE logged_at >= $3), 0) AS today,
+                       COALESCE(SUM(quantity) FILTER (WHERE logged_at >= $4), 0) AS week
+                FROM beers WHERE user_id = $1 AND group_id = $2
+                GROUP BY drink_type
                 """,
                 user_id,
                 group_id,
+                day_start,
+                week_start,
             )
-
-            if not row or row["total"] is None:
-                return None
-
-            return UserStats(
-                name=row["name"],
-                total_beers=int(row["total"]),
-                last_beer_at=row["last_beer"],
-            )
+        return {
+            "total": sum(int(row["total"]) for row in rows),
+            "today": sum(int(row["today"]) for row in rows),
+            "this_week": sum(int(row["week"]) for row in rows),
+            "breakdown": {row["drink_type"]: int(row["total"]) for row in rows},
+            "last_drink_at": max((row["last"] for row in rows), default=None),
+        }
 
     async def delete_last_beer(self, user_id: int, group_id: str) -> int:
         """Delete the most recent beer entry for a user in a group.
@@ -321,7 +301,7 @@ class BeerRepository:
                 WHERE id = (
                     SELECT id FROM beers
                     WHERE user_id = $1 AND group_id = $2
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                 )
                 RETURNING quantity
@@ -331,28 +311,31 @@ class BeerRepository:
             )
             return row["quantity"] if row else 0
 
-    async def remove_beers(self, user_id: int, group_id: str, quantity: int) -> int:
-        """Remove a specific number of beers from a user in a group.
+    async def remove_beers(
+        self, user_id: int, group_id: str, quantity: int, drink_type: DrinkType | None = None
+    ) -> int:
+        """Remove drinks from a user in a group, of one type or any.
 
         Decrements quantity on most recent entries first. Only deletes entries
         when their quantity reaches 0.
-        Returns the actual number of beers removed (may be less if user has fewer).
+        Returns the actual number removed (may be less if user has fewer).
         """
         pool = await get_pool()
         removed = 0
 
         async with pool.acquire() as conn:
             while removed < quantity:
-                # Find most recent entry
+                # Find most recent entry (of this drink type)
                 row = await conn.fetchrow(
                     """
                     SELECT id, quantity FROM beers
-                    WHERE user_id = $1 AND group_id = $2
-                    ORDER BY logged_at DESC
+                    WHERE user_id = $1 AND group_id = $2 AND ($3::text IS NULL OR drink_type = $3)
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
                     group_id,
+                    drink_type.value if drink_type else None,
                 )
                 if not row:
                     break  # No more entries
@@ -376,162 +359,32 @@ class BeerRepository:
 
         return removed
 
-    async def remove_beers_by_type(
-        self, user_id: int, group_id: str, quantity: int, drink_type: DrinkType
-    ) -> int:
-        """Remove a specific number of drinks of a specific type from a user.
-
-        Decrements quantity on most recent entries of that type first.
-        Returns the actual number removed (may be less if user has fewer).
-        """
-        pool = await get_pool()
-        removed = 0
-
-        async with pool.acquire() as conn:
-            while removed < quantity:
-                # Find most recent entry of this drink type
-                row = await conn.fetchrow(
-                    """
-                    SELECT id, quantity FROM beers
-                    WHERE user_id = $1 AND group_id = $2 AND drink_type = $3
-                    ORDER BY logged_at DESC
-                    LIMIT 1
-                    """,
-                    user_id,
-                    group_id,
-                    drink_type.value,
-                )
-                if not row:
-                    break  # No more entries of this type
-
-                entry_id = row["id"]
-                entry_qty = row["quantity"]
-                needed = quantity - removed
-
-                if entry_qty > needed:
-                    # Decrement quantity on this entry
-                    await conn.execute(
-                        "UPDATE beers SET quantity = quantity - $1 WHERE id = $2",
-                        needed,
-                        entry_id,
-                    )
-                    removed += needed
-                else:
-                    # Delete entire entry and continue
-                    await conn.execute("DELETE FROM beers WHERE id = $1", entry_id)
-                    removed += entry_qty
-
-        return removed
-
-    async def create_batch(
-        self,
-        entries: list[tuple[int, str, int, str | None, int, DrinkType]],
-    ) -> list[Beer | None]:
-        """Log multiple drink entries in a single transaction.
-
-        Args:
-            entries: List of (user_id, group_id, quantity, message_id, split_the_g, drink_type) tuples
-
-        Returns:
-            List of Beer/Drink objects (or None for duplicates), in same order as input.
-            All entries are committed together or none are (atomic).
-        """
-        if not entries:
-            return []
-
-        pool = await get_pool()
-        results: list[Beer | None] = []
-
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for user_id, group_id, quantity, message_id, split_the_g, drink_type in entries:
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO beers (user_id, group_id, quantity, message_id, split_the_g, drink_type)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (message_id, user_id, drink_type) WHERE message_id IS NOT NULL
-                        DO NOTHING
-                        RETURNING *
-                        """,
-                        user_id,
-                        group_id,
-                        quantity,
-                        message_id,
-                        split_the_g,
-                        drink_type.value,
-                    )
-                    results.append(Beer(**dict(row)) if row else None)
-
-        return results
-
     async def get_rate_stats(
         self,
         group_id: str,
         days: int = 30,
         drink_type: DrinkType | None = None,
-    ) -> tuple[int, int, float]:
-        """Get rate statistics for a group over a period.
-
-        Args:
-            group_id: The group to get stats for
-            days: Number of days to look back
-            drink_type: Optional filter by drink type
-
-        Returns:
-            tuple: (total_beers_all_time, beers_in_period, days_with_activity)
-        """
+    ) -> tuple[int, float]:
+        """Drinks in the last `days` days, and the days from the first of them to now: a group
+        that went quiet slows its pace. At least one day, so an hour's burst isn't a daily rate;
+        0.0 without drinks."""
         pool = await get_pool()
+        now = datetime.now(EASTERN)
 
         async with pool.acquire() as conn:
-            # Build WHERE clause for drink type filter
-            type_filter = ""
-            type_param: list = []
-            if drink_type is not None:
-                type_filter = " AND drink_type = $2"
-                type_param = [drink_type.value]
-
-            # Get total all time (with optional type filter)
-            total_all_time = await conn.fetchval(
-                f"SELECT COALESCE(SUM(quantity), 0) FROM beers WHERE group_id = $1{type_filter}",
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(quantity), 0) AS total, MIN(logged_at) AS first
+                FROM beers WHERE group_id = $1 AND logged_at >= $2
+                    AND ($3::text IS NULL OR drink_type = $3)
+                """,
                 group_id,
-                *type_param,
+                now - timedelta(days=days),
+                drink_type.value if drink_type else None,
             )
-
-            # Get drinks and date range for period (Eastern time)
-            since = datetime.now(EASTERN) - timedelta(days=days)
-            # Adjust parameter numbers for the period query
-            if drink_type is not None:
-                period_query = """
-                    SELECT
-                        COALESCE(SUM(quantity), 0) as period_total,
-                        MIN(logged_at) as first_beer,
-                        MAX(logged_at) as last_beer
-                    FROM beers
-                    WHERE group_id = $1 AND logged_at >= $2 AND drink_type = $3
-                """
-                row = await conn.fetchrow(period_query, group_id, since, drink_type.value)
-            else:
-                period_query = """
-                    SELECT
-                        COALESCE(SUM(quantity), 0) as period_total,
-                        MIN(logged_at) as first_beer,
-                        MAX(logged_at) as last_beer
-                    FROM beers
-                    WHERE group_id = $1 AND logged_at >= $2
-                """
-                row = await conn.fetchrow(period_query, group_id, since)
-
-            period_total = int(row["period_total"])
-            first_beer = row["first_beer"]
-            last_beer = row["last_beer"]
-
-            # Calculate actual days with data
-            if first_beer and last_beer:
-                actual_days = max(1.0, (last_beer - first_beer).total_seconds() / 86400)
-            else:
-                actual_days = 0.0
-
-            return int(total_all_time), period_total, actual_days
+        if row["first"] is None:
+            return 0, 0.0
+        return int(row["total"]), max(1.0, (now - row["first"]).total_seconds() / 86400)
 
     async def get_split_g_stats(self, group_id: str) -> SplitGGroupStats:
         """Get split-the-G statistics for a group."""
@@ -607,7 +460,7 @@ class BeerRepository:
                     """
                     SELECT id, split_the_g FROM beers
                     WHERE user_id = $1 AND group_id = $2 AND split_the_g > 0
-                    ORDER BY logged_at DESC
+                    ORDER BY logged_at DESC, id DESC
                     LIMIT 1
                     """,
                     user_id,
@@ -668,38 +521,6 @@ class BeerRepository:
                 )
             return int(result)
 
-    async def get_user_stats_by_type(
-        self,
-        user_id: int,
-        group_id: str,
-    ) -> dict[DrinkType, int]:
-        """Get breakdown of drinks by type for a user in a group.
-
-        Returns:
-            Dict mapping DrinkType to count (only includes types with > 0)
-        """
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT drink_type, SUM(quantity) as total
-                FROM beers
-                WHERE user_id = $1 AND group_id = $2
-                GROUP BY drink_type
-                """,
-                user_id,
-                group_id,
-            )
-
-            result: dict[DrinkType, int] = {}
-            for row in rows:
-                drink_type_str = row["drink_type"] or "beer"
-                drink_type = DrinkType.from_string(drink_type_str)
-                result[drink_type] = int(row["total"])
-
-            return result
-
     async def get_leaderboard_with_breakdown(
         self,
         group_id: str,
@@ -719,41 +540,30 @@ class BeerRepository:
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            if drink_type:
-                # When filtered, rank by specific type
-                query = """
-                    SELECT u.name,
-                           SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) as total,
-                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
-                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
-                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
-                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1
-                    GROUP BY u.id, u.name
-                    HAVING SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) > 0
-                    ORDER BY total DESC
-                    LIMIT $3
+            # Ranked by the filtered type (members without any are left out), or by all drinks.
+            rows = await conn.fetch(
                 """
-                rows = await conn.fetch(query, group_id, drink_type.value, limit)
-            else:
-                # Unfiltered - rank by total of all types
-                query = """
-                    SELECT u.name,
-                           SUM(b.quantity) as total,
-                           SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
-                           SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
-                           SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END) as cocktail_count,
-                           SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
-                    FROM beers b
-                    JOIN users u ON b.user_id = u.id
-                    WHERE b.group_id = $1
-                    GROUP BY u.id, u.name
-                    ORDER BY total DESC
-                    LIMIT $2
-                """
-                rows = await conn.fetch(query, group_id, limit)
+                SELECT u.name,
+                       SUM(CASE WHEN $2::text IS NULL OR b.drink_type = $2
+                           THEN b.quantity ELSE 0 END) as total,
+                       SUM(CASE WHEN b.drink_type = 'beer' THEN b.quantity ELSE 0 END) as beer_count,
+                       SUM(CASE WHEN b.drink_type = 'wine' THEN b.quantity ELSE 0 END) as wine_count,
+                       SUM(CASE WHEN b.drink_type = 'cocktail' THEN b.quantity ELSE 0 END)
+                           as cocktail_count,
+                       SUM(CASE WHEN b.drink_type = 'claw' THEN b.quantity ELSE 0 END) as claw_count
+                FROM beers b
+                JOIN users u ON b.user_id = u.id
+                WHERE b.group_id = $1
+                GROUP BY u.id, u.name
+                HAVING $2::text IS NULL
+                    OR SUM(CASE WHEN b.drink_type = $2 THEN b.quantity ELSE 0 END) > 0
+                ORDER BY total DESC
+                LIMIT $3
+                """,
+                group_id,
+                drink_type.value if drink_type else None,
+                limit,
+            )
 
             results = []
             for row in rows:
@@ -950,14 +760,22 @@ class DebtRepository:
 class ZynRepository:
     """Zyn pouch tracking, kept separate from alcoholic drink counts."""
 
-    async def log(self, user_id: int, group_id: str, message_id: str, quantity: int) -> bool:
-        """Log pouches once per (message, user). Returns False for a duplicate."""
+    async def log(
+        self,
+        user_id: int,
+        group_id: str,
+        message_id: str,
+        quantity: int,
+        logged_at: datetime | None = None,
+    ) -> bool:
+        """Log pouches once per (message, user), at `logged_at` (when sent; never later than
+        now). Returns False for a duplicate."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO zyn_logs (user_id, group_id, quantity, message_id)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO zyn_logs (user_id, group_id, quantity, message_id, logged_at)
+                VALUES ($1, $2, $3, $4, LEAST($5::timestamptz, NOW()))
                 ON CONFLICT (message_id, user_id) DO NOTHING
                 RETURNING id
                 """,
@@ -965,6 +783,7 @@ class ZynRepository:
                 group_id,
                 quantity,
                 message_id,
+                logged_at,
             )
             return row is not None
 

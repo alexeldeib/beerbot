@@ -17,7 +17,8 @@ class DrinkType(str, Enum):
 
     @classmethod
     def from_string(cls, s: str) -> "DrinkType":
-        """Parse drink type from string, defaulting to BEER."""
+        """Parse a drink type (plurals and "seltzer" too). Anything else is a ValueError naming
+        the valid types, which a tool hands back to the model to fix."""
         mapping = {
             "beer": cls.BEER,
             "beers": cls.BEER,
@@ -30,7 +31,9 @@ class DrinkType(str, Enum):
             "seltzer": cls.CLAW,
             "seltzers": cls.CLAW,
         }
-        return mapping.get(s.lower(), cls.BEER)
+        if s.lower() not in mapping:
+            raise ValueError(f"Unknown drink type {s!r}: use beer, wine, cocktail, or claw")
+        return mapping[s.lower()]
 
 
 class GroupMeAttachment(BaseModel):
@@ -61,6 +64,13 @@ class GroupMeMessage(BaseModel):
     sender_type: str  # "user", "bot", "system"
     text: Optional[str] = None
     user_id: str
+
+    @property
+    def reply_id(self) -> str | None:
+        """The GroupMe id of the message this one replies to, if any."""
+        return next(
+            (a.reply_id for a in self.attachments if a.type == "reply" and a.reply_id), None
+        )
 
 
 class User(BaseModel):
@@ -95,6 +105,7 @@ Beer = Drink
 class UserStats(BaseModel):
     """Statistics for a single user."""
 
+    user_id: int  # Match members by this: display names repeat.
     name: str
     total_beers: int
     last_beer_at: Optional[datetime] = None
@@ -106,7 +117,6 @@ class GroupStats(BaseModel):
     total_beers: int
     unique_drinkers: int
     user_stats: list[UserStats]
-    period_description: str  # "all time", "today", "this week"
     drink_type_counts: dict[str, int] = {}  # {"beer": 10, "wine": 5, ...}
 
 
@@ -124,16 +134,6 @@ class SplitGGroupStats(BaseModel):
     total_splits: int
     unique_splitters: int
     user_stats: list[SplitGUserStats]
-
-
-class UserDebt(BaseModel):
-    """Simple debt tracking for a user (how many beers they owe the group)."""
-
-    id: int
-    user_id: int
-    group_id: str
-    amount: int
-    updated_at: datetime
 
 
 class DebtLeaderboardEntry(BaseModel):

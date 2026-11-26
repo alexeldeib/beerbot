@@ -1,10 +1,14 @@
 """Tests for FastAPI endpoints."""
 
 from datetime import datetime
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+
+from src.beerbot.groupme_client import DeliveryResult
 
 
 @pytest.fixture
@@ -113,8 +117,9 @@ class TestCallback:
         mock_agent.process_message.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("src.beerbot.main.accept_context", new_callable=AsyncMock)
     @patch("src.beerbot.main.beer_agent")
-    async def test_ignores_bot_messages(self, mock_agent, bot_message):
+    async def test_ignores_bot_messages(self, mock_agent, mock_context, bot_message):
         from fastapi.testclient import TestClient
         from src.beerbot.main import app
 
@@ -183,186 +188,90 @@ class TestHealthCheck:
         assert resp.json()["llm"]["model"] == "gemini-3.6-flash"
 
 
-class TestWeeklyRecap:
-    @pytest.mark.asyncio
-    @patch("src.beerbot.main.settings")
-    async def test_disabled_returns_disabled(self, mock_settings):
-        mock_settings.weekly_recap_enabled = False
-        mock_settings.admin_token = "test-token"
+SUNDAY_9PM = datetime(2025, 1, 5, 21, 5, tzinfo=ZoneInfo("America/New_York"))
 
-        from fastapi.testclient import TestClient
-        from src.beerbot.main import app
 
-        with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.post(
-                "/admin/weekly-recap",
-                headers={"Authorization": "Bearer test-token"},
-            )
+@pytest.fixture
+def recap(monkeypatch):
+    """The recap scheduler at a given time against fake repos, model, and GroupMe."""
+    from src.beerbot import main
 
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "disabled"
+    world = SimpleNamespace(
+        repo=SimpleNamespace(
+            has_sent=AsyncMock(return_value=False),
+            try_claim=AsyncMock(return_value=True),
+            release_claim=AsyncMock(),
+        ),
+        groups=AsyncMock(return_value=[SimpleNamespace(group_id="group-1")]),
+        generate=AsyncMock(return_value="Great week!"),
+        deliver=AsyncMock(return_value=DeliveryResult("sent")),
+    )
+    monkeypatch.setattr(main, "recap_repo", world.repo)
+    monkeypatch.setattr(main.group_repo, "list_all", world.groups)
+    monkeypatch.setattr(main.beer_agent, "generate_weekly_recap", world.generate)
+    monkeypatch.setattr(main, "groupme_client", SimpleNamespace(deliver_message=world.deliver))
+    monkeypatch.setattr(main.settings, "weekly_recap_enabled", True)
+    monkeypatch.setattr(main.settings, "weekly_recap_hour", 21)
+
+    async def run(ticks: int = 1, at: datetime = SUNDAY_9PM):
+        clock = MagicMock()
+        clock.now.return_value = at
+        monkeypatch.setattr(main, "datetime", clock)
+        count = 0
+
+        async def sleep(seconds):
+            nonlocal count
+            count += 1
+            if count > ticks:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(main.asyncio, "sleep", sleep)
+        with pytest.raises(asyncio.CancelledError):
+            await main._recap_scheduler()
+
+    world.run = run
+    return world
 
 
 class TestRecapScheduler:
-    """Tests for the _recap_scheduler background loop logic."""
+    async def test_sends_recap_on_sunday(self, recap):
+        await recap.run()
+        recap.generate.assert_awaited_once_with("group-1")
+        recap.deliver.assert_awaited_once_with("Great week!", group_id="group-1")
 
-    @pytest.mark.asyncio
-    @patch("src.beerbot.main.groupme_client")
-    @patch("src.beerbot.main.beer_agent")
-    @patch("src.beerbot.main.settings")
-    async def test_sends_recap_on_sunday(self, mock_settings, mock_agent, mock_groupme):
-        """Scheduler sends recap when it's Sunday after recap hour."""
-        from src.beerbot.main import _recap_scheduler
+    async def test_skips_when_already_sent(self, recap):
+        recap.repo.has_sent.return_value = True
+        await recap.run()
+        recap.generate.assert_not_awaited()
+        recap.deliver.assert_not_awaited()
 
-        mock_settings.weekly_recap_enabled = True
-        mock_settings.weekly_recap_hour = 21
+    async def test_skips_non_sunday(self, recap):
+        await recap.run(at=datetime(2025, 1, 7, 21, 5, tzinfo=ZoneInfo("America/New_York")))
+        recap.groups.assert_not_awaited()
 
-        # Fake Sunday 9 PM ET
-        sunday_9pm = datetime(2025, 1, 5, 21, 5, tzinfo=ZoneInfo("America/New_York"))
+    async def test_an_uncertain_send_keeps_its_claim_and_is_never_repeated(self, recap):
+        recap.deliver.return_value = DeliveryResult("uncertain", "ReadTimeout")
+        await recap.run(ticks=3)
+        recap.deliver.assert_awaited_once()
+        recap.repo.release_claim.assert_not_awaited()
 
-        mock_group = MagicMock()
-        mock_group.group_id = "group-1"
+    async def test_a_send_that_never_posted_releases_its_claim_and_retries(self, recap):
+        recap.deliver.return_value = DeliveryResult("retry", "ConnectTimeout")
+        await recap.run(ticks=2)
+        assert recap.deliver.await_count == 2
+        assert recap.repo.release_claim.await_count == 2
 
-        mock_recap_repo = AsyncMock()
-        mock_recap_repo.has_sent = AsyncMock(return_value=False)
-        mock_recap_repo.try_claim = AsyncMock(return_value=True)
+    async def test_a_quiet_week_is_done_without_checking_again(self, recap):
+        recap.generate.return_value = None  # No drinks this week.
+        await recap.run(ticks=3)
+        recap.groups.assert_awaited_once()
+        recap.repo.has_sent.assert_awaited_once()
+        recap.deliver.assert_not_awaited()
 
-        mock_group_repo = AsyncMock()
-        mock_group_repo.list_all = AsyncMock(return_value=[mock_group])
-
-        mock_agent.generate_weekly_recap = AsyncMock(return_value="Great week!")
-        mock_groupme.send_message = AsyncMock(return_value=True)
-
-        call_count = 0
-
-        async def tick_then_stop(seconds):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-
-        import asyncio
-
-        with (
-            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
-            patch("src.beerbot.main.datetime") as mock_dt,
-            patch("src.beerbot.main.recap_repo", mock_recap_repo, create=True),
-            patch("src.beerbot.main.group_repo", mock_group_repo, create=True),
-            patch.dict(
-                "sys.modules",
-                {
-                    "src.beerbot.repositories": MagicMock(
-                        group_repo=mock_group_repo, recap_repo=mock_recap_repo
-                    )
-                },
-            ),
-        ):
-            mock_dt.now.return_value = sunday_9pm
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-
-            # Patch the repos at the import location inside _recap_scheduler
-            with (
-                patch("src.beerbot.repositories.group_repo", mock_group_repo),
-                patch("src.beerbot.repositories.recap_repo", mock_recap_repo),
-            ):
-                with pytest.raises(asyncio.CancelledError):
-                    await _recap_scheduler()
-
-        mock_agent.generate_weekly_recap.assert_called_once_with("group-1")
-        mock_groupme.send_message.assert_called_once_with("Great week!", group_id="group-1")
-
-    @pytest.mark.asyncio
-    @patch("src.beerbot.main.groupme_client")
-    @patch("src.beerbot.main.beer_agent")
-    @patch("src.beerbot.main.settings")
-    async def test_skips_when_already_sent(self, mock_settings, mock_agent, mock_groupme):
-        """Scheduler skips groups that already have a recap for this week."""
-        from src.beerbot.main import _recap_scheduler
-
-        mock_settings.weekly_recap_enabled = True
-        mock_settings.weekly_recap_hour = 21
-
-        sunday_9pm = datetime(2025, 1, 5, 21, 5, tzinfo=ZoneInfo("America/New_York"))
-
-        mock_group = MagicMock()
-        mock_group.group_id = "group-1"
-
-        mock_recap_repo = AsyncMock()
-        mock_recap_repo.has_sent = AsyncMock(return_value=True)  # Already sent
-
-        mock_group_repo = AsyncMock()
-        mock_group_repo.list_all = AsyncMock(return_value=[mock_group])
-
-        call_count = 0
-
-        async def tick_then_stop(seconds):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-
-        import asyncio
-
-        with (
-            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
-            patch("src.beerbot.main.datetime") as mock_dt,
-            patch("src.beerbot.main.recap_repo", mock_recap_repo),
-            patch("src.beerbot.main.group_repo", mock_group_repo),
-            patch.dict(
-                "sys.modules",
-                {
-                    "src.beerbot.repositories": MagicMock(
-                        group_repo=mock_group_repo, recap_repo=mock_recap_repo
-                    )
-                },
-            ),
-        ):
-            mock_dt.now.return_value = sunday_9pm
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-
-            with (
-                patch("src.beerbot.repositories.group_repo", mock_group_repo),
-                patch("src.beerbot.repositories.recap_repo", mock_recap_repo),
-            ):
-                with pytest.raises(asyncio.CancelledError):
-                    await _recap_scheduler()
-
-        mock_agent.generate_weekly_recap.assert_not_called()
-        mock_groupme.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("src.beerbot.main.groupme_client")
-    @patch("src.beerbot.main.beer_agent")
-    @patch("src.beerbot.main.settings")
-    async def test_skips_non_sunday(self, mock_settings, mock_agent, mock_groupme):
-        """Scheduler does nothing on non-Sunday days."""
-        from src.beerbot.main import _recap_scheduler
-
-        mock_settings.weekly_recap_enabled = True
-        mock_settings.weekly_recap_hour = 21
-
-        # Tuesday
-        tuesday = datetime(2025, 1, 7, 21, 5, tzinfo=ZoneInfo("America/New_York"))
-
-        call_count = 0
-
-        async def tick_then_stop(seconds):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-
-        import asyncio
-
-        with (
-            patch("src.beerbot.main.asyncio.sleep", side_effect=tick_then_stop),
-            patch("src.beerbot.main.datetime") as mock_dt,
-        ):
-            mock_dt.now.return_value = tuesday
-            with pytest.raises(asyncio.CancelledError):
-                await _recap_scheduler()
-
-        mock_agent.generate_weekly_recap.assert_not_called()
+    async def test_a_failed_recap_retries_at_the_next_tick(self, recap):
+        recap.generate.side_effect = [RuntimeError("model down"), "Great week!"]
+        await recap.run(ticks=3)
+        recap.deliver.assert_awaited_once_with("Great week!", group_id="group-1")
 
 
 def test_access_log_redacts_webhook_token():
@@ -379,23 +288,26 @@ def test_access_log_redacts_webhook_token():
     assert record.getMessage() == '1.2.3.4:5 - "POST /callback?token=***&x=1 HTTP/1.1" 200'
 
 
-def test_beerdevs_messages_become_reply_context(monkeypatch, sample_groupme_message):
+def test_our_bots_posts_become_history_and_reply_targets(monkeypatch, sample_groupme_message):
     from fastapi.testclient import TestClient
     from src.beerbot import main
 
     kept = []
     monkeypatch.setattr(
-        main, "accept_context", AsyncMock(side_effect=lambda m: kept.append(m.name))
+        main, "accept_context", AsyncMock(side_effect=lambda m, agent: kept.append((m.id, agent)))
     )
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
     with TestClient(main.app) as client:
-        for name in ("beerdev", "beerius"):
+        for name in ("beerdev", "Beerius", "weatherbot"):
             bot = sample_groupme_message | {"sender_type": "bot", "name": name, "id": name}
             assert client.post("/callback", json=bot).json()["reason"] == "bot message"
-    assert kept == ["beerdev"]  # Kept as context, never processed; other bots are ignored.
+    # Kept as context, never processed; other bots' posts never touch the database.
+    assert kept == [("beerdev", "beerdev"), ("Beerius", "beerius")]
 
 
-def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_groupme_message):
+def test_callback_routes_messages_opening_with_beerdev_to_beerdev(
+    monkeypatch, sample_groupme_message
+):
     from fastapi.testclient import TestClient
     from src.beerbot import main
 
@@ -409,6 +321,10 @@ def test_callback_routes_messages_naming_beerdev_to_beerdev(monkeypatch, sample_
     monkeypatch.setattr(main.settings, "groupme_webhook_secret", None)
     monkeypatch.setattr(main.settings, "require_registered_groups", False)
     with TestClient(main.app) as client:
-        for text in ("beerdev what's our spend?", "+1 beer"):
+        for text in ("beerdev what's our spend?", "+1 beer", "+1 🍺 thanks beerdev"):
             client.post("/callback", json=sample_groupme_message | {"text": text, "id": text})
-    assert routed == [("beerdev what's our spend?", "beerdev"), ("+1 beer", "beerius")]
+    assert routed == [
+        ("beerdev what's our spend?", "beerdev"),
+        ("+1 beer", "beerius"),
+        ("+1 🍺 thanks beerdev", "beerius"),
+    ]

@@ -64,7 +64,7 @@ async def test_message_tokens_are_written_even_when_the_message_fails(pg, monkey
         cached_content_token_count=0,
     )
 
-    async def process(msg):
+    async def process(msg, history):
         usage.record("beerius", "gemini-3.6-flash", meta)
         if msg.text == "boom":
             raise RuntimeError("model failed after a billed call")

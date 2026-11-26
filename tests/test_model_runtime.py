@@ -112,14 +112,22 @@ async def test_compatible_http_tools_images_and_reasoning_round_trip():
     assert json.loads(requests[1]["messages"][3]["content"])["count"] == 2
 
 
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [Call("1", "missing", {})],
-        [Call("1", "count_drinks", {"count": 1}), Call("1", "count_drinks", {"count": 1})],
-    ],
-)
-async def test_protocol_violations_execute_no_tools(calls):
+async def test_protocol_violations_execute_no_tools():
+    executed = []
+
+    async def count_drinks(count: int) -> dict:
+        executed.append(count)
+        return {}
+
+    calls = [Call("1", "count_drinks", {"count": 1}), Call("1", "count_drinks", {"count": 1})]
+    session = MagicMock()
+    session.next_turn = AsyncMock(return_value=Turn(calls))
+    with pytest.raises(ModelProtocolError):
+        await run_tools(session, [count_drinks], max_rounds=2)
+    assert executed == []
+
+
+async def test_an_unknown_tool_goes_back_to_the_model_and_runs_nothing():
     executed = []
 
     async def count_drinks(count: int) -> dict:
@@ -127,10 +135,16 @@ async def test_protocol_violations_execute_no_tools(calls):
         return {}
 
     session = MagicMock()
-    session.next_turn = AsyncMock(return_value=Turn(calls))
-    with pytest.raises(ModelProtocolError):
-        await run_tools(session, [count_drinks], max_rounds=2)
-    assert executed == []
+    session.next_turn = AsyncMock(
+        side_effect=[
+            Turn([Call("1", "count_drinks", {"count": 1}), Call("2", "log_gym", {})]),
+            Turn([], "Logged it."),
+        ]
+    )
+    assert await run_tools(session, [count_drinks], max_rounds=3) == "Logged it."
+    assert executed == []  # Nothing from the batch ran, as with bad arguments.
+    first_results = session.add_results.call_args_list[0].args[1]
+    assert all("log_gym: no such tool" in result["error"] for result in first_results)
 
 
 @pytest.mark.parametrize(

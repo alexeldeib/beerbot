@@ -1,8 +1,12 @@
 """Configuration management using pydantic-settings."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from typing import Literal
+from zoneinfo import ZoneInfo
+
+# "Today" and "this week" are Eastern time.
+EASTERN = ZoneInfo("America/New_York")
 
 
 class Settings(BaseSettings):
@@ -58,14 +62,10 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
 
-    # Optional: start beerdev scans on mentions and ops checks on failures right away. Without a
-    # token, the scheduled workflows pick everything up a little later.
-    # Fine-grained, this repository only: Issues and Actions. beerdev files and steers requests
-    # with it, and the app starts workflows. Not GITHUB_TOKEN, which local shells often set.
-    github_token: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("BEERDEV_GITHUB_TOKEN", "GITHUB_DISPATCH_TOKEN"),
-    )
+    # Fine-grained, this repository only: Issues and Actions. beerdev reads, files and steers
+    # requests with it, and the app starts builds and ops checks right away (without it, the
+    # scheduled workflows catch up a little later). Not GITHUB_TOKEN, which local shells set.
+    github_token: str | None = Field(default=None, validation_alias="BEERDEV_GITHUB_TOKEN")
     beerdev_bot_id: str | None = None  # beerdev's replies post as this bot.
     ops_token: str | None = None  # Read-only: the status and usage endpoints, nothing else.
     # Monthly model spend (USD, list prices) above which ops files an inbox issue.
@@ -97,6 +97,10 @@ class Settings(BaseSettings):
         if self.llm_provider == "google":
             return self.llm_api_key or self.gemini_api_key
         return self.llm_api_key or ("unused" if self.llm_base_url else None)
+
+    def is_owner(self, user_id: str) -> bool:
+        """The GroupMe sender whose commands override house rules: by id, never by name."""
+        return bool(self.owner_user_id) and user_id == self.owner_user_id
 
 
 settings = Settings()

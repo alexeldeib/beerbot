@@ -271,8 +271,7 @@ def test_app_webhooks_and_admin_endpoints_require_their_secrets(monkeypatch):
         ("GET", "/admin/workers/status"),
         ("GET", "/admin/messages/status"),
         ("GET", "/admin/usage"),
-        ("POST", "/admin/messages/wake"),  # A harmless nudge, never a restart.
-    }
+    }  # Reads only: waking or retrying the queue takes the admin token.
     admin = [route for route in main.app.routes if getattr(route, "path", "").startswith("/admin")]
     for route in admin:
         calls = [dependency.call for dependency in route.dependant.dependencies]

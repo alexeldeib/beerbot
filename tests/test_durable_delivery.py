@@ -11,7 +11,7 @@ from src.beerbot.agent import BeerAgent
 from src.beerbot.delivery import accept_message, execute_one, deliver_one, maintain_queue
 from src.beerbot.delivery import queue_status, retry_delivery
 from src.beerbot.groupme_client import DeliveryResult
-from src.beerbot.models import GroupMeMessage
+from src.beerbot.models import GroupMeAttachment, GroupMeMessage
 from src.beerbot.repositories import debt_repo
 from src.beerbot.tools import ToolContext, create_tools
 
@@ -49,7 +49,7 @@ async def test_duplicate_receipt_and_delivery_retry_never_repeat_mutations(pg, m
     await setup(pg)
     calls = 0
 
-    async def process(msg):
+    async def process(msg, history):
         nonlocal calls
         calls += 1
         tools = {t.__name__: t for t in create_tools(context(msg))}
@@ -85,7 +85,7 @@ async def test_duplicate_receipt_and_delivery_retry_never_repeat_mutations(pg, m
 async def test_partial_round_failure_rolls_back_user_drinks_and_debt(pg, monkeypatch):
     await setup(pg)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](2, "beer", ["alice", "bob"])
         return "Must not send"
@@ -109,7 +109,7 @@ async def test_cancellation_after_undo_rolls_back_and_restart_retries_once(pg, m
     )
     await pg.execute("INSERT INTO beers(user_id,group_id,quantity) VALUES($1,'g1',3)", user)
 
-    async def interrupted(msg):
+    async def interrupted(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["undo_last_drink"]()
         raise asyncio.CancelledError()
@@ -120,18 +120,57 @@ async def test_cancellation_after_undo_rolls_back_and_restart_retries_once(pg, m
     with pytest.raises(asyncio.CancelledError):
         await execute_one(agent)
     assert await pg.fetchval("SELECT SUM(quantity) FROM beers") == 3
-    assert await pg.fetchval("SELECT attempts FROM message_inbox") == 0
+    assert await pg.fetchval("SELECT attempts FROM message_inbox") == 1  # Counted at the claim.
 
-    async def recovered(msg):
+    async def recovered(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["undo_last_drink"]()
         return "Undone"
 
     replacement = BeerAgent()
     monkeypatch.setattr(replacement, "process_message", recovered)
+    assert not await execute_one(replacement)  # Leased for the retry backoff.
+    await pg.execute("UPDATE message_inbox SET available_at=NOW()")
     assert await execute_one(replacement)
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
     assert not await execute_one(replacement)
+
+
+async def test_a_message_that_kills_the_process_stops_blocking_its_group(pg, monkeypatch):
+    # Process death rolls the execution back, so only an attempt committed at the claim bounds a
+    # message that runs out of memory every time.
+    await setup(pg)
+    reports = []
+    monkeypatch.setattr(delivery, "dispatch", lambda workflow, **kw: reports.append(kw["reason"]))
+    monkeypatch.setattr(delivery, "UNPROCESSED", {})
+    agent = BeerAgent()
+
+    async def process(msg, history):
+        if msg.id == "poison":
+            raise asyncio.CancelledError  # To Postgres, the same as the process dying.
+        return None
+
+    monkeypatch.setattr(agent, "process_message", process)
+    await accept_message(message("poison"))
+    await accept_message(message("next"))
+    for attempt in range(1, delivery.MAX_EXECUTION_ATTEMPTS + 1):
+        with pytest.raises(asyncio.CancelledError):
+            await execute_one(agent)
+        counted = await pg.fetchval("SELECT attempts FROM message_inbox WHERE message_id='poison'")
+        assert counted == attempt
+        assert not await execute_one(agent)  # Leased, and "next" waits its turn behind it.
+        await pg.execute("UPDATE message_inbox SET available_at=NOW()")
+    assert await execute_one(agent)  # Out of attempts: failed instead of run a fourth time.
+    poison = await pg.fetchrow(
+        "SELECT state,error_code,error_detail FROM message_inbox WHERE message_id='poison'"
+    )
+    assert (poison["state"], poison["error_code"]) == ("failed", "interrupted")
+    assert "3 times" in poison["error_detail"] and reports == ["interrupted"]
+    assert await execute_one(agent)
+    assert await pg.fetchval("SELECT state FROM message_inbox WHERE message_id='next'") == (
+        "completed"
+    )
+    assert delivery.UNPROCESSED == {}
 
 
 async def test_parallel_workers_serialize_group_and_allow_other_group(pg, monkeypatch):
@@ -141,7 +180,7 @@ async def test_parallel_workers_serialize_group_and_allow_other_group(pg, monkey
     started, release = asyncio.Event(), asyncio.Event()
     seen = []
 
-    async def process(msg):
+    async def process(msg, history):
         seen.append(msg.id)
         if msg.id == "first":
             started.set()
@@ -214,7 +253,7 @@ async def test_failed_execution_retries_are_bounded(pg, monkeypatch):
     assert not await execute_one(agent)
     # Ops gets a publishable summary: type and this repo's frames, never the message.
     detail = await pg.fetchval("SELECT error_detail FROM message_inbox")
-    assert detail.startswith("ValueError at delivery.py:") and "chat text" not in detail
+    assert detail.startswith("ValueError at agent.py:") and "chat text" not in detail
     assert (await queue_status())["failed_executions"][0]["error_detail"] == detail
     assert delivery.TERMINAL_FAILURES == {"ValueError": 1}
     assert reports == [("ops.yml", {"every": 600, "reason": "ValueError"})]
@@ -244,7 +283,7 @@ async def test_uncertain_admin_retry_only_resends_saved_reply(pg, monkeypatch):
 async def test_swallowed_tool_failure_rolls_back(pg, monkeypatch):
     await setup(pg)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](1, "beer")
         try:
@@ -265,7 +304,7 @@ async def test_bad_tool_input_undoes_only_that_tool_and_still_replies(pg, monkey
     await setup(pg)
     from src.beerbot import tools as tools_module
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["add_debt"]("bob", 3)
         failing = AsyncMock(side_effect=ValueError("bad drink"))
@@ -287,7 +326,7 @@ async def test_execution_deadline_rolls_back_mutations(pg, monkeypatch):
     await setup(pg)
     monkeypatch.setattr("src.beerbot.delivery.EXECUTION_TIMEOUT", 0.2)
 
-    async def process(msg):
+    async def process(msg, history):
         tools = {t.__name__: t for t in create_tools(context(msg))}
         await tools["log_drinks"](1, "beer")
         await asyncio.sleep(5)
@@ -347,22 +386,111 @@ async def test_delivery_retry_limit_and_expiration(pg, monkeypatch):
     assert not await retry_delivery(await pg.fetchval("SELECT id FROM message_outbox"), True)
 
 
-async def test_completed_history_survives_new_agent(pg, monkeypatch):
+async def test_history_is_the_stored_chat_before_the_message(pg, monkeypatch):
+    # Read from the inbox for every message: it survives restarts, never outlives retention,
+    # and never includes the message itself or what came after it.
     await setup(pg)
+    await accept_message(message("expired", text="old news"))
+    await pg.execute("UPDATE message_inbox SET payload=NULL, state='completed'")  # Retention.
     first = BeerAgent()
-    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="Previous reply"))
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍺 for Alice"))
     await accept_message(message())
     await execute_one(first)
-    replacement = BeerAgent()
+    echo = message("echo", text="+1🍺 for Alice").model_copy(
+        update={"sender_type": "bot", "name": "beerius"}
+    )
+    await delivery.accept_context(echo, "beerius")  # GroupMe echoes the delivered reply.
+    for id, text in (("current", "how many?"), ("later", "+1 wine")):
+        await accept_message(message(id, text=text))
+    seen = {}
 
-    async def inspect_history(msg):
-        assert [m.text for m in replacement._get_history("g1")] == ["+1 beer", "Previous reply"]
+    async def process(msg, history):
+        seen[msg.id] = [(m.name, m.text) for m in history]
         return None
 
-    monkeypatch.setattr(replacement, "process_message", inspect_history)
-    await accept_message(message("follow-up", text="how many?"))
-    await execute_one(replacement)
-    assert await pg.fetchval("SELECT COUNT(*) FROM message_inbox WHERE state='completed'") == 2
+    replacement = BeerAgent()
+    monkeypatch.setattr(replacement, "process_message", process)
+    assert await execute_one(replacement)
+    assert seen == {"current": [("Alice", "+1 beer"), ("beerius", "+1🍺 for Alice")]}
+
+
+def google_turn(*calls):
+    """One model turn calling these (name, arguments) tools."""
+    from google.genai import types
+
+    parts = [types.Part(function_call=types.FunctionCall(name=n, args=a)) for n, a in calls]
+    content = types.Content(role="model", parts=parts)
+    return types.GenerateContentResponse(
+        candidates=[types.Candidate(finish_reason="STOP", content=content)]
+    )
+
+
+def person(id: str, user: str, text: str, reply_to: str | None = None) -> GroupMeMessage:
+    thread = [GroupMeAttachment(type="reply", reply_id=reply_to)] if reply_to else []
+    return message(id, text=text).model_copy(
+        update={"user_id": user, "sender_id": user, "name": user.title(), "attachments": thread}
+    )
+
+
+async def test_reply_targets_resolve_by_id_and_through_beerius_posts(pg, monkeypatch):
+    await setup(pg)
+    first = BeerAgent()
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍸 for Jerry"))
+    await accept_message(person("jerry-1", "jerry", "+1 cocktail"))
+    assert await execute_one(first)
+    echo = message("post-1", text="+1🍸 for Jerry").model_copy(
+        update={"sender_type": "bot", "name": "beerius", "user_id": "bot"}
+    )
+    await delivery.accept_context(echo, "beerius")
+    await pg.execute("""INSERT INTO message_inbox(group_id,message_id,payload,state)
+        SELECT 'g1','filler-'||i,'{}','completed' FROM generate_series(1,12) i""")
+    replied, answered = await delivery.reply_target(person("b1", "bob", "wine", "post-1"))
+    assert (replied.text, answered.id) == ("+1🍸 for Jerry", "jerry-1")
+    replied, answered = await delivery.reply_target(person("b2", "bob", "lol", "jerry-1"))
+    assert (replied.name, answered) == ("Jerry", None)  # Older than the history window, too.
+    assert await delivery.reply_target(person("b3", "bob", "hm", "gone")) == (None, None)
+    assert await delivery.reply_target(person("b4", "bob", "hi")) == (None, None)
+
+
+async def test_correcting_by_replying_to_beerius_fixes_the_drinker(pg, monkeypatch):
+    # Bob replies to "+1🍸 for Jerry" with "that was a wine": the correction is Jerry's.
+    from google import genai
+
+    await setup(pg)
+    first = BeerAgent()
+    monkeypatch.setattr(first, "process_message", AsyncMock(return_value="+1🍸 for Jerry"))
+    await accept_message(person("jerry-1", "jerry", "+1 cocktail"))
+    assert await execute_one(first)
+    jerry = await pg.fetchval(
+        "INSERT INTO users(groupme_user_id,name) VALUES('jerry','Jerry') RETURNING id"
+    )
+    await pg.execute(
+        """INSERT INTO beers(user_id,group_id,quantity,drink_type,message_id)
+           VALUES($1,'g1',1,'cocktail','jerry-1')""",
+        jerry,
+    )
+    echo = message("post-1", text="+1🍸 for Jerry").model_copy(
+        update={"sender_type": "bot", "name": "beerius", "user_id": "bot"}
+    )
+    await delivery.accept_context(echo, "beerius")
+    client = genai.Client(api_key="synthetic")
+    remove = {"count": 1, "drink_type": "cocktail", "target_user_id": "jerry"}
+    log = {"count": 1, "drink_type": "wine", "target_user_ids": ["jerry"]}
+    client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            google_turn(("remove_drinks", remove), ("log_drinks", log)),
+            google_turn(("reply", {"message": "Fixed: a wine for Jerry."})),
+        ]
+    )
+    agent = BeerAgent()
+    agent.client = client
+    await accept_message(person("bob-1", "bob", "that was a wine not a cocktail", "post-1"))
+    assert await execute_one(agent)
+    drinks = await pg.fetch("""SELECT u.groupme_user_id, b.drink_type, b.quantity
+        FROM beers b JOIN users u ON u.id=b.user_id""")
+    assert [tuple(row) for row in drinks] == [("jerry", "wine", 1)]
+    system = client.aio.models.generate_content.call_args_list[0].kwargs["config"]
+    assert "Replying to [beerius]'s answer to [Jerry] (id: jerry)" in system.system_instruction
 
 
 def test_audited_tools_preserve_google_function_schemas():

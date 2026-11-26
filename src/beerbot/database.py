@@ -22,8 +22,8 @@ class ExecutionScope:
 
     @asynccontextmanager
     async def acquire(self):
-        # SDK tool calls may be concurrent. asyncpg needs sequential use of
-        # the connection that owns the encompassing message transaction.
+        # The tool loop runs calls one at a time; the lock keeps every use of the connection
+        # that owns the message transaction sequential, as asyncpg requires.
         async with self.lock:
             yield self.connection
 
@@ -639,6 +639,17 @@ SCHEMA_MIGRATIONS += (
             """ALTER TABLE message_inbox
                ADD COLUMN IF NOT EXISTS agent TEXT NOT NULL DEFAULT 'beerius'""",
         ),
+    ),
+)
+
+
+SCHEMA_MIGRATIONS += (
+    (
+        13,
+        "drop_dev_requests",
+        # Unused since beerdev became a peer bot, and it kept request text past the three-day
+        # retention, forever.
+        ("DROP TABLE IF EXISTS dev_requests",),
     ),
 )
 
