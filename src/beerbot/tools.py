@@ -454,7 +454,7 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         if target_user_id:
             uid = _validate_user_id(ctx, target_user_id)
             user = await _get_or_create_user(ctx, uid)
-            user_stat = next((u for u in stats.user_stats if u.name == user.name), None)
+            user_stat = next((u for u in stats.user_stats if u.user_id == user.id), None)
             return {
                 "since": since_dt.isoformat(),
                 "until": until_dt.isoformat() if until_dt else "now",
@@ -483,35 +483,14 @@ def create_tools(ctx: ToolContext) -> list[Callable]:
         uid = _validate_user_id(ctx, target_user_id)
         user = await _get_or_create_user(ctx, uid)
 
-        stats = await beer_repo.get_user_stats_in_group(user.id, ctx.group_id)
-        by_type = await beer_repo.get_user_stats_by_type(user.id, ctx.group_id)
-
         now = datetime.now(EASTERN)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_of_week = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
+        start_of_week = start_of_day - timedelta(days=now.weekday())
+        summary = await beer_repo.get_user_summary(
+            user.id, ctx.group_id, start_of_day, start_of_week
         )
-
-        today_stats = await beer_repo.get_group_stats(ctx.group_id, since=start_of_day)
-        week_stats = await beer_repo.get_group_stats(ctx.group_id, since=start_of_week)
-
-        today_count = next(
-            (u.total_beers for u in today_stats.user_stats if u.name == user.name), 0
-        )
-        week_count = next((u.total_beers for u in week_stats.user_stats if u.name == user.name), 0)
-
-        breakdown = {dt.value: count for dt, count in by_type.items()}
-
-        return {
-            "user": user.name,
-            "total": stats.total_beers if stats else 0,
-            "today": today_count,
-            "this_week": week_count,
-            "breakdown": breakdown,
-            "last_drink_at": stats.last_beer_at.isoformat()
-            if stats and stats.last_beer_at
-            else None,
-        }
+        last = summary.pop("last_drink_at")
+        return {"user": user.name, **summary, "last_drink_at": last.isoformat() if last else None}
 
     async def get_group_stats() -> dict:
         """Get all-time stats for the entire group."""

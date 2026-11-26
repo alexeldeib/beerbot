@@ -181,6 +181,38 @@ async def test_drinks_and_zyn_count_from_when_they_were_sent(pg):
     assert await pg.fetchval("SELECT logged_at <= now() FROM beers WHERE drink_type='wine'")
 
 
+async def test_members_sharing_a_display_name_keep_their_own_stats(pg):
+    await database.init_db()
+    for uid in ("alex-1", "alex-2"):
+        await user_repo.get_or_create(uid, "Alex")
+    ids = dict(await pg.fetch("SELECT groupme_user_id, id FROM users"))
+    await pg.execute(
+        """INSERT INTO beers(user_id,group_id,quantity,drink_type,logged_at)
+           VALUES($1,'g1',3,'beer',now()),($1,'g1',1,'wine',now()-interval '30 days'),
+                 ($2,'g1',5,'beer',now())""",
+        ids["alex-1"],
+        ids["alex-2"],
+    )
+
+    def tools(sender: str):
+        ctx = ToolContext("g1", f"m-{sender}", sender, "Alex", None, [])
+        return {tool.__name__: tool for tool in create_tools(ctx)}
+
+    stats = await tools("alex-1")["get_user_stats"]()
+    assert {k: stats[k] for k in ("total", "today", "this_week", "breakdown")} == {
+        "total": 4,
+        "today": 3,
+        "this_week": 3,
+        "breakdown": {"beer": 3, "wine": 1},
+    }
+    assert stats["last_drink_at"] is not None
+    assert (await tools("alex-2")["get_user_stats"]())["today"] == 5
+    recent = await tools("alex-2")["get_recent_drinks"](target_user_id="alex-2")
+    assert recent["total"] == 5
+    empty = await tools("new")["get_user_stats"]()
+    assert (empty["total"], empty["breakdown"], empty["last_drink_at"]) == (0, {}, None)
+
+
 async def test_chat_queries_survive_a_migration_adding_a_column(pg):
     # Prepared statements outlive DDL (Neon's pooler caches them by text). A star result type
     # changes with the table and fails the cached plan inside a transaction (2026-11-25 outage).

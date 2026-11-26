@@ -291,6 +291,7 @@ class TestGetRecentDrinks:
         mock_user.get_or_create = AsyncMock(return_value=user_mock)
 
         user_stat = MagicMock()
+        user_stat.user_id = 1
         user_stat.name = "Alice"
         user_stat.total_beers = 7
         stats = MagicMock()

@@ -102,6 +102,7 @@ Beer = Drink
 class UserStats(BaseModel):
     """Statistics for a single user."""
 
+    user_id: int  # Match members by this: display names repeat.
     name: str
     total_beers: int
     last_beer_at: Optional[datetime] = None

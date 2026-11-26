@@ -213,7 +213,7 @@ class BeerRepository:
 
             # User stats query
             user_stats_query = f"""
-                SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
+                SELECT u.id, u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
                 FROM beers b
                 JOIN users u ON b.user_id = u.id
                 WHERE {where_clause}
@@ -224,6 +224,7 @@ class BeerRepository:
 
             user_stats = [
                 UserStats(
+                    user_id=row["id"],
                     name=row["name"],
                     total_beers=int(row["total"]),
                     last_beer_at=row["last_beer"],
@@ -274,35 +275,34 @@ class BeerRepository:
                 drink_type_counts=drink_type_counts,
             )
 
-    async def get_user_stats_in_group(
-        self,
-        user_id: int,
-        group_id: str,
-    ) -> UserStats | None:
-        """Get stats for a specific user in a group."""
+    async def get_user_summary(
+        self, user_id: int, group_id: str, day_start: datetime, week_start: datetime
+    ) -> dict:
+        """One member's drinks in a group: totals all time, today and this week, all time by
+        type, and when they last drank. One query, by user id (display names repeat)."""
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await conn.fetch(
                 """
-                SELECT u.name, SUM(b.quantity) as total, MAX(b.logged_at) as last_beer
-                FROM beers b
-                JOIN users u ON b.user_id = u.id
-                WHERE b.user_id = $1 AND b.group_id = $2
-                GROUP BY u.id, u.name
+                SELECT drink_type, SUM(quantity) AS total, MAX(logged_at) AS last,
+                       COALESCE(SUM(quantity) FILTER (WHERE logged_at >= $3), 0) AS today,
+                       COALESCE(SUM(quantity) FILTER (WHERE logged_at >= $4), 0) AS week
+                FROM beers WHERE user_id = $1 AND group_id = $2
+                GROUP BY drink_type
                 """,
                 user_id,
                 group_id,
+                day_start,
+                week_start,
             )
-
-            if not row or row["total"] is None:
-                return None
-
-            return UserStats(
-                name=row["name"],
-                total_beers=int(row["total"]),
-                last_beer_at=row["last_beer"],
-            )
+        return {
+            "total": sum(int(row["total"]) for row in rows),
+            "today": sum(int(row["today"]) for row in rows),
+            "this_week": sum(int(row["week"]) for row in rows),
+            "breakdown": {row["drink_type"]: int(row["total"]) for row in rows},
+            "last_drink_at": max((row["last"] for row in rows), default=None),
+        }
 
     async def delete_last_beer(self, user_id: int, group_id: str) -> int:
         """Delete the most recent beer entry for a user in a group.
@@ -624,38 +624,6 @@ class BeerRepository:
                     drink_type.value,
                 )
             return int(result)
-
-    async def get_user_stats_by_type(
-        self,
-        user_id: int,
-        group_id: str,
-    ) -> dict[DrinkType, int]:
-        """Get breakdown of drinks by type for a user in a group.
-
-        Returns:
-            Dict mapping DrinkType to count (only includes types with > 0)
-        """
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT drink_type, SUM(quantity) as total
-                FROM beers
-                WHERE user_id = $1 AND group_id = $2
-                GROUP BY drink_type
-                """,
-                user_id,
-                group_id,
-            )
-
-            result: dict[DrinkType, int] = {}
-            for row in rows:
-                drink_type_str = row["drink_type"] or "beer"
-                drink_type = DrinkType.from_string(drink_type_str)
-                result[drink_type] = int(row["total"])
-
-            return result
 
     async def get_leaderboard_with_breakdown(
         self,
