@@ -10,15 +10,13 @@ from functools import wraps
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable
-from zoneinfo import ZoneInfo
 
+from .config import EASTERN
 from .models import DrinkType
 from .database import execution_scope
 from .repositories import beer_repo, debt_repo, user_repo, zyn_repo
 
 logger = logging.getLogger(__name__)
-
-EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass

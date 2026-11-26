@@ -2,9 +2,8 @@
 
 import json
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-
+from .config import EASTERN
 from .database import get_pool
 from .models import (
     Beer,
@@ -32,9 +31,6 @@ from .routing import (
     groupme_route_key,
     groupme_workspace_id,
 )
-
-# Use Eastern time for all date calculations
-EASTERN = ZoneInfo("America/New_York")
 
 
 def _json_object(value: object) -> dict[str, object]:

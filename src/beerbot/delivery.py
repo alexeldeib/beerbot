@@ -311,12 +311,7 @@ async def execute_one(agent) -> bool:
                             )
                         ]
                         with bind_execution(conn) as scope:
-                            if row["agent"] == "beerdev":
-                                from . import beerdev  # beerdev reads status from this module
-
-                                reply = await beerdev.process(message, agent)
-                            else:
-                                reply = await agent.process_message(message, history)
+                            reply = await agent.answer(message, history, row["agent"])
                             if scope.failed:
                                 raise RuntimeError("Tool execution failed")
                             trace = json.dumps(scope.tools)

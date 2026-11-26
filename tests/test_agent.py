@@ -102,102 +102,64 @@ class TestExtractMentionedUsers:
         assert result[0] == ("12345678", "User 5678")
 
 
-class TestBeerAgentInit:
-    @patch("src.beerbot.agent.settings")
-    def test_no_api_key(self, mock_settings):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        assert agent.client is None
+@pytest.fixture
+def model(monkeypatch):
+    """Beerius on a fake Google client, configured through the real settings. Returns the
+    client; its generate_content answers with an empty turn unless a test says otherwise."""
+    monkeypatch.setattr(agent_module.settings, "llm_provider", "google")
+    monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+    monkeypatch.setattr(agent_module.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(agent_module.settings, "enable_image_analysis", False)
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(return_value=empty_response())
+    monkeypatch.setattr(agent_module.genai, "Client", lambda api_key: client)
+    return client
 
-    @patch("src.beerbot.agent.genai")
-    @patch("src.beerbot.agent.settings")
-    def test_with_api_key(self, mock_settings, mock_genai):
-        mock_settings.gemini_api_key = "test-key"
-        mock_genai.Client.return_value = MagicMock()
-        agent = BeerAgent()
-        assert agent.client is not None
+
+class TestBeerAgentInit:
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        assert BeerAgent().client is None
+
+    def test_with_api_key(self, model):
+        assert BeerAgent().client is model
 
 
 class TestBeerAgentProcessMessage:
-    @patch("src.beerbot.agent.settings")
-    async def test_returns_none_without_client(self, mock_settings):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message(), [])
-        assert result is None
+    async def test_raises_without_client_so_the_message_retries(self, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        with pytest.raises(RuntimeError, match="Model client unavailable"):
+            await BeerAgent().process_message(_make_message(), [])
 
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_returns_reply_via_tool(self, mock_genai, mock_settings, mock_create_tools):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
+    async def test_returns_reply_via_tool(self, model, monkeypatch):
         # Simulate the reply tool setting ctx.reply_text during the tool loop
         def setup_tools(ctx):
             ctx.reply_text = "+1🍺 for Alice. 5🍺 total."
             ctx.tools_called = True
             return []
 
-        mock_create_tools.side_effect = setup_tools
-
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message(), [])
+        monkeypatch.setattr(agent_module, "create_tools", setup_tools)
+        result = await BeerAgent().process_message(_make_message(), [])
         assert result == "+1🍺 for Alice. 5🍺 total."
 
-    @patch("src.beerbot.agent.create_tools")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_suppresses_personality_when_rate_limited(
-        self, mock_genai, mock_settings, mock_create_tools
-    ):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_response = empty_response()
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
-
+    async def test_suppresses_personality_when_rate_limited(self, model, monkeypatch):
         # Model calls reply but no data tools
         def setup_tools(ctx):
             ctx.reply_text = "Nice weather we're having!"
             return []
 
-        mock_create_tools.side_effect = setup_tools
-
+        monkeypatch.setattr(agent_module, "create_tools", setup_tools)
         agent = BeerAgent()
-        # Drain the rate limiter
-        bucket = agent._get_bucket("group-1")
-        bucket.tokens = 0.0
+        agent._get_bucket("group-1").tokens = 0.0  # Drain the rate limiter
+        # Suppressed: no tools were called and the bucket is empty
+        assert await agent.process_message(_make_message(), []) is None
 
-        result = await agent.process_message(_make_message(), [])
-        # Should be suppressed since no tools were called and bucket is empty
-        assert result is None
-
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_handles_gemini_error(self, mock_genai, mock_settings):
-        mock_settings.gemini_api_key = "test-key"
-        mock_settings.image_analysis_enabled = False
-        mock_settings.agent_max_tool_calls = 5
-
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API error"))
-        mock_genai.Client.return_value = mock_client
-
-        agent = BeerAgent()
-        result = await agent.process_message(_make_message(), [])
-        assert result is None
+    async def test_model_errors_raise_so_the_message_retries(self, model):
+        model.aio.models.generate_content = AsyncMock(side_effect=Exception("API error"))
+        with pytest.raises(Exception, match="API error"):
+            await BeerAgent().process_message(_make_message(), [])
 
 
 def _bot_post(**overrides) -> GroupMeMessage:
@@ -361,19 +323,11 @@ class TestFetchMedia:
 
 
 class TestGenerateWeeklyRecap:
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_enriched_recap_includes_fun_facts(
-        self, mock_genai, mock_settings, mock_beer_repo
-    ):
-        mock_settings.gemini_api_key = "test-key"
-
-        mock_response = empty_response("Weekly recap text!")
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
+    async def test_enriched_recap_includes_fun_facts(self, mock_beer_repo, model):
+        model.aio.models.generate_content = AsyncMock(
+            return_value=empty_response("Weekly recap text!")
+        )
 
         # Mock basic stats
         week_stats = MagicMock()
@@ -406,13 +360,12 @@ class TestGenerateWeeklyRecap:
         )
         mock_beer_repo.get_milestones = AsyncMock(return_value=[("Bryan", 200)])
 
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
+        result = await BeerAgent().generate_weekly_recap("group-1")
 
         assert result == "Weekly recap text!"
 
         # Verify the prompt sent to Gemini includes fun facts
-        call_args = mock_client.aio.models.generate_content.call_args
+        call_args = model.aio.models.generate_content.call_args
         prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" in prompt
         assert "Saturday" in prompt
@@ -426,17 +379,9 @@ class TestGenerateWeeklyRecap:
         assert "ALL-TIME OVERALL RANKINGS" not in prompt
         mock_beer_repo.get_leaderboard_with_breakdown.assert_not_awaited()
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_recap_no_fun_facts_when_empty(self, mock_genai, mock_settings, mock_beer_repo):
-        mock_settings.gemini_api_key = "test-key"
-
-        mock_response = empty_response("Quiet week.")
-        mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        mock_genai.Client.return_value = mock_client
+    async def test_recap_no_fun_facts_when_empty(self, mock_beer_repo, model):
+        model.aio.models.generate_content = AsyncMock(return_value=empty_response("Quiet week."))
 
         week_stats = MagicMock()
         week_stats.total_beers = 3
@@ -452,56 +397,34 @@ class TestGenerateWeeklyRecap:
         mock_beer_repo.get_type_champions = AsyncMock(return_value=[])
         mock_beer_repo.get_milestones = AsyncMock(return_value=[])
 
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
+        result = await BeerAgent().generate_weekly_recap("group-1")
 
         assert result == "Quiet week."
-        call_args = mock_client.aio.models.generate_content.call_args
+        call_args = model.aio.models.generate_content.call_args
         prompt = call_args.kwargs["contents"][0].parts[0].text
         assert "FUN FACTS" not in prompt
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    async def test_recap_returns_none_without_client(self, mock_settings, mock_beer_repo):
-        mock_settings.gemini_api_key = None
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
-        assert result is None
+    async def test_recap_returns_none_without_client(self, mock_beer_repo, monkeypatch):
+        monkeypatch.setattr(agent_module.settings, "llm_api_key", None)
+        monkeypatch.setattr(agent_module.settings, "gemini_api_key", None)
+        assert await BeerAgent().generate_weekly_recap("group-1") is None
 
-    @pytest.mark.asyncio
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
-    async def test_recap_returns_none_when_no_activity(
-        self, mock_genai, mock_settings, mock_beer_repo
-    ):
-        mock_settings.gemini_api_key = "test-key"
-        mock_genai.Client.return_value = MagicMock()
-
-        week_stats = MagicMock()
-        week_stats.total_beers = 0
-        mock_beer_repo.get_group_stats = AsyncMock(return_value=week_stats)
-
-        agent = BeerAgent()
-        result = await agent.generate_weekly_recap("group-1")
-        assert result is None
+    async def test_recap_returns_none_when_no_activity(self, mock_beer_repo, model):
+        mock_beer_repo.get_group_stats = AsyncMock(return_value=MagicMock(total_beers=0))
+        assert await BeerAgent().generate_weekly_recap("group-1") is None
 
     @pytest.mark.parametrize(
         "outcome,error",
         [(RuntimeError("API error"), "API error"), (empty_response("  "), "empty recap")],
     )
     @patch("src.beerbot.agent.beer_repo")
-    @patch("src.beerbot.agent.settings")
-    @patch("src.beerbot.agent.genai")
     async def test_model_failures_raise_so_the_scheduler_retries(
-        self, mock_genai, mock_settings, mock_beer_repo, outcome, error
+        self, mock_beer_repo, model, outcome, error
     ):
         # None means "nothing to recap" (a finished week); a failure must not look like that.
-        mock_settings.gemini_api_key = "test-key"
-        client = MagicMock()
-        client.aio.models.generate_content = AsyncMock(side_effect=[outcome])
-        mock_genai.Client.return_value = client
+        model.aio.models.generate_content = AsyncMock(side_effect=[outcome])
         stats = MagicMock(total_beers=3, unique_drinkers=1, drink_type_counts={}, user_stats=[])
         mock_beer_repo.get_group_stats = AsyncMock(return_value=stats)
         mock_beer_repo.get_split_g_stats = AsyncMock(return_value=MagicMock(total_splits=0))

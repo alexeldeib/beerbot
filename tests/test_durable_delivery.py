@@ -253,7 +253,7 @@ async def test_failed_execution_retries_are_bounded(pg, monkeypatch):
     assert not await execute_one(agent)
     # Ops gets a publishable summary: type and this repo's frames, never the message.
     detail = await pg.fetchval("SELECT error_detail FROM message_inbox")
-    assert detail.startswith("ValueError at delivery.py:") and "chat text" not in detail
+    assert detail.startswith("ValueError at agent.py:") and "chat text" not in detail
     assert (await queue_status())["failed_executions"][0]["error_detail"] == detail
     assert delivery.TERMINAL_FAILURES == {"ValueError": 1}
     assert reports == [("ops.yml", {"every": 600, "reason": "ValueError"})]

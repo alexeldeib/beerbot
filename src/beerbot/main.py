@@ -7,7 +7,6 @@ import re
 import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -16,7 +15,7 @@ from pydantic import BaseModel
 
 from .agent import beer_agent
 from . import beerdev, usage
-from .config import settings
+from .config import EASTERN, settings
 from .database import close_pool, init_db, get_pool
 from .groupme_client import groupme_client
 from .llm import model_profile
@@ -54,7 +53,6 @@ def _redact_tokens(record: logging.LogRecord) -> bool:
 
 logging.getLogger("uvicorn.access").addFilter(_redact_tokens)
 
-EASTERN = ZoneInfo("America/New_York")
 _recap_revision = 0
 
 
@@ -109,7 +107,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     runtime = QueueRuntime()
     app.state.queue_runtime = runtime
-    if settings.is_development is False and not settings.groupme_webhook_secret:
+    if not settings.is_development and not settings.groupme_webhook_secret:
         logger.warning("GROUPME_WEBHOOK_SECRET is not configured")
     tasks = [
         asyncio.create_task(_recap_scheduler()),

@@ -9,8 +9,8 @@ import httpx
 from google import genai
 from openai import AsyncOpenAI
 
-from .config import settings
-from .database import execution_scope
+from . import beerdev
+from .config import EASTERN, settings
 from .delivery import reply_target
 from .llm import model_profile
 from .model_runtime import Media, GoogleSession, CompatibleSession, ModelProtocolError, run_tools
@@ -231,23 +231,17 @@ def extract_mentioned_users(
 
 
 class BeerAgent:
-    """Agent that processes messages through the bounded provider-neutral tool loop."""
+    """The model client both bots use, and Beerius answering messages with it."""
 
     def __init__(self):
         self.client: genai.Client | AsyncOpenAI | None = None
         self.model_profile = model_profile(settings)
-        llm_api_key = settings.llm_api_key if isinstance(settings.llm_api_key, str) else None
-        gemini_api_key = (
-            settings.gemini_api_key if isinstance(settings.gemini_api_key, str) else None
-        )
-        api_key = llm_api_key or (
-            gemini_api_key if self.model_profile.provider == "google" else None
-        )
+        api_key = settings.model_api_key
         if api_key and self.model_profile.provider == "google":
             self.client = genai.Client(api_key=api_key)
         elif self.model_profile.provider == "openai_compatible" and self.model_profile.base_url:
             self.client = AsyncOpenAI(
-                api_key=llm_api_key or "unused",
+                api_key=api_key,
                 base_url=self.model_profile.base_url,
                 timeout=60,
                 max_retries=0,
@@ -258,6 +252,27 @@ class BeerAgent:
                 self.model_profile.provider,
             )
         self._rate_limiters: dict[str, TokenBucket] = {}
+
+    async def answer(
+        self, message: GroupMeMessage, history: list[GroupMeMessage], agent: str
+    ) -> str | None:
+        """The reply of the bot the router chose: beerdev, or Beerius."""
+        if agent == "beerdev":
+            return await beerdev.process(message, self)
+        return await self.process_message(message, history)
+
+    async def run(self, system: str, contents: list, tools: list, source: str) -> str:
+        """The bounded tool loop on the configured model, for either bot. Returns the model's
+        final text, empty once the reply tool ran."""
+        if not self.model_profile.capabilities.tools:
+            raise RuntimeError("Answering messages requires tool calling")
+        return await run_tools(
+            self._session(system, contents, tools, source),
+            tools,
+            max_rounds=settings.agent_max_tool_calls,
+            max_calls=settings.agent_max_executed_tools,
+            terminal_tool="reply",
+        )
 
     def _session(self, system: str, contents: list, tools: list, source: str = "beerius"):
         model = self.model_profile.model
@@ -286,16 +301,14 @@ class BeerAgent:
         answered: GroupMeMessage | None = None,
     ) -> str:
         """Build context section for system prompt."""
-        from zoneinfo import ZoneInfo
-
-        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_et = datetime.now(EASTERN)
         mentioned = extract_mentioned_users(message.text, message.attachments)
         lines = [
             "\n=== CONTEXT ===",
             f"Current time: {now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}",
             f"Sender: {message.name} (id: {message.user_id})",
         ]
-        if message.user_id == settings.owner_user_id:
+        if settings.is_owner(message.user_id):
             lines.append(
                 "Sender is the bot's owner: when they tell you to log, backfill, correct, or "
                 "remove drinks for anyone, do it with the tools even if a rule above says not "
@@ -338,13 +351,10 @@ class BeerAgent:
     ) -> str | None:
         """Answer one message as Beerius. `history` is the group's chat before it, oldest first,
         read from the durable inbox (whose advisory lock already runs one message per group at a
-        time). Returns None if the agent decides to stay silent.
+        time). Returns None if the agent decides to stay silent; raises so the message retries.
         """
         if not self.client:
-            if execution_scope.get():
-                raise RuntimeError("Model client unavailable")
-            logger.warning("Agent skipped: model client is not configured")
-            return None
+            raise RuntimeError("Model client unavailable")
 
         mentioned = extract_mentioned_users(message.text, message.attachments)
         replied, answered = await reply_target(message)
@@ -359,7 +369,7 @@ class BeerAgent:
             replied_to_user=(target.user_id, target.name)
             if target and target.sender_type != "bot"
             else None,
-            is_owner=message.user_id == settings.owner_user_id,
+            is_owner=settings.is_owner(message.user_id),
             sent_at=datetime.fromtimestamp(message.created_at, UTC),
         )
         tools = create_tools(ctx)
@@ -373,22 +383,10 @@ class BeerAgent:
         contents = await self._build_contents(message)
 
         try:
-            if self.model_profile.capabilities.tools is False:
-                raise RuntimeError("Message processing requires tool calling")
-            session = self._session(system_prompt, contents, tools)
-            max_calls = settings.agent_max_executed_tools
-            await run_tools(
-                session,
-                tools,
-                max_rounds=settings.agent_max_tool_calls,
-                max_calls=max_calls if isinstance(max_calls, int) else 20,
-                terminal_tool="reply",
-            )
+            await self.run(system_prompt, contents, tools, "beerius")
         except Exception:
             logger.exception("Model execution failed")
-            if execution_scope.get():
-                raise
-            return None
+            raise
 
         reply = ctx.reply_text  # None if model chose silence
 
@@ -417,10 +415,7 @@ class BeerAgent:
         if not self.client:
             return None
 
-        from zoneinfo import ZoneInfo
-
-        eastern = ZoneInfo("America/New_York")
-        now = datetime.now(eastern)
+        now = datetime.now(EASTERN)
         start_of_week = (now - timedelta(days=now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         )

@@ -17,15 +17,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from . import delivery, usage
-from .config import settings
+from .config import EASTERN, settings
 from .database import get_pool
 from .dispatch import dispatch
-from .model_runtime import run_tools
 from .models import GroupMeMessage
 from .tools import audit
 
@@ -405,12 +403,12 @@ async def process(message: GroupMeMessage, beerius) -> str | None:
     ctx = Context(
         group_id=message.group_id,
         message_id=message.id,
-        is_owner=bool(settings.owner_user_id) and message.user_id == settings.owner_user_id,
+        is_owner=settings.is_owner(message.user_id),
         text=message.text or "",
         replied_text=await replied_text(message),
     )
     tools = audit(create_tools(ctx))
-    now = datetime.now(ZoneInfo("America/New_York"))
+    now = datetime.now(EASTERN)
     lines = [
         PROMPT,
         "=== CONTEXT ===",
@@ -419,13 +417,5 @@ async def process(message: GroupMeMessage, beerius) -> str | None:
     ]
     if ctx.replied_text:
         lines.append(f"Replying to: {ctx.replied_text[:300]}")
-    session = beerius._session("\n".join(lines), [ctx.text or "(no text)"], tools, "beerdev")
-    max_calls = settings.agent_max_executed_tools
-    text = await run_tools(
-        session,
-        tools,
-        max_rounds=settings.agent_max_tool_calls,
-        max_calls=max_calls if isinstance(max_calls, int) else 20,
-        terminal_tool="reply",
-    )
+    text = await beerius.run("\n".join(lines), [ctx.text or "(no text)"], tools, "beerdev")
     return ctx.reply_text or text.strip() or None  # Answered in plain text: still an answer.

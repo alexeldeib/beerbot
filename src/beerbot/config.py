@@ -3,6 +3,10 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import Literal
+from zoneinfo import ZoneInfo
+
+# "Today" and "this week" are Eastern time.
+EASTERN = ZoneInfo("America/New_York")
 
 
 class Settings(BaseSettings):
@@ -93,6 +97,10 @@ class Settings(BaseSettings):
         if self.llm_provider == "google":
             return self.llm_api_key or self.gemini_api_key
         return self.llm_api_key or ("unused" if self.llm_base_url else None)
+
+    def is_owner(self, user_id: str) -> bool:
+        """The GroupMe sender whose commands override house rules: by id, never by name."""
+        return bool(self.owner_user_id) and user_id == self.owner_user_id
 
 
 settings = Settings()

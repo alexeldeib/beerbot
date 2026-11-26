@@ -140,7 +140,7 @@ async def test_failed_attempts_and_sends_are_the_workers_last_error(pg, monkeypa
     await delivery.accept_message(message())
     assert await delivery.execute_one(agent)  # Failed once; it retries later.
     error = runtime.snapshot()["last_error"]["execution"]
-    assert error["detail"].startswith("google.genai.errors.ServerError 503 at delivery.py:")
+    assert error["detail"].startswith("google.genai.errors.ServerError 503 at agent.py:")
     assert error["at"] and "chat text" not in error["detail"]
     await pg.execute("UPDATE message_inbox SET available_at=now()")
     assert await delivery.execute_one(agent)
