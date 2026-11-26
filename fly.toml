@@ -55,4 +55,3 @@ swap_size_mb = 256
   memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 256
