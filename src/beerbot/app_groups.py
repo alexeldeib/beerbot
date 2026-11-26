@@ -12,7 +12,7 @@ import asyncpg
 from fastapi import HTTPException
 from pydantic import Field
 
-from .activity import Command
+from .activity import LIVE_ACCOUNT, Command, lock_account
 from .config import settings
 from .database import get_pool
 
@@ -52,21 +52,6 @@ async def native_workspace(conn, workspace_id: str, account_id: str, owner=False
     return {**dict(workspace), "role": role}
 
 
-async def lock_account(conn, person):
-    row = await conn.fetchrow(
-        """SELECT a.id,a.settings,e.email FROM accounts a JOIN people p ON p.id=a.person_id
-           JOIN account_emails e ON e.account_id=a.id WHERE a.id=$1 AND a.person_id=$2
-           AND a.status='active' AND e.verified_at IS NOT NULL
-           AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-           FOR UPDATE OF a FOR SHARE OF p""",
-        person["account_id"],
-        person["id"],
-    )
-    if not row:
-        raise HTTPException(401, "Sign in again to continue")
-    return row
-
-
 async def live_invitation(conn, invitation_id: UUID):
     workspace_id = await conn.fetchval(
         "SELECT workspace_id FROM app_group_invitations WHERE id=$1", invitation_id
@@ -81,14 +66,12 @@ async def live_invitation(conn, invitation_id: UUID):
         workspace_id,
     )
     invitation = await conn.fetchrow(
-        """SELECT i.*,p.display_name AS inviter FROM app_group_invitations i
+        f"""SELECT i.*,p.display_name AS inviter FROM app_group_invitations i
            JOIN app_workspace_access m ON m.account_id=i.created_by_account_id AND m.workspace_id=i.workspace_id
            JOIN accounts a ON a.id=m.account_id JOIN people p ON p.id=a.person_id
            JOIN account_emails e ON e.account_id=a.id
            WHERE i.id=$1 AND i.revoked_at IS NULL AND i.expires_at>now()
-           AND m.active AND m.role='owner' AND a.status='active' AND e.verified_at IS NOT NULL
-           AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-           FOR UPDATE OF i""",
+           AND m.active AND m.role='owner' AND {LIVE_ACCOUNT} FOR UPDATE OF i""",
         invitation_id,
     )
     if not workspace or not invitation:
@@ -333,7 +316,8 @@ async def group_command(
                     if target == account["id"]:
                         raise HTTPException(409, "Choose another member")
                     if not await conn.fetchval(
-                        "SELECT 1 FROM accounts a JOIN account_emails e ON e.account_id=a.id JOIN people p ON p.id=a.person_id WHERE a.id=$1 AND a.status='active' AND e.verified_at IS NOT NULL AND p.canonical_person_id IS NULL AND p.status IN ('claimed','provisional')",
+                        f"""SELECT 1 FROM accounts a JOIN account_emails e ON e.account_id=a.id
+                           JOIN people p ON p.id=a.person_id WHERE a.id=$1 AND {LIVE_ACCOUNT}""",
                         target,
                     ):
                         raise HTTPException(409, "That member's account is unavailable")

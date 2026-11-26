@@ -16,6 +16,30 @@ from .config import settings
 from .database import get_pool
 from .models import DrinkType
 
+# The one account rule, over accounts a, account_emails e and people p. Acting needs an
+# active account with a verified email; signing in also admits a pending account whose
+# invitation is open. Either way the person must be live and unmerged.
+LIVE_PERSON = "p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL"
+LIVE_ACCOUNT = f"a.status='active' AND e.verified_at IS NOT NULL AND {LIVE_PERSON}"
+CAN_SIGN_IN = (
+    f"a.status IN ('active','pending') AND {LIVE_PERSON}"
+    " AND (e.verified_at IS NOT NULL OR e.invite_expires_at>now())"
+)
+
+
+async def lock_account(conn, person: dict):
+    """Serialize this account's commands with revocation; 401 once it is not live."""
+    row = await conn.fetchrow(
+        f"""SELECT a.id,a.settings,e.email FROM accounts a JOIN people p ON p.id=a.person_id
+           JOIN account_emails e ON e.account_id=a.id WHERE a.id=$1 AND a.person_id=$2
+           AND {LIVE_ACCOUNT} FOR UPDATE OF a FOR SHARE OF p""",
+        person["account_id"],
+        person["id"],
+    )
+    if not row:
+        raise HTTPException(401, "Sign in again to continue")
+    return row
+
 
 class Command(BaseModel):
     request_id: UUID
@@ -113,19 +137,7 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SET LOCAL lock_timeout='3s'")
         await conn.execute("SET LOCAL statement_timeout='10s'")
-        account_id = person["account_id"]
-        # Serializes this account's retries/edits and synchronizes account revocation.
-        account = await conn.fetchrow(
-            """SELECT a.id FROM accounts a JOIN people p ON p.id=a.person_id
-               JOIN account_emails e ON e.account_id=a.id WHERE a.id=$1 AND a.person_id=$2
-               AND a.status='active' AND e.verified_at IS NOT NULL
-               AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-               FOR UPDATE OF a FOR SHARE OF p""",
-            account_id,
-            person["id"],
-        )
-        if not account:
-            raise HTTPException(401, "Sign in again to continue")
+        account_id = (await lock_account(conn, person))["id"]
         existing = await conn.fetchrow(
             "SELECT fingerprint,result FROM app_commands WHERE account_id=$1 AND request_id=$2",
             account_id,

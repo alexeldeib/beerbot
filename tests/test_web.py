@@ -160,6 +160,32 @@ async def test_sessions_fail_closed(browser, pg, change):
     assert (await browser.get("/app/api/me")).status_code == 401
 
 
+async def test_admin_disable_ends_sessions_and_is_not_undone_by_invitation(
+    browser, pg, monkeypatch
+):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    headers = {"Authorization": "Bearer test-admin"}
+    await login(browser)
+    async with pg.acquire() as conn:
+        account_id = await conn.fetchval("SELECT id FROM accounts")
+    path = f"/admin/accounts/{account_id}/disable"
+    assert (await browser.post(path)).status_code == 401
+    result = await browser.post(path, headers=headers)
+    assert result.json() == {"status": "disabled", "account_id": account_id, "sessions_ended": 1}
+    assert (await browser.get("/app/api/me")).status_code == 401
+    missing = await browser.post("/admin/accounts/account:missing/disable", headers=headers)
+    assert missing.status_code == 404
+    reinvite = await browser.post(
+        "/admin/accounts/invite",
+        json={"person_id": "ace", "email": "ace@example.test"},
+        headers=headers,
+    )
+    assert reinvite.status_code == 409
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT status FROM accounts") == "disabled"
+        assert await conn.fetchval("SELECT count(*) FROM web_sessions") == 0
+
+
 async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
     monkeypatch.setattr(web.settings, "admin_token", "test-admin")
     assert (

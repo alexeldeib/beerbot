@@ -30,7 +30,7 @@ from .delivery import (
     retry_delivery,
     QueueRuntime,
 )
-from .web import router as web_router, InviteInput, invite_account
+from .web import router as web_router, InviteInput, disable_account, invite_account
 from .activity import AccessGrant, grant_access
 
 logging.basicConfig(
@@ -277,6 +277,11 @@ async def verify_ops_token(authorization: str | None = Header(None)) -> None:
 @app.post("/admin/accounts/invite", dependencies=[Depends(verify_admin_token)])
 async def invite_web_account(invitation: InviteInput):
     return await invite_account(invitation)
+
+
+@app.post("/admin/accounts/{account_id}/disable", dependencies=[Depends(verify_admin_token)])
+async def disable_web_account(account_id: str):
+    return await disable_account(account_id)
 
 
 @app.patch(

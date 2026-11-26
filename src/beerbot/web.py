@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
-from .activity import Command
+from .activity import CAN_SIGN_IN, LIVE_ACCOUNT, LIVE_PERSON, Command
 from . import app_groups
 
 router = APIRouter()
@@ -185,14 +185,10 @@ async def invite_account(data: InviteInput) -> dict:
             if held and own and held["id"] != own["id"]:
                 raise HTTPException(409, "The email and the person each have a pending invitation")
             person = await conn.fetchrow(
-                "SELECT display_name,status,canonical_person_id FROM people WHERE id=$1 FOR UPDATE",
+                f"SELECT display_name,{LIVE_PERSON} AS live FROM people p WHERE id=$1 FOR UPDATE",
                 person_id,
             )
-            if (
-                not person
-                or person["canonical_person_id"]
-                or person["status"] not in ("claimed", "provisional")
-            ):
+            if not person or not person["live"]:
                 raise HTTPException(409, "Person is unavailable for invitation")
             if user and not user["person_id"]:
                 if not await conn.fetchval(
@@ -244,6 +240,20 @@ async def invite_account(data: InviteInput) -> dict:
         raise HTTPException(409, "Email or person already has an account") from None
 
 
+async def disable_account(account_id: str) -> dict:
+    """Revoke now: the account fails every liveness check and its sessions end."""
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        # Accounts before sessions, as sign-in locks them; commands wait on this row.
+        if not await conn.fetchval(
+            "UPDATE accounts SET status='disabled',updated_at=now() WHERE id=$1 RETURNING id",
+            account_id,
+        ):
+            raise HTTPException(404, "Account not found")
+        ended = await conn.execute("DELETE FROM web_sessions WHERE account_id=$1", account_id)
+    return {"status": "disabled", "account_id": account_id, "sessions_ended": int(ended.split()[1])}
+
+
 @router.get("/app")
 async def dashboard_page():
     return FileResponse(STATIC / "app.html", media_type="text/html")
@@ -274,11 +284,8 @@ async def request_login(data: EmailInput, response: Response):
         await conn.execute("DELETE FROM login_challenges WHERE created_at < now()-interval '1 day'")
         await conn.execute("DELETE FROM web_sessions WHERE expires_at < now()")
         account_id = await conn.fetchval(
-            """SELECT a.id FROM account_emails e JOIN accounts a ON a.id=e.account_id
-               JOIN people p ON p.id=a.person_id
-               WHERE e.email=$1 AND a.status IN ('active','pending')
-               AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL
-               AND (e.verified_at IS NOT NULL OR e.invite_expires_at>now())""",
+            f"""SELECT a.id FROM account_emails e JOIN accounts a ON a.id=e.account_id
+               JOIN people p ON p.id=a.person_id WHERE e.email=$1 AND {CAN_SIGN_IN}""",
             data.email,
         )
         recent = await conn.fetchval(
@@ -323,8 +330,7 @@ async def verify_code(data: CodeInput, request: Request, response: Response):
     session = None
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
-            """SELECT c.*,a.status,e.verified_at,e.invite_expires_at>now() AS invited,
-                      p.status AS person_status,p.canonical_person_id
+            f"""SELECT c.account_id,c.code_hash,{CAN_SIGN_IN} AS eligible
                FROM login_challenges c JOIN accounts a ON a.id=c.account_id
                JOIN account_emails e ON e.account_id=a.id JOIN people p ON p.id=a.person_id
                WHERE c.token_hash=$1 AND c.expires_at>now() AND c.consumed_at IS NULL
@@ -335,13 +341,7 @@ async def verify_code(data: CodeInput, request: Request, response: Response):
             await conn.execute(
                 "UPDATE login_challenges SET attempts=attempts+1 WHERE token_hash=$1", digest(token)
             )
-            if (
-                hmac.compare_digest(row["code_hash"], digest(token + data.code))
-                and row["status"] in ("active", "pending")
-                and row["person_status"] in ("claimed", "provisional")
-                and row["canonical_person_id"] is None
-                and (row["verified_at"] or row["invited"])
-            ):
+            if hmac.compare_digest(row["code_hash"], digest(token + data.code)) and row["eligible"]:
                 await conn.execute(
                     "UPDATE login_challenges SET consumed_at=now() WHERE account_id=$1",
                     row["account_id"],
@@ -377,11 +377,10 @@ async def signed_in_person(request: Request) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT p.id,p.display_name,e.email,a.id AS account_id FROM web_sessions s
+            f"""SELECT p.id,p.display_name,e.email,a.id AS account_id FROM web_sessions s
                JOIN accounts a ON a.id=s.account_id JOIN account_emails e ON e.account_id=a.id
                JOIN people p ON p.id=a.person_id WHERE s.token_hash=$1 AND s.expires_at>now()
-               AND a.status='active' AND e.verified_at IS NOT NULL
-               AND p.status IN ('claimed','provisional') AND p.canonical_person_id IS NULL""",
+               AND {LIVE_ACCOUNT}""",
             digest(session_token),
         )
     if not row:
