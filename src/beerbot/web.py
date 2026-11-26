@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .database import get_pool
 from .activity import NewGroup, NewDrink, EditDrink, UndoDrink, run_command, writable_workspaces
-from .activity import CAN_SIGN_IN, LIVE_ACCOUNT, LIVE_PERSON, Command
+from .activity import CAN_SIGN_IN, LIVE_ACCOUNT, LIVE_PERSON, PRODUCTION_WORKSPACE, Command
 from . import app_groups
 
 router = APIRouter()
@@ -409,13 +409,12 @@ async def personal_stats(group: str | None = None, person: dict = Depends(signed
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
         groups = await conn.fetch(
-            """SELECT DISTINCT group_key AS group_id,group_name AS name FROM personal_activity
+            f"""SELECT DISTINCT group_key AS group_id,group_name AS name FROM personal_activity
                WHERE person_id=$1 AND environment='production'
                UNION SELECT coalesce(g.group_id,w.id),coalesce(g.name,w.name)
                FROM app_workspace_access a JOIN workspaces w ON w.id=a.workspace_id
                LEFT JOIN groups g ON g.workspace_id=w.id
-               WHERE a.account_id=$2 AND a.active
-               AND coalesce(w.settings->>'environment','production')='production'
+               WHERE a.account_id=$2 AND a.active AND {PRODUCTION_WORKSPACE}
                ORDER BY group_id""",
             person["id"],
             person.get("account_id", ""),

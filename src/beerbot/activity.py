@@ -16,6 +16,9 @@ from .config import settings
 from .database import get_pool
 from .models import DrinkType
 
+# Unclassified workspaces count as production; test workspaces never enter the app.
+PRODUCTION_WORKSPACE = "coalesce(w.settings->>'environment','production')='production'"
+
 # The one account rule, over accounts a, account_emails e and people p. Acting needs an
 # active account with a verified email; signing in also admits a pending account whose
 # invitation is open. Either way the person must be live and unmerged.
@@ -100,10 +103,9 @@ async def grant_access(workspace_id: str, grant: AccessGrant) -> dict:
 
 async def writable_workspaces(conn, account_id: str) -> list[dict]:
     rows = await conn.fetch(
-        """SELECT w.id,w.name,coalesce(w.settings->>'activity_mode','groupme') AS activity_mode
+        f"""SELECT w.id,w.name,coalesce(w.settings->>'activity_mode','groupme') AS activity_mode
            FROM app_workspace_access a JOIN workspaces w ON w.id=a.workspace_id
-           WHERE a.account_id=$1 AND a.active
-           AND coalesce(w.settings->>'environment','production')='production' ORDER BY w.name,w.id""",
+           WHERE a.account_id=$1 AND a.active AND {PRODUCTION_WORKSPACE} ORDER BY w.name,w.id""",
         account_id,
     )
     return [dict(r) for r in rows]
@@ -112,9 +114,8 @@ async def writable_workspaces(conn, account_id: str) -> list[dict]:
 async def authorize_workspace(conn, account_id: str, workspace_id: str):
     # Group management locks workspace before membership; use the same order.
     workspace = await conn.fetchrow(
-        """SELECT id,settings->>'activity_mode' AS activity_mode FROM workspaces
-           WHERE id=$1 AND coalesce(settings->>'environment','production')='production'
-           FOR SHARE""",
+        f"""SELECT w.id,w.settings->>'activity_mode' AS activity_mode FROM workspaces w
+           WHERE w.id=$1 AND {PRODUCTION_WORKSPACE} FOR SHARE""",
         workspace_id,
     )
     access = await conn.fetchrow(
@@ -128,19 +129,22 @@ async def authorize_workspace(conn, account_id: str, workspace_id: str):
     return workspace
 
 
-async def run_command(person: dict, action: str, command: Command, entry_id: UUID | None = None):
-    if not settings.app_activity_enabled:
-        raise HTTPException(503, "App logging is not enabled")
-    payload = {"action": action, "entry_id": str(entry_id), **command.model_dump(mode="json")}
+async def receipted(person: dict, command: Command, scope: dict, apply) -> dict:
+    """Apply an app command once per request ID, in one transaction with its receipt.
+
+    Locks the live account, replays the stored result for a retried request ID (409
+    if it named a different action), rate-limits, then runs apply(conn, account).
+    """
+    payload = {**scope, **command.model_dump(mode="json")}
     fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SET LOCAL lock_timeout='3s'")
         await conn.execute("SET LOCAL statement_timeout='10s'")
-        account_id = (await lock_account(conn, person))["id"]
+        account = await lock_account(conn, person)
         existing = await conn.fetchrow(
             "SELECT fingerprint,result FROM app_commands WHERE account_id=$1 AND request_id=$2",
-            account_id,
+            account["id"],
             command.request_id,
         )
         if existing:
@@ -149,10 +153,28 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
             return json.loads(existing["result"])
         if await conn.fetchval(
             "SELECT count(*)>=120 FROM app_commands WHERE account_id=$1 AND created_at>now()-interval '1 hour'",
-            account_id,
+            account["id"],
         ):
             raise HTTPException(429, "Too many changes. Please try again later.")
+        result = await apply(conn, account)
+        # Durable receipt survives a GroupMe deletion of the mirrored row. Retrying
+        # a completed create can therefore never resurrect an undone drink.
+        await conn.execute(
+            "INSERT INTO app_commands(account_id,request_id,fingerprint,result) VALUES($1,$2,$3,$4::jsonb)",
+            account["id"],
+            command.request_id,
+            fingerprint,
+            json.dumps(result),
+        )
+        return result
 
+
+async def run_command(person: dict, action: str, command: Command, entry_id: UUID | None = None):
+    if not settings.app_activity_enabled:
+        raise HTTPException(503, "App logging is not enabled")
+
+    async def apply(conn, account) -> dict:
+        account_id = account["id"]
         if action == "group":
             name = command.name.strip()
             if not name:
@@ -296,13 +318,6 @@ async def run_command(person: dict, action: str, command: Command, entry_id: UUI
                 "entry_id": str(entry_id),
                 "status": "undone" if action == "undo" else "updated",
             }
-        # Durable receipt survives a GroupMe deletion of the mirrored row. Retrying
-        # a completed create can therefore never resurrect an undone drink.
-        await conn.execute(
-            "INSERT INTO app_commands(account_id,request_id,fingerprint,result) VALUES($1,$2,$3,$4::jsonb)",
-            account_id,
-            command.request_id,
-            fingerprint,
-            json.dumps(result),
-        )
         return result
+
+    return await receipted(person, command, {"action": action, "entry_id": str(entry_id)}, apply)
