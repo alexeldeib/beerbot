@@ -26,7 +26,8 @@ Rules
 - Tests: add unit tests, plus at least one scenario in tests/test_live_chat.py that sends a
   realistic chat message through the real model and asserts the database effect.
 - Before finishing, run until all pass: `uv run ruff format .`, `uv run ruff check .`,
-  `uv run pytest -q` (PostgreSQL is available through BEERBOT_TEST_DATABASE_URL).
+  `uv run pytest -q`. Your commands run sandboxed, with no network except PyPI and no
+  credentials; the Postgres tests start a private throwaway server by themselves.
 - Do not commit; the workflow commits, deploys, and announces.
 
 When done, and only if the group would notice the change, write /tmp/beerdev/announcement.md:

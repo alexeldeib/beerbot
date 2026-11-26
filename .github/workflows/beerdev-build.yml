@@ -117,12 +117,42 @@ jobs:
           jq -r '"# \(.title)\n\nKind: \(if any(.labels[]; .name == "bug") then "bug" else "feature" end)\n\n\(.body // "" | gsub("<!--[^>]*-->"; ""))"' \
             /tmp/beerdev/issue.json > /tmp/beerdev/request.md
 
+      # The agent's commands (its tests, `uv add` and what packages run) get none of this job's
+      # credentials and no network but PyPI: Claude Code's sandbox (bubblewrap) plus the env scrub,
+      # which on Linux also hides other processes, so no test can read the Claude token from
+      # /proc. Its Postgres tests use a private throwaway server (tests/conftest.py), since the
+      # sandbox can't reach the service above; the full suite runs against the service after.
+      - name: Sandbox the agent's commands
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends bubblewrap socat
+          # Ubuntu blocks the unprivileged user namespaces bubblewrap needs.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          initdb="$(ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$initdb" ]; then
+            sudo apt-get install -y -qq --no-install-recommends postgresql
+            initdb="$(ls /usr/lib/postgresql/*/bin/initdb | sort -V | tail -1)"
+          fi
+          echo "PG_BIN=$(dirname "$initdb")" >> "$GITHUB_ENV"
+
       - name: Implement with Claude Code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          # Credential-free stand-ins the scrub keeps: settings load, and Postgres tests start
+          # their own server.
+          DATABASE_URL: postgresql://test@localhost/test
+          BEERBOT_TEST_DATABASE_URL: ""
+          BEERBOT_TEST_PG_BIN: ${{ env.PG_BIN }}
+          UV_CACHE_DIR: ${{ github.workspace }}/.venv/uv-cache
         run: >-
           npx -y @anthropic-ai/claude-code@2.1.319 -p "$(cat .github/beerdev-prompt.md)"
           --add-dir /tmp/beerdev
+          --settings '{"sandbox": {"enabled": true, "failIfUnavailable": true,
+          "allowUnsandboxedCommands": false, "network": {"strictAllowlist": true,
+          "allowedDomains": ["pypi.org", "files.pythonhosted.org"]}}}'
           --allowedTools Read Edit Write Glob Grep
           "Bash(uv run pytest:*)" "Bash(uv run ruff:*)" "Bash(git diff:*)" "Bash(git status:*)"
           "Bash(uv add:*)" "Bash(uv remove:*)" "Bash(uv lock:*)"
