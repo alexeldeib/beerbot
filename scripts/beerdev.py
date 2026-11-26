@@ -36,20 +36,16 @@ def next_build(issues: list[dict]) -> int | None:
     return min(buildable, default=(None, None))[1]
 
 
-def say(text: str, reply_to: str | None = None) -> bool:
-    """Post to the group as the beerdev bot, threaded under `reply_to` when GroupMe allows it.
-    A bot id can post and do nothing else."""
+def say(text: str) -> bool:
+    """Post to the group as the beerdev bot. A bot id can post and do nothing else."""
     bot_id = os.environ.get("BEERDEV_BOT_ID")
     if not bot_id or not text.strip():
         return False
-    post = {"bot_id": bot_id, "text": text.strip()[:1000]}
-    thread = [{"type": "reply", "reply_id": reply_to, "base_reply_id": reply_to}]
-    url = "https://api.groupme.com/v3/bots/post"
-    response = (
-        httpx.post(url, json=post | {"attachments": thread}, timeout=30) if reply_to else None
+    response = httpx.post(
+        "https://api.groupme.com/v3/bots/post",
+        json={"bot_id": bot_id, "text": text.strip()[:1000]},
+        timeout=30,
     )
-    if response is None or not response.is_success:
-        response = httpx.post(url, json=post, timeout=30)
     if not response.is_success:
         print(f"::warning::beerdev could not post to the chat (HTTP {response.status_code})")
     return response.is_success
