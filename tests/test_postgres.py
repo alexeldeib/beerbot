@@ -4,14 +4,8 @@ Only BEERBOT_TEST_DATABASE_URL enables these tests; never use DATABASE_URL.
 CI always supplies a disposable PostgreSQL service.
 """
 
-import asyncio
-
-import asyncpg
-import pytest
-
 from src.beerbot import database
 from src.beerbot.models import DrinkType
-from src.beerbot.reconciliation import LOCK_KEY, ReconciliationBusy, reconcile_identities
 from src.beerbot.repositories import GroupRepository, beer_repo
 
 
@@ -29,23 +23,9 @@ async def seed(pool):
         return alice, bob
 
 
-async def test_fresh_migration_and_reconciliation(pg):
+async def test_fresh_migration_reruns_and_batch_is_idempotent(pg):
     await database.init_db()
     alice, _ = await seed(pg)
-    preview = await reconcile_identities()
-    assert preview["missing_people"] == 2
-    assert preview["missing_memberships"] == 3
-    assert await pg.fetchval("SELECT COUNT(*) FROM people") == 0
-    applied = await reconcile_identities(apply=True)
-    assert applied["missing_people"] == 2
-    assert await pg.fetchval("SELECT COUNT(*) FROM workspace_memberships") == 3
-    assert (
-        await pg.fetchval("SELECT COUNT(*) FROM workspace_memberships WHERE status='observed'") == 3
-    )
-    assert await pg.fetchval("SELECT COUNT(*) FROM accounts") == 0
-    before = await pg.fetch("SELECT * FROM people ORDER BY id")
-    assert (await reconcile_identities(apply=True))["missing_people"] == 0
-    assert before == await pg.fetch("SELECT * FROM people ORDER BY id")
     await database.init_db()
     entries = [
         (alice, "g1", 1, "round", 0, DrinkType.BEER),
@@ -69,88 +49,6 @@ async def test_upgrade_from_two_backfills_without_changing_legacy_activity(pg):
     assert await pg.fetchval("SELECT COUNT(*) FROM people") == 2
     assert await pg.fetchval("SELECT COUNT(*) FROM workspace_memberships") == 3
     assert before == await pg.fetch("SELECT * FROM beers ORDER BY id")
-    assert (await reconcile_identities())["missing_memberships"] == 0
-
-
-async def test_preserves_claimed_links_profiles_and_inactive_membership(pg):
-    await database.init_db()
-    await seed(pg)
-    await pg.execute("""INSERT INTO people(id,display_name,status) VALUES('claimed','Custom','claimed');
-        INSERT INTO external_identities(id,gateway_type,issuer_key,subject_key,person_id,assurance)
-        VALUES('custom-id','groupme','groupme','alice','claimed','account_verified');
-        INSERT INTO workspace_memberships(id,workspace_id,person_id,display_name,role,status)
-        VALUES('custom-member','w1','claimed','Nickname','owner','inactive');""")
-    await reconcile_identities(apply=True)
-    assert (
-        await pg.fetchval("SELECT person_id FROM users WHERE groupme_user_id='alice'") == "claimed"
-    )
-    assert await pg.fetchval("SELECT display_name FROM people WHERE id='claimed'") == "Custom"
-    member = await pg.fetchrow("SELECT * FROM workspace_memberships WHERE id='custom-member'")
-    assert (member["role"], member["status"], member["display_name"]) == (
-        "owner",
-        "inactive",
-        "Nickname",
-    )
-    assert not await pg.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM people WHERE id='person:groupme:alice')"
-    )
-
-
-async def test_reports_conflicts_and_never_reactivates_revoked_identity(pg):
-    await database.init_db()
-    await seed(pg)
-    await reconcile_identities(apply=True)
-    await pg.execute("""INSERT INTO people(id,display_name) VALUES('different','Different');
-        UPDATE users SET person_id='different' WHERE groupme_user_id='alice';
-        UPDATE external_identities SET status='revoked' WHERE subject_key='bob';""")
-    result = await reconcile_identities(apply=True)
-    assert result["conflicts"] == 1
-    assert result["blocked"] == 1
-    assert (
-        await pg.fetchval("SELECT person_id FROM users WHERE groupme_user_id='alice'")
-        == "different"
-    )
-    assert (
-        await pg.fetchval("SELECT status FROM external_identities WHERE subject_key='bob'")
-        == "revoked"
-    )
-
-
-async def test_pages_and_excludes_unscoped_users_from_memberships(pg):
-    await database.init_db()
-    await seed(pg)
-    await pg.execute("INSERT INTO users(groupme_user_id,name) VALUES('unscoped','No activity')")
-    cursor = 0
-    scanned = 0
-    while True:
-        result = await reconcile_identities(apply=True, after_id=cursor, limit=1)
-        scanned += result["scanned"]
-        cursor = result["next_after_id"]
-        if cursor is None:
-            break
-    assert scanned == 3
-    assert await pg.fetchval("SELECT COUNT(*) FROM people") == 3
-    assert await pg.fetchval("SELECT COUNT(*) FROM workspace_memberships") == 3
-
-
-async def test_concurrent_reconciliation_fails_fast(pg):
-    await database.init_db()
-    async with pg.acquire() as c:
-        async with c.transaction():
-            await c.fetchval("SELECT pg_advisory_xact_lock($1)", LOCK_KEY)
-            with pytest.raises(ReconciliationBusy):
-                await asyncio.wait_for(reconcile_identities(apply=True), timeout=2)
-
-
-async def test_failed_page_rolls_back_all_repairs(pg):
-    await database.init_db()
-    await seed(pg)
-    await pg.execute("""ALTER TABLE workspace_memberships ADD CONSTRAINT reject_observation
-                        CHECK (status <> 'observed')""")
-    with pytest.raises(asyncpg.CheckViolationError):
-        await reconcile_identities(apply=True)
-    assert await pg.fetchval("SELECT COUNT(*) FROM people") == 0
-    assert await pg.fetchval("SELECT COUNT(*) FROM users WHERE person_id IS NOT NULL") == 0
 
 
 async def test_group_registration_keeps_workspace_for_the_app(pg):

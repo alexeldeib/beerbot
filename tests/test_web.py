@@ -181,6 +181,44 @@ async def test_admin_invitation_conflicts_and_access(browser, pg, monkeypatch):
         assert await conn.fetchval("SELECT email FROM account_emails") == "ace@example.test"
 
 
+async def test_admin_invites_a_groupme_user_with_their_history(browser, pg, monkeypatch):
+    monkeypatch.setattr(web.settings, "admin_token", "test-admin")
+    await login(browser)  # ace@example.test is now a proven binding
+
+    async def invite(**payload):
+        headers = {"Authorization": "Bearer test-admin"}
+        return await browser.post("/admin/accounts/invite", json=payload, headers=headers)
+
+    async with pg.acquire() as conn:
+        # First seen in GroupMe after migration 3 linked everyone, so no person yet.
+        uid = await conn.fetchval(
+            "INSERT INTO users(groupme_user_id,name) VALUES('3','Newcomer') RETURNING id"
+        )
+        await conn.execute("INSERT INTO beers(user_id,group_id,quantity) VALUES($1,'g1',4)", uid)
+    assert (await invite(email="new@example.test")).status_code == 422
+    both = await invite(groupme_user_id="3", person_id="ace", email="new@example.test")
+    assert both.status_code == 422
+    assert (await invite(groupme_user_id="404", email="new@example.test")).status_code == 404
+    assert (await invite(groupme_user_id="3", email="ace@example.test")).status_code == 409
+    # GroupMe user 1 is already linked to ace, who has an account: reuse, never relink.
+    assert (await invite(groupme_user_id="1", email="x@example.test")).status_code == 409
+    async with pg.acquire() as conn:  # failed invitations linked and created nothing
+        assert await conn.fetchval("SELECT person_id FROM users WHERE id=$1", uid) is None
+        assert await conn.fetchval("SELECT count(*) FROM people") == 2
+    result = await invite(groupme_user_id="3", email="new@example.test")
+    assert result.status_code == 200, result.text
+    assert result.json()["person_id"] == "person:groupme:3"
+    async with pg.acquire() as conn:
+        assert await conn.fetchval("SELECT person_id FROM users WHERE id=$1", uid) == (
+            "person:groupme:3"
+        )
+    await browser.post("/app/api/login", json={"email": "new@example.test"})
+    code = web.send_code.call_args.args[1]
+    assert (await browser.post("/app/api/verify", json={"code": code})).status_code == 200
+    me = (await browser.get("/app/api/me")).json()
+    assert me["person"]["name"] == "Newcomer" and me["totals"]["drinks"] == 4
+
+
 async def test_expired_invitation_cannot_claim(browser, pg):
     async with pg.acquire() as conn:
         await conn.execute("UPDATE account_emails SET invite_expires_at=now()-interval '1 second'")

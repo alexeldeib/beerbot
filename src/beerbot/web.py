@@ -65,12 +65,17 @@ class EmailInput(BaseModel):
 
 class InviteInput(EmailInput):
     person_id: str | None = Field(None, min_length=1, max_length=200)
+    groupme_user_id: str | None = Field(None, min_length=1, max_length=200)
     name: str | None = Field(None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def one_identity(self):
-        if bool(self.person_id) == bool(self.name and self.name.strip()):
-            raise ValueError("Provide an existing person_id OR a name for a new native person")
+        chosen = (self.person_id, self.groupme_user_id, self.name and self.name.strip())
+        if sum(map(bool, chosen)) != 1:
+            raise ValueError(
+                "Provide one of: an existing person_id, the groupme_user_id whose history "
+                "they get, or a name for a new native person"
+            )
         return self
 
 
@@ -139,21 +144,50 @@ async def invite_account(data: InviteInput) -> dict:
     pool = await get_pool()
     try:
         async with pool.acquire() as conn, conn.transaction():
-            person_id = data.person_id
-            if person_id is None:
+            person_id, user = data.person_id, None
+            if data.groupme_user_id:
+                # The admin chose this GroupMe user: users.person_id carries their history.
+                user = await conn.fetchrow(
+                    "SELECT person_id,name,avatar_url FROM users WHERE groupme_user_id=$1",
+                    data.groupme_user_id,
+                )
+                if not user:
+                    raise HTTPException(404, "GroupMe user not found")
+                # Keep an existing link; otherwise migration 3's person convention.
+                person_id = user["person_id"] or "person:groupme:" + data.groupme_user_id
+                await conn.execute(
+                    """INSERT INTO people(id,display_name,avatar_url) VALUES($1,$2,$3)
+                       ON CONFLICT(id) DO NOTHING""",
+                    person_id,
+                    user["name"],
+                    user["avatar_url"],
+                )
+            elif person_id is None:
                 person_id = "person:app:" + str(uuid4())
                 await conn.execute(
                     "INSERT INTO people(id,display_name) VALUES($1,$2)",
                     person_id,
                     data.name.strip(),
                 )
-            person = await conn.fetchrow("SELECT * FROM people WHERE id=$1 FOR UPDATE", person_id)
+            person = await conn.fetchrow(
+                "SELECT display_name,status,canonical_person_id FROM people WHERE id=$1 FOR UPDATE",
+                person_id,
+            )
             if (
                 not person
                 or person["canonical_person_id"]
                 or person["status"] not in ("claimed", "provisional")
             ):
                 raise HTTPException(409, "Person is unavailable for invitation")
+            # People before users, the order app commands lock them in.
+            if user and not user["person_id"]:
+                if not await conn.fetchval(
+                    """UPDATE users SET person_id=$2 WHERE groupme_user_id=$1
+                       AND person_id IS NULL RETURNING id""",
+                    data.groupme_user_id,
+                    person_id,
+                ):
+                    raise HTTPException(409, "That GroupMe user was just linked; try again")
             if await conn.fetchval("SELECT 1 FROM accounts WHERE person_id=$1", person_id):
                 raise HTTPException(409, "Person already has an account; no binding was changed")
             account_id = "account:" + secrets.token_hex(16)
@@ -167,7 +201,12 @@ async def invite_account(data: InviteInput) -> dict:
                 account_id,
                 data.email,
             )
-            return {"status": "invited", "account_id": account_id, "name": person["display_name"]}
+            return {
+                "status": "invited",
+                "account_id": account_id,
+                "person_id": person_id,
+                "name": person["display_name"],
+            }
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "Email or person already has an account") from None
 
