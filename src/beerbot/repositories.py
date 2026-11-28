@@ -62,6 +62,20 @@ class UserRepository:
             )
             return User(**dict(row)) if row else None
 
+    async def group_members(self, group_id: str) -> list[tuple[str, str]]:
+        """(groupme_user_id, name) of everyone who has logged a drink in the group."""
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT u.groupme_user_id, u.name FROM users u
+                   WHERE u.groupme_user_id IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM beers b WHERE b.user_id = u.id AND b.group_id = $1)
+                   ORDER BY u.id""",
+                group_id,
+            )
+            return [(r["groupme_user_id"], r["name"]) for r in rows]
+
 
 class BeerRepository:
     """Repository for beer operations."""

@@ -1,6 +1,7 @@
 """Beerius: answers each GroupMe message through the explicit, provider-neutral tool loop."""
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,7 @@ from .delivery import reply_target
 from .llm import model_profile
 from .model_runtime import Media, GoogleSession, CompatibleSession, ModelProtocolError, run_tools
 from .models import GroupMeAttachment, GroupMeMessage
-from .repositories import beer_repo
+from .repositories import beer_repo, user_repo
 from .tools import ToolContext, create_tools
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,9 @@ When videos are present, analyze them for drinking activity:
 === MULTI-USER LOGGING ===
 When the message mentions other users with "+N drinks @user1 @user2":
 - Log ONLY for the mentioned users (not the sender), using target_user_ids parameter.
+People may also be named in plain text without an @tag ("+1 beer for jerry"). When the context
+shows "Named without @tag", those are unambiguous group members: treat them exactly like mentions.
+If a name isn't listed there, don't guess a user ID; ask who they mean.
 When the message is casual like "cheers" or an emoji WITH mentions:
 - Log for BOTH the sender AND mentioned users.
 
@@ -230,6 +234,42 @@ def extract_mentioned_users(
     return result
 
 
+def _name_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold())
+
+
+def resolve_named_users(
+    text: str | None,
+    members: list[tuple[str, str]],
+    exclude_ids: set[str],
+) -> list[tuple[str, str]]:
+    """Group members the text names without an @tag, only when the name is unambiguous.
+
+    A member matches on their full name or on a first name (3+ letters) no other member shares.
+    Anyone in `exclude_ids` (the sender, explicit mentions) is skipped. Returns (user_id, name).
+    """
+    if not text:
+        return []
+    words = _name_words(text)
+    padded = f" {' '.join(words)} "
+    first_names: dict[str, set[str]] = {}
+    for uid, name in members:
+        tokens = _name_words(name)
+        if tokens:
+            first_names.setdefault(tokens[0], set()).add(uid)
+
+    result: list[tuple[str, str]] = []
+    for uid, name in members:
+        tokens = _name_words(name)
+        if uid in exclude_ids or not tokens or any(uid == r[0] for r in result):
+            continue
+        full = f" {' '.join(tokens)} "
+        first_ok = len(tokens[0]) >= 3 and first_names[tokens[0]] == {uid}
+        if (len(tokens) > 1 and full in padded) or (first_ok and f" {tokens[0]} " in padded):
+            result.append((uid, name))
+    return result
+
+
 class BeerAgent:
     """The model client both bots use, and Beerius answering messages with it."""
 
@@ -299,10 +339,11 @@ class BeerAgent:
         history: list[GroupMeMessage],
         replied: GroupMeMessage | None,
         answered: GroupMeMessage | None = None,
+        named: list[tuple[str, str]] | None = None,
     ) -> str:
         """Build context section for system prompt."""
         now_et = datetime.now(EASTERN)
-        mentioned = extract_mentioned_users(message.text, message.attachments)
+        mentioned = extract_mentioned_users(message.text, message.attachments) + (named or [])
         lines = [
             "\n=== CONTEXT ===",
             f"Current time: {now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}",
@@ -317,6 +358,9 @@ class BeerAgent:
         if mentioned:
             mentions_str = ", ".join(f"{name} (id: {uid})" for uid, name in mentioned)
             lines.append(f"Mentioned: [{mentions_str}]")
+        if named:
+            named_str = ", ".join(f"{name} (id: {uid})" for uid, name in named)
+            lines.append(f"Named without @tag: [{named_str}]")
 
         if replied:
             who = f"[{replied.name}]"
@@ -346,6 +390,20 @@ class BeerAgent:
                     parts.append(media or "[video could not be loaded]")
         return parts or ["(empty message)"]
 
+    async def _named_users(
+        self, message: GroupMeMessage, mentioned: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Group members the text names without an @tag, when the name is unambiguous."""
+        if not message.text:
+            return []
+        try:
+            members = await user_repo.group_members(message.group_id)
+        except Exception:
+            logger.exception("Could not look up group members for name matching")
+            return []
+        exclude = {message.user_id} | {uid for uid, _ in mentioned}
+        return resolve_named_users(message.text, members, exclude)
+
     async def process_message(
         self, message: GroupMeMessage, history: list[GroupMeMessage]
     ) -> str | None:
@@ -357,6 +415,8 @@ class BeerAgent:
             raise RuntimeError("Model client unavailable")
 
         mentioned = extract_mentioned_users(message.text, message.attachments)
+        named = await self._named_users(message, mentioned)
+        mentioned = mentioned + named
         replied, answered = await reply_target(message)
         target = answered or replied  # A reply to Beerius's post is about who it answered.
         ctx = ToolContext(
@@ -376,7 +436,7 @@ class BeerAgent:
 
         # Build system prompt with context
         system_prompt = SYSTEM_PROMPT + self._build_context_lines(
-            message, history, replied, answered
+            message, history, replied, answered, named
         )
 
         # Build multimodal contents
