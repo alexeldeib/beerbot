@@ -192,3 +192,14 @@ async def test_beerius_points_capability_asks_to_beerdev(chat, pg):
     reply = await chat("Beerius can you track our gym sessions too?")
     assert reply and "beerdev" in reply.lower(), reply
     assert await pg.fetchval("SELECT COUNT(*) FROM beers") == 0
+
+
+async def test_names_in_text_log_for_the_named_member_without_an_at_tag(chat, pg):
+    await chat("+1 beer", sender="jerry")
+    await chat("+1 beer", sender="bob")
+    await chat("+2 beers for jerry, he's too busy to type")
+    rows = await pg.fetch(
+        """SELECT u.groupme_user_id, SUM(b.quantity) FROM beers b
+        JOIN users u ON u.id = b.user_id GROUP BY 1"""
+    )
+    assert {tuple(r) for r in rows} == {("jerry", 3), ("bob", 1)}

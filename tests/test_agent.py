@@ -454,3 +454,33 @@ def test_only_the_owner_gets_the_override_line(monkeypatch):
             created_at=0,
         )
         assert ("bot's owner" in agent._build_context_lines(message, [], None)) is expected
+
+
+class TestResolveNamedUsers:
+    MEMBERS = [("u1", "Jerry Smith"), ("u2", "Bob Jones"), ("u3", "Bobby Tables"), ("u4", "Jo")]
+
+    def test_unique_first_name(self):
+        from src.beerbot.agent import resolve_named_users
+
+        result = resolve_named_users("+1 beer for jerry!", self.MEMBERS, set())
+        assert result == [("u1", "Jerry Smith")]
+
+    def test_full_name_and_ambiguity(self):
+        from src.beerbot.agent import resolve_named_users
+
+        members = [("u2", "Bob Jones"), ("u5", "Bob Lee")]
+        assert resolve_named_users("bob owes one", members, set()) == []
+        assert resolve_named_users("bob lee owes one", members, set()) == [("u5", "Bob Lee")]
+
+    def test_skips_sender_short_names_and_partial_words(self):
+        from src.beerbot.agent import resolve_named_users
+
+        assert resolve_named_users("jerry and jo", self.MEMBERS, {"u1"}) == []
+        assert resolve_named_users("jerrys beer", self.MEMBERS, set()) == []
+        assert resolve_named_users(None, self.MEMBERS, set()) == []
+
+    def test_context_lists_named_users(self):
+        context = BeerAgent()._build_context_lines(
+            _make_message(text="beer for jerry"), [], None, None, [("u1", "Jerry Smith")]
+        )
+        assert "Named without @tag: [Jerry Smith (id: u1)]" in context
